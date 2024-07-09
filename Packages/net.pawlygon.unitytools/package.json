@@ -2,7 +2,7 @@
     "name": "net.pawlygon.unitytools",
     "version": "1.0.0",
     "displayName": "Pawlygon - Unity Tools",
-    "description": "Generic tools.",
+    "description": "Lazy scripts for lazy people.",
     "unity": "2022.3",
     "unityRelease": "6f1",
     "documentationUrl": "https://github.com/PawlygonStudio/UnityTools",

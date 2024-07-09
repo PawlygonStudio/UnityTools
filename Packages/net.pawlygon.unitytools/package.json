@@ -1,0 +1,20 @@
+{
+    "name": "net.pawlygon.unitytools",
+    "version": "1.0.0",
+    "displayName": "Pawlygon - Unity Tools",
+    "description": "Generic tools.",
+    "unity": "2022.3",
+    "unityRelease": "6f1",
+    "documentationUrl": "https://github.com/PawlygonStudio/UnityTools",
+    "changelogUrl": "https://github.com/PawlygonStudio/UnityTools/releases",
+    "licensesUrl": "https://github.com/PawlygonStudio/UnityTools/blob/main/LICENSE",
+    "keywords": [
+      "vrchat",
+      "Pawlygon"
+    ],
+    "author": {
+      "name": "Choki",
+      "email": "choki@pawlygon.net",
+      "url": "https://github.com/PawlygonStudio/"
+    }
+  }

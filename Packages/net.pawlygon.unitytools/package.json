@@ -1,6 +1,6 @@
 {
     "name": "net.pawlygon.unitytools",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "displayName": "Pawlygon - Unity Tools",
     "description": "Lazy scripts for lazy people.",
     "unity": "2022.3",

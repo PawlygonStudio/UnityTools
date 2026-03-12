@@ -4,6 +4,9 @@ Unity Editor tools for Pawlygon's avatar face-tracking workflow.
 
 This package helps you duplicate source avatar assets, prepare a working folder structure, swap updated meshes from a modified FBX back onto a prefab, and generate `.hdiff` patch files for distribution.
 
+![Unity](https://img.shields.io/badge/Unity-2022.3%2B-black?logo=unity)
+![License](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey)
+![Version](https://img.shields.io/github/v/tag/PawlygonStudio/UnityTools?label=version&cb=1)
 
 ## Main features
 

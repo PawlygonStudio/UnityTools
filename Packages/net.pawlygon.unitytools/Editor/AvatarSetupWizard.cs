@@ -5,35 +5,35 @@ using System.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Pawlygon.UnityTools.Editor
 {
     public class AvatarSetupWizard : EditorWindow
     {
-        private const string BaseFolderName = "!Pawlygon";
+        private const string DefaultMainFolderName = "!Pawlygon";
         private const string DefaultAvatarName = "Avatar Name";
         private const int MaxImportLoadAttempts = 10;
         private const float SectionSpacing = 10f;
         private const float StepBadgeHeight = 28f;
+        private const int SharedSceneGridColumns = 3;
+        private const float SharedSceneGridSpacingX = 1.5f;
+        private const float SharedSceneGridSpacingZ = 1.5f;
 
-        [SerializeField] private GameObject sourceFbx;
-        [SerializeField] private GameObject sourcePrefab;
-        [SerializeField] private string avatarName = DefaultAvatarName;
+        [SerializeField] private string mainFolderName = DefaultMainFolderName;
+        [SerializeField] private bool useSeparateFolderPerAvatar;
+        [SerializeField] private string sharedAvatarFolderName = DefaultAvatarName;
+        [SerializeField] private List<AvatarEntry> avatarEntries = new List<AvatarEntry> { new AvatarEntry() };
 
         [SerializeField] private WizardStep currentStep = WizardStep.Setup;
-        [SerializeField] private string copiedFbxPath;
-        [SerializeField] private string copiedPrefabPath;
-        [SerializeField] private string createdScenePath;
-        [SerializeField] private string avatarRootPath;
-        [SerializeField] private long watchedFbxWriteTimeUtcTicks;
-        [SerializeField] private List<MeshSelectionState> meshSelections = new List<MeshSelectionState>();
+        [SerializeField] private int selectedEntryIndex;
 
+        private Vector2 setupScrollPosition;
         private Vector2 meshScrollPosition;
         private string statusMessage = string.Empty;
         private bool pendingImportTransition;
         private int importLoadAttempts;
         private GUIStyle sectionStyle;
-        private GUIStyle sectionHeaderStyle;
         private GUIStyle titleStyle;
         private GUIStyle stepStyle;
         private GUIStyle currentStepStyle;
@@ -46,6 +46,24 @@ namespace Pawlygon.UnityTools.Editor
             WaitForImport,
             SelectMeshes,
             Complete
+        }
+
+        [Serializable]
+        private class AvatarEntry
+        {
+            public GameObject sourceFbx;
+            public GameObject sourcePrefab;
+            public string avatarFolderName = DefaultAvatarName;
+            public string copiedFbxPath;
+            public string copiedPrefabPath;
+            public string createdScenePath;
+            public string avatarRootPath;
+            public string diffGeneratorAssetPath;
+            public long watchedFbxWriteTimeUtcTicks;
+            public bool hasImportedModifiedFbx;
+            public bool isMeshReviewComplete;
+            public string reviewResultLabel;
+            public List<MeshSelectionState> meshSelections = new List<MeshSelectionState>();
         }
 
         [Serializable]
@@ -62,17 +80,26 @@ namespace Pawlygon.UnityTools.Editor
             public bool selected;
         }
 
+        private class RendererInfo
+        {
+            public SkinnedMeshRenderer Renderer;
+            public string ObjectName;
+            public string RelativePath;
+            public string MeshName;
+        }
+
         [MenuItem("!Pawlygon/Avatar Setup Wizard")]
         public static void ShowWindow()
         {
             AvatarSetupWizard window = GetWindow<AvatarSetupWizard>();
             window.titleContent = new GUIContent("Avatar Setup Wizard");
-            window.minSize = new Vector2(520f, 480f);
+            window.minSize = new Vector2(620f, 560f);
         }
 
         private void OnEnable()
         {
             FBXImportDetector.FbxReimported += HandleFbxReimported;
+            EnsureAtLeastOneEntry();
         }
 
         private void OnDisable()
@@ -84,6 +111,7 @@ namespace Pawlygon.UnityTools.Editor
         private void OnGUI()
         {
             EnsureStyles();
+            EnsureAtLeastOneEntry();
 
             DrawHeader();
             DrawStepIndicator();
@@ -114,14 +142,51 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawSetupStep()
         {
+            bool hasMultipleEntries = avatarEntries.Count > 1;
+
             DrawSection(
                 "Setup",
-                "Duplicate the source FBX and prefab, then create a clean working scene under Internal/Scenes.",
+                "Choose the source assets and create the working avatar structure.",
                 () =>
                 {
-                    sourceFbx = (GameObject)EditorGUILayout.ObjectField("Source FBX", sourceFbx, typeof(GameObject), false);
-                    sourcePrefab = (GameObject)EditorGUILayout.ObjectField("Source Prefab", sourcePrefab, typeof(GameObject), false);
-                    avatarName = EditorGUILayout.TextField("Avatar Folder Name", avatarName);
+                    setupScrollPosition = EditorGUILayout.BeginScrollView(setupScrollPosition);
+
+                    mainFolderName = EditorGUILayout.TextField("Main Folder Name", mainFolderName);
+
+                    if (hasMultipleEntries)
+                    {
+                        useSeparateFolderPerAvatar = EditorGUILayout.ToggleLeft("Use Separate Folder Per Avatar", useSeparateFolderPerAvatar);
+                    }
+                    else
+                    {
+                        useSeparateFolderPerAvatar = false;
+                    }
+
+                    if (!useSeparateFolderPerAvatar)
+                    {
+                        sharedAvatarFolderName = EditorGUILayout.TextField(hasMultipleEntries ? "Shared Avatar Folder" : "Avatar Folder Name", sharedAvatarFolderName);
+                    }
+
+                    EditorGUILayout.Space(SectionSpacing);
+
+                    for (int i = 0; i < avatarEntries.Count; i++)
+                    {
+                        DrawAvatarEntryEditor(i, avatarEntries[i]);
+                        EditorGUILayout.Space(6f);
+                    }
+
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        if (GUILayout.Button("Add Avatar", GUILayout.Height(28f)))
+                        {
+                            avatarEntries.Add(new AvatarEntry());
+                        }
+
+                        GUILayout.FlexibleSpace();
+                        EditorGUILayout.LabelField($"{avatarEntries.Count} avatar entr{(avatarEntries.Count == 1 ? "y" : "ies")}", EditorStyles.miniBoldLabel, GUILayout.Width(110f));
+                    }
+
+                    EditorGUILayout.EndScrollView();
 
                     string validationMessage = GetSetupValidationMessage();
 
@@ -131,7 +196,7 @@ namespace Pawlygon.UnityTools.Editor
                     {
                         if (DrawPrimaryButton("Create Avatar Structure", 36f))
                         {
-                            CreateAvatarStructure();
+                            CreateAvatarStructures();
                         }
                     }
 
@@ -142,50 +207,106 @@ namespace Pawlygon.UnityTools.Editor
                 });
         }
 
+        private void DrawAvatarEntryEditor(int index, AvatarEntry entry)
+        {
+            using (new EditorGUILayout.VerticalScope(sectionStyle))
+            {
+                if (avatarEntries.Count > 1)
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        EditorGUILayout.LabelField($"Avatar {index + 1}", EditorStyles.boldLabel);
+                        GUILayout.FlexibleSpace();
+
+                        using (new EditorGUI.DisabledScope(avatarEntries.Count <= 1))
+                        {
+                            if (GUILayout.Button("Remove", GUILayout.Width(72f)))
+                            {
+                                avatarEntries.RemoveAt(index);
+                                selectedEntryIndex = Mathf.Clamp(selectedEntryIndex, 0, avatarEntries.Count - 1);
+                                GUIUtility.ExitGUI();
+                            }
+                        }
+                    }
+                }
+
+                entry.sourceFbx = (GameObject)EditorGUILayout.ObjectField("Source FBX", entry.sourceFbx, typeof(GameObject), false);
+                entry.sourcePrefab = (GameObject)EditorGUILayout.ObjectField("Source Prefab", entry.sourcePrefab, typeof(GameObject), false);
+
+                if (useSeparateFolderPerAvatar)
+                {
+                    entry.avatarFolderName = EditorGUILayout.TextField("Avatar Folder Name", entry.avatarFolderName);
+                }
+
+                string rowError = GetEntryValidationMessage(index, entry);
+                if (!string.IsNullOrEmpty(rowError))
+                {
+                    EditorGUILayout.HelpBox(rowError, MessageType.None);
+                }
+            }
+        }
+
         private void DrawWaitForImportStep()
         {
             DrawSection(
                 "Import Modified FBX",
-                "Replace the copied FBX on disk with your edited version. Unity will detect the reimport and advance automatically when the asset is ready.",
+                "Replace each copied FBX on disk with its edited version. Continue after every model below shows Updated.",
                 () =>
                 {
-                    EditorGUILayout.HelpBox("If Unity already finished importing, use the button below to continue manually.", MessageType.Info);
+                    int importedCount = avatarEntries.Count(entry => entry.hasImportedModifiedFbx);
+                    EditorGUILayout.HelpBox($"Progress: {importedCount} / {avatarEntries.Count} modified FBXs detected.", MessageType.Info);
                     EditorGUILayout.Space(EditorGUIUtility.standardVerticalSpacing);
-                    DrawPathSummary();
-
+                    DrawImportStatusSummary();
                     EditorGUILayout.Space(SectionSpacing);
 
                     if (DrawPrimaryButton("Continue After Import", 34f))
                     {
-                        MoveToMeshSelection();
+                        if (AreAllEntriesImportedAndLoadable())
+                        {
+                            MoveToMeshSelection();
+                        }
+                        else
+                        {
+                            statusMessage = "Not every modified FBX is ready yet. Finish importing all copied FBXs, then continue.";
+                        }
                     }
                 });
         }
 
         private void DrawMeshSelectionStep()
         {
+            AvatarEntry selectedEntry = GetSelectedEntry();
+            if (selectedEntry == null)
+            {
+                statusMessage = "No avatar entries are available for mesh review.";
+                currentStep = WizardStep.Setup;
+                return;
+            }
+
             DrawSection(
                 "Select Meshes",
-                "Review the renderer matches found between the modified FBX and the duplicated prefab, then choose which meshes to replace.",
+                "Review one avatar at a time. Apply the selected mesh replacements or explicitly skip that avatar.",
                 () =>
                 {
-                    DrawPathSummary();
+                    DrawEntrySelectionToolbar();
+                    EditorGUILayout.Space(EditorGUIUtility.standardVerticalSpacing);
+                    DrawMeshReviewSummary(selectedEntry);
                     EditorGUILayout.Space(SectionSpacing);
 
-                    if (meshSelections.Count == 0)
+                    if (selectedEntry.meshSelections.Count == 0)
                     {
                         EditorGUILayout.HelpBox("No skinned mesh renderer mappings were found between the duplicated FBX and prefab.", MessageType.Warning);
                     }
                     else
                     {
-                        DrawMeshSelectionToolbar();
+                        DrawMeshSelectionToolbar(selectedEntry);
                         EditorGUILayout.Space(EditorGUIUtility.standardVerticalSpacing);
 
                         using (new EditorGUILayout.VerticalScope(sectionStyle))
                         {
                             meshScrollPosition = EditorGUILayout.BeginScrollView(meshScrollPosition, GUILayout.Height(260f));
 
-                            foreach (MeshSelectionState meshSelection in meshSelections)
+                            foreach (MeshSelectionState meshSelection in selectedEntry.meshSelections)
                             {
                                 DrawMeshSelectionRow(meshSelection);
                             }
@@ -196,11 +317,19 @@ namespace Pawlygon.UnityTools.Editor
 
                     EditorGUILayout.Space(SectionSpacing);
 
-                    using (new EditorGUI.DisabledScope(meshSelections.All(selection => !selection.selected)))
+                    using (new EditorGUILayout.HorizontalScope())
                     {
-                        if (DrawPrimaryButton("Replace Selected Meshes", 36f))
+                        if (GUILayout.Button("Skip This Avatar", GUILayout.Height(34f)))
                         {
-                            ApplySelectedMeshesToPrefab();
+                            SkipEntryReview(selectedEntry);
+                        }
+
+                        using (new EditorGUI.DisabledScope(selectedEntry.meshSelections.All(selection => !selection.selected)))
+                        {
+                            if (DrawPrimaryButton("Replace Selected Meshes", 34f))
+                            {
+                                ApplySelectedMeshesToPrefab(selectedEntry);
+                            }
                         }
                     }
                 });
@@ -210,13 +339,25 @@ namespace Pawlygon.UnityTools.Editor
         {
             DrawSection(
                 "Complete",
-                "The duplicated prefab now points to the selected meshes from the modified FBX.",
+                "All avatar entries have been reviewed. The duplicated prefabs now point to the selected meshes from the modified FBXs.",
                 () =>
                 {
                     GUIContent successIcon = EditorGUIUtility.IconContent("TestPassed");
-                    EditorGUILayout.LabelField(new GUIContent(" Avatar setup completed successfully", successIcon.image), new GUIStyle(EditorStyles.boldLabel) { fontSize = 14 });
+                    EditorGUILayout.LabelField(new GUIContent(" Batch avatar setup completed successfully", successIcon.image), new GUIStyle(EditorStyles.boldLabel) { fontSize = 14 });
                     EditorGUILayout.Space(EditorGUIUtility.standardVerticalSpacing);
-                    DrawPathSummary(includeAvatarRoot: true);
+
+                    foreach (AvatarEntry entry in avatarEntries)
+                    {
+                        using (new EditorGUILayout.VerticalScope(sectionStyle))
+                        {
+                            EditorGUILayout.LabelField(GetEntryDisplayName(entry), EditorStyles.boldLabel);
+                            if (!string.IsNullOrEmpty(entry.reviewResultLabel))
+                            {
+                                EditorGUILayout.LabelField($"Result: {entry.reviewResultLabel}", richMiniLabelStyle);
+                            }
+                            DrawPathSummary(entry, includeAvatarRoot: true, includeDiffGenerator: true);
+                        }
+                    }
 
                     EditorGUILayout.Space(SectionSpacing);
 
@@ -227,7 +368,7 @@ namespace Pawlygon.UnityTools.Editor
                 });
         }
 
-        private void CreateAvatarStructure()
+        private void CreateAvatarStructures()
         {
             statusMessage = string.Empty;
 
@@ -237,65 +378,242 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
-            string sourceFbxPath = AssetDatabase.GetAssetPath(sourceFbx);
-            string sourcePrefabPath = AssetDatabase.GetAssetPath(sourcePrefab);
-            string sanitizedAvatarName = avatarName.Trim();
+            if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
+            {
+                statusMessage = "Scene creation was cancelled before saving current work.";
+                return;
+            }
 
-            avatarRootPath = CombineAssetPath("Assets", BaseFolderName, sanitizedAvatarName);
+            string sanitizedMainFolderName = mainFolderName.Trim();
+            string effectiveSharedAvatarFolderName = useSeparateFolderPerAvatar ? string.Empty : sharedAvatarFolderName.Trim();
+
+            EnsureFolderExists(CombineAssetPath("Assets", sanitizedMainFolderName));
+
+            if (useSeparateFolderPerAvatar)
+            {
+                for (int i = 0; i < avatarEntries.Count; i++)
+                {
+                    if (!CreateSeparateAvatarStructure(avatarEntries[i], sanitizedMainFolderName, i == avatarEntries.Count - 1))
+                    {
+                        return;
+                    }
+                }
+            }
+            else
+            {
+                if (!CreateSharedAvatarStructure(sanitizedMainFolderName, effectiveSharedAvatarFolderName))
+                {
+                    return;
+                }
+            }
+
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+
+            foreach (AvatarEntry entry in avatarEntries)
+            {
+                entry.watchedFbxWriteTimeUtcTicks = GetAssetWriteTimeUtcTicks(entry.copiedFbxPath);
+                entry.hasImportedModifiedFbx = false;
+                entry.isMeshReviewComplete = false;
+                entry.reviewResultLabel = string.Empty;
+                entry.meshSelections = new List<MeshSelectionState>();
+            }
+
+            selectedEntryIndex = 0;
+            currentStep = WizardStep.WaitForImport;
+            statusMessage = $"Created {avatarEntries.Count} avatar entr{(avatarEntries.Count == 1 ? "y" : "ies")}. Replace each copied FBX with its modified version and let Unity import them all.";
+            Repaint();
+        }
+
+        private bool CreateSeparateAvatarStructure(AvatarEntry entry, string sanitizedMainFolderName, bool openAfterCreate)
+        {
+            string avatarFolderName = entry.avatarFolderName.Trim();
+            string sourceFbxPath = AssetDatabase.GetAssetPath(entry.sourceFbx);
+            string sourcePrefabPath = AssetDatabase.GetAssetPath(entry.sourcePrefab);
+
+            entry.avatarRootPath = CombineAssetPath("Assets", sanitizedMainFolderName, avatarFolderName);
+            string fbxFolderPath = CombineAssetPath(entry.avatarRootPath, "FBX");
+            string prefabFolderPath = CombineAssetPath(entry.avatarRootPath, "Prefabs");
+            string internalFolderPath = CombineAssetPath(entry.avatarRootPath, "Internal");
+            string scenesFolderPath = CombineAssetPath(internalFolderPath, "Scenes");
+
+            string copiedFbxFileName = GetCopiedFbxFileName(sourceFbxPath);
+            string copiedPrefabFileName = Path.GetFileName(sourcePrefabPath);
+            string sceneFileName = $"{avatarFolderName} - Pawlygon VRCFT.unity";
+            string diffGeneratorFileName = $"{Path.GetFileNameWithoutExtension(sourceFbxPath)} Face Tracking DiffGenerator.asset";
+
+            entry.copiedFbxPath = CombineAssetPath(fbxFolderPath, copiedFbxFileName);
+            entry.copiedPrefabPath = CombineAssetPath(prefabFolderPath, copiedPrefabFileName);
+            entry.createdScenePath = CombineAssetPath(scenesFolderPath, sceneFileName);
+            entry.diffGeneratorAssetPath = CombineAssetPath(internalFolderPath, diffGeneratorFileName);
+
+            if (AssetDatabase.IsValidFolder(entry.avatarRootPath))
+            {
+                EditorUtility.DisplayDialog("Avatar Already Exists", $"The folder '{entry.avatarRootPath}' already exists. Choose a new avatar name or remove the existing folder first.", "OK");
+                return false;
+            }
+
+            EnsureFolderExists(entry.avatarRootPath);
+            EnsureFolderExists(fbxFolderPath);
+            EnsureFolderExists(prefabFolderPath);
+            EnsureFolderExists(internalFolderPath);
+            EnsureFolderExists(scenesFolderPath);
+
+            if (!CopyAvatarAssets(entry, sourceFbxPath, sourcePrefabPath))
+            {
+                return false;
+            }
+
+            if (!CreateSceneAsset(entry.createdScenePath, new[] { entry.copiedPrefabPath }))
+            {
+                EditorUtility.DisplayDialog("Scene Creation Failed", $"The working scene could not be created for '{avatarFolderName}'.", "OK");
+                return false;
+            }
+
+            if (!CreateDiffGeneratorAsset(entry, entry.diffGeneratorAssetPath))
+            {
+                return false;
+            }
+
+            if (openAfterCreate)
+            {
+                EditorSceneManager.OpenScene(entry.createdScenePath, OpenSceneMode.Single);
+            }
+
+            return true;
+        }
+
+        private bool CreateSharedAvatarStructure(string sanitizedMainFolderName, string effectiveSharedAvatarFolderName)
+        {
+            string avatarRootPath = CombineAssetPath("Assets", sanitizedMainFolderName, effectiveSharedAvatarFolderName);
             string fbxFolderPath = CombineAssetPath(avatarRootPath, "FBX");
             string prefabFolderPath = CombineAssetPath(avatarRootPath, "Prefabs");
             string internalFolderPath = CombineAssetPath(avatarRootPath, "Internal");
             string scenesFolderPath = CombineAssetPath(internalFolderPath, "Scenes");
+            string sharedScenePath = CombineAssetPath(scenesFolderPath, $"{effectiveSharedAvatarFolderName} - Pawlygon VRCFT.unity");
 
-            string copiedFbxFileName = $"{Path.GetFileNameWithoutExtension(sourceFbxPath)} FT{Path.GetExtension(sourceFbxPath)}";
-            string copiedPrefabFileName = Path.GetFileName(sourcePrefabPath);
-            string sceneFileName = $"{sanitizedAvatarName} - Pawlygon VRCFT.unity";
-
-            copiedFbxPath = CombineAssetPath(fbxFolderPath, copiedFbxFileName);
-            copiedPrefabPath = CombineAssetPath(prefabFolderPath, copiedPrefabFileName);
-            createdScenePath = CombineAssetPath(scenesFolderPath, sceneFileName);
-
-            if (AssetDatabase.IsValidFolder(avatarRootPath) || File.Exists(ToAbsolutePath(copiedFbxPath)) || File.Exists(ToAbsolutePath(copiedPrefabPath)))
+            if (AssetDatabase.IsValidFolder(avatarRootPath))
             {
-                EditorUtility.DisplayDialog(
-                    "Avatar Already Exists",
-                    $"The folder '{avatarRootPath}' already exists. Choose a new avatar name or remove the existing folder first.",
-                    "OK");
-                return;
+                EditorUtility.DisplayDialog("Avatar Already Exists", $"The folder '{avatarRootPath}' already exists. Choose a new avatar name or remove the existing folder first.", "OK");
+                return false;
             }
 
-            EnsureFolderExists(CombineAssetPath("Assets", BaseFolderName));
             EnsureFolderExists(avatarRootPath);
             EnsureFolderExists(fbxFolderPath);
             EnsureFolderExists(prefabFolderPath);
             EnsureFolderExists(internalFolderPath);
             EnsureFolderExists(scenesFolderPath);
 
-            if (!AssetDatabase.CopyAsset(sourceFbxPath, copiedFbxPath))
+            var copiedPrefabPaths = new List<string>();
+
+            foreach (AvatarEntry entry in avatarEntries)
             {
-                EditorUtility.DisplayDialog("Copy Failed", "The source FBX could not be copied.", "OK");
-                return;
+                string sourceFbxPath = AssetDatabase.GetAssetPath(entry.sourceFbx);
+                string sourcePrefabPath = AssetDatabase.GetAssetPath(entry.sourcePrefab);
+                string copiedFbxFileName = GetCopiedFbxFileName(sourceFbxPath);
+                string copiedPrefabFileName = Path.GetFileName(sourcePrefabPath);
+                string diffGeneratorFileName = $"{Path.GetFileNameWithoutExtension(sourceFbxPath)} Face Tracking DiffGenerator.asset";
+
+                entry.avatarRootPath = avatarRootPath;
+                entry.copiedFbxPath = CombineAssetPath(fbxFolderPath, copiedFbxFileName);
+                entry.copiedPrefabPath = CombineAssetPath(prefabFolderPath, copiedPrefabFileName);
+                entry.createdScenePath = sharedScenePath;
+                entry.diffGeneratorAssetPath = CombineAssetPath(internalFolderPath, diffGeneratorFileName);
+
+                if (!CopyAvatarAssets(entry, sourceFbxPath, sourcePrefabPath))
+                {
+                    return false;
+                }
+
+                copiedPrefabPaths.Add(entry.copiedPrefabPath);
             }
 
-            if (!AssetDatabase.CopyAsset(sourcePrefabPath, copiedPrefabPath))
+            if (!CreateSceneAsset(sharedScenePath, copiedPrefabPaths))
             {
-                EditorUtility.DisplayDialog("Copy Failed", "The source prefab could not be copied.", "OK");
-                return;
+                EditorUtility.DisplayDialog("Scene Creation Failed", "The shared working scene could not be created.", "OK");
+                return false;
             }
 
-            if (!CreateWorkingScene(createdScenePath))
+            foreach (AvatarEntry entry in avatarEntries)
             {
-                EditorUtility.DisplayDialog("Scene Creation Failed", "The working scene could not be created.", "OK");
-                return;
+                if (!CreateDiffGeneratorAsset(entry, entry.diffGeneratorAssetPath))
+                {
+                    return false;
+                }
             }
 
-            AssetDatabase.SaveAssets();
-            AssetDatabase.Refresh();
+            EditorSceneManager.OpenScene(sharedScenePath, OpenSceneMode.Single);
+            return true;
+        }
 
-            watchedFbxWriteTimeUtcTicks = GetAssetWriteTimeUtcTicks(copiedFbxPath);
-            currentStep = WizardStep.WaitForImport;
-            statusMessage = "Avatar structure created. Replace the copied FBX with your modified file and let Unity import it.";
-            Repaint();
+        private static bool CopyAvatarAssets(AvatarEntry entry, string sourceFbxPath, string sourcePrefabPath)
+        {
+            if (!AssetDatabase.CopyAsset(sourceFbxPath, entry.copiedFbxPath))
+            {
+                EditorUtility.DisplayDialog("Copy Failed", $"The source FBX could not be copied for '{Path.GetFileNameWithoutExtension(sourceFbxPath)}'.", "OK");
+                return false;
+            }
+
+            if (!AssetDatabase.CopyAsset(sourcePrefabPath, entry.copiedPrefabPath))
+            {
+                EditorUtility.DisplayDialog("Copy Failed", $"The source prefab could not be copied for '{Path.GetFileName(sourcePrefabPath)}'.", "OK");
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool CreateSceneAsset(string sceneAssetPath, IReadOnlyList<string> prefabAssetPaths)
+        {
+            Scene newScene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+
+            try
+            {
+                for (int i = 0; i < prefabAssetPaths.Count; i++)
+                {
+                    GameObject prefabAsset = AssetDatabase.LoadAssetAtPath<GameObject>(prefabAssetPaths[i]);
+                    if (prefabAsset == null)
+                    {
+                        continue;
+                    }
+
+                    GameObject instance = PrefabUtility.InstantiatePrefab(prefabAsset, newScene) as GameObject;
+                    if (instance != null)
+                    {
+                        instance.transform.position = GetGridPosition(i);
+                    }
+                }
+
+                EditorSceneManager.MarkSceneDirty(newScene);
+                return EditorSceneManager.SaveScene(newScene, sceneAssetPath);
+            }
+            finally
+            {
+                if (newScene.IsValid())
+                {
+                    EditorSceneManager.CloseScene(newScene, true);
+                }
+            }
+        }
+
+        private bool CreateDiffGeneratorAsset(AvatarEntry entry, string assetPath)
+        {
+            AssetDatabase.ImportAsset(entry.copiedFbxPath, ImportAssetOptions.ForceSynchronousImport);
+
+            GameObject copiedFbx = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedFbxPath);
+            DefaultAsset outputDirectory = AssetDatabase.LoadAssetAtPath<DefaultAsset>(entry.avatarRootPath);
+            if (copiedFbx == null || outputDirectory == null)
+            {
+                EditorUtility.DisplayDialog("Diff Generator Failed", $"Could not initialize the diff generator asset for '{GetEntryDisplayName(entry)}'.", "OK");
+                return false;
+            }
+
+            var diffGenerator = ScriptableObject.CreateInstance<FTDiffGenerator>();
+            diffGenerator.originalModelFbx = entry.sourceFbx;
+            diffGenerator.modifiedModelFbx = copiedFbx;
+            diffGenerator.outputDirectory = outputDirectory;
+            AssetDatabase.CreateAsset(diffGenerator, assetPath);
+            return true;
         }
 
         private bool ValidateSetupInputs(out string validationMessage)
@@ -306,36 +624,110 @@ namespace Pawlygon.UnityTools.Editor
 
         private string GetSetupValidationMessage()
         {
-            if (sourceFbx == null)
+            if (avatarEntries.Count == 0)
             {
-                return "Select an FBX asset to duplicate.";
+                return "Add at least one avatar entry.";
             }
 
-            if (sourcePrefab == null)
+            if (string.IsNullOrWhiteSpace(mainFolderName))
             {
-                return "Select a prefab asset to duplicate.";
+                return "Enter a main folder name.";
             }
 
-            if (string.IsNullOrWhiteSpace(avatarName))
+            if (mainFolderName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
             {
-                return "Enter an avatar folder name.";
+                return "The main folder name contains invalid characters.";
             }
 
-            if (avatarName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            if (useSeparateFolderPerAvatar)
             {
-                return "The avatar folder name contains invalid characters.";
+                if (avatarEntries.Any(entry => string.IsNullOrWhiteSpace(entry.avatarFolderName)))
+                {
+                    return "Every avatar entry needs an avatar folder name.";
+                }
+
+                if (avatarEntries.Any(entry => entry.avatarFolderName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0))
+                {
+                    return "One or more avatar folder names contain invalid characters.";
+                }
+
+                if (avatarEntries.GroupBy(entry => entry.avatarFolderName.Trim(), StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
+                {
+                    return "Avatar folder names must be unique when using separate folders.";
+                }
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(sharedAvatarFolderName))
+                {
+                    return "Enter a shared avatar folder name.";
+                }
+
+                if (sharedAvatarFolderName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                {
+                    return "The shared avatar folder name contains invalid characters.";
+                }
+
+                if (HasDuplicateSharedTargetNames(GetCopiedFbxFileName, avatarEntries.Select(entry => entry.sourceFbx)))
+                {
+                    return "Shared folder mode would create duplicate copied FBX names. Rename the source FBXs or use separate folders.";
+                }
+
+                if (HasDuplicateSharedTargetNames(path => Path.GetFileName(path), avatarEntries.Select(entry => entry.sourcePrefab)))
+                {
+                    return "Shared folder mode would create duplicate prefab names. Rename the source prefabs or use separate folders.";
+                }
+
+                if (HasDuplicateSharedTargetNames(path => $"{Path.GetFileNameWithoutExtension(path)} Face Tracking DiffGenerator.asset", avatarEntries.Select(entry => entry.sourceFbx)))
+                {
+                    return "Shared folder mode would create duplicate Face Tracking DiffGenerator asset names. Rename the source FBXs or use separate folders.";
+                }
             }
 
-            string fbxPath = AssetDatabase.GetAssetPath(sourceFbx);
+            for (int i = 0; i < avatarEntries.Count; i++)
+            {
+                string entryError = GetEntryValidationMessage(i, avatarEntries[i]);
+                if (!string.IsNullOrEmpty(entryError))
+                {
+                    return entryError;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private string GetEntryValidationMessage(int index, AvatarEntry entry)
+        {
+            if (entry.sourceFbx == null)
+            {
+                return $"Avatar {index + 1}: select an FBX asset to duplicate.";
+            }
+
+            if (entry.sourcePrefab == null)
+            {
+                return $"Avatar {index + 1}: select a prefab asset to duplicate.";
+            }
+
+            string fbxPath = AssetDatabase.GetAssetPath(entry.sourceFbx);
             if (!string.Equals(Path.GetExtension(fbxPath), ".fbx", StringComparison.OrdinalIgnoreCase))
             {
-                return "The selected source FBX must point to an .fbx asset.";
+                return $"Avatar {index + 1}: the source FBX must point to an .fbx asset.";
             }
 
-            string prefabPath = AssetDatabase.GetAssetPath(sourcePrefab);
+            string prefabPath = AssetDatabase.GetAssetPath(entry.sourcePrefab);
             if (!string.Equals(Path.GetExtension(prefabPath), ".prefab", StringComparison.OrdinalIgnoreCase))
             {
-                return "The selected source prefab must point to a .prefab asset.";
+                return $"Avatar {index + 1}: the source prefab must point to a .prefab asset.";
+            }
+
+            if (useSeparateFolderPerAvatar && string.IsNullOrWhiteSpace(entry.avatarFolderName))
+            {
+                return $"Avatar {index + 1}: enter an avatar folder name.";
+            }
+
+            if (useSeparateFolderPerAvatar && entry.avatarFolderName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                return $"Avatar {index + 1}: the avatar folder name contains invalid characters.";
             }
 
             return string.Empty;
@@ -343,24 +735,41 @@ namespace Pawlygon.UnityTools.Editor
 
         private void HandleFbxReimported(string importedAssetPath)
         {
-            if (currentStep != WizardStep.WaitForImport || string.IsNullOrEmpty(copiedFbxPath))
+            if (currentStep != WizardStep.WaitForImport)
             {
                 return;
             }
 
-            if (!string.Equals(NormalizeAssetPath(importedAssetPath), NormalizeAssetPath(copiedFbxPath), StringComparison.OrdinalIgnoreCase))
+            string normalizedImportedAssetPath = NormalizeAssetPath(importedAssetPath);
+            bool matchedAny = false;
+
+            foreach (AvatarEntry entry in avatarEntries)
             {
-                return;
+                if (string.IsNullOrEmpty(entry.copiedFbxPath))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(NormalizeAssetPath(entry.copiedFbxPath), normalizedImportedAssetPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                long currentWriteTimeUtcTicks = GetAssetWriteTimeUtcTicks(entry.copiedFbxPath);
+                if (currentWriteTimeUtcTicks <= entry.watchedFbxWriteTimeUtcTicks)
+                {
+                    continue;
+                }
+
+                entry.watchedFbxWriteTimeUtcTicks = currentWriteTimeUtcTicks;
+                entry.hasImportedModifiedFbx = true;
+                matchedAny = true;
             }
 
-            long currentWriteTimeUtcTicks = GetAssetWriteTimeUtcTicks(copiedFbxPath);
-            if (currentWriteTimeUtcTicks <= watchedFbxWriteTimeUtcTicks)
+            if (matchedAny)
             {
-                return;
+                QueueMoveToMeshSelection();
             }
-
-            watchedFbxWriteTimeUtcTicks = currentWriteTimeUtcTicks;
-            QueueMoveToMeshSelection();
         }
 
         private void QueueMoveToMeshSelection()
@@ -379,6 +788,14 @@ namespace Pawlygon.UnityTools.Editor
         private void TryMoveToMeshSelectionAfterImport()
         {
             pendingImportTransition = false;
+
+            if (!avatarEntries.All(entry => entry.hasImportedModifiedFbx))
+            {
+                statusMessage = $"Waiting for {avatarEntries.Count(entry => !entry.hasImportedModifiedFbx)} more modified FBX import(s).";
+                Repaint();
+                return;
+            }
+
             importLoadAttempts++;
 
             if (CanLoadImportedAssets())
@@ -389,82 +806,78 @@ namespace Pawlygon.UnityTools.Editor
 
             if (importLoadAttempts >= MaxImportLoadAttempts)
             {
-                Debug.LogWarning($"[AvatarSetupWizard] Imported FBX is still unavailable after {importLoadAttempts} delayed attempt(s): '{copiedFbxPath}'.");
-                statusMessage = "The modified FBX import was detected, but Unity has not finished making it loadable yet. Wait a moment, then use the skip button if needed.";
+                Debug.LogWarning("[AvatarSetupWizard] Imported FBXs are still unavailable after delayed load attempts.");
+                statusMessage = "All modified FBXs were detected, but Unity has not finished making them loadable yet. Wait a moment, then continue manually if needed.";
                 Repaint();
                 return;
             }
 
-            Debug.Log($"[AvatarSetupWizard] FBX not ready yet, retrying delayed load attempt {importLoadAttempts + 1}/{MaxImportLoadAttempts} for '{copiedFbxPath}'.");
             pendingImportTransition = true;
+            Debug.Log($"[AvatarSetupWizard] FBX assets not ready yet, retrying delayed load attempt {importLoadAttempts + 1}/{MaxImportLoadAttempts}.");
             EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
             EditorApplication.delayCall += TryMoveToMeshSelectionAfterImport;
         }
 
         private bool CanLoadImportedAssets()
         {
-            GameObject fbxRoot = AssetDatabase.LoadAssetAtPath<GameObject>(copiedFbxPath);
-            GameObject prefabRoot = AssetDatabase.LoadAssetAtPath<GameObject>(copiedPrefabPath);
-            return fbxRoot != null && prefabRoot != null;
+            return avatarEntries.All(entry =>
+                AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedFbxPath) != null &&
+                AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedPrefabPath) != null);
+        }
+
+        private bool AreAllEntriesImportedAndLoadable()
+        {
+            return avatarEntries.All(entry => entry.hasImportedModifiedFbx) && CanLoadImportedAssets();
         }
 
         private void MoveToMeshSelection()
         {
-            LoadMeshSelections();
+            foreach (AvatarEntry entry in avatarEntries)
+            {
+                LoadMeshSelections(entry);
+                entry.isMeshReviewComplete = false;
+                entry.reviewResultLabel = string.Empty;
+            }
+
+            selectedEntryIndex = Mathf.Clamp(FindNextIncompleteEntryIndex(0), 0, avatarEntries.Count - 1);
             currentStep = WizardStep.SelectMeshes;
-            statusMessage = meshSelections.Count > 0
-                ? "Modified FBX imported. Select the mapped skinned mesh renderers that should replace meshes on the copied prefab."
-                : "Modified FBX imported, but no skinned mesh renderer mappings were found.";
+            statusMessage = "All modified FBXs imported. Review each avatar entry and apply the mesh replacements you want.";
             Repaint();
         }
 
-        private void LoadMeshSelections()
+        private void LoadMeshSelections(AvatarEntry entry)
         {
-            meshSelections = new List<MeshSelectionState>();
+            entry.meshSelections = new List<MeshSelectionState>();
 
-            GameObject fbxRoot = AssetDatabase.LoadAssetAtPath<GameObject>(copiedFbxPath);
-            GameObject prefabRoot = AssetDatabase.LoadAssetAtPath<GameObject>(copiedPrefabPath);
+            GameObject fbxRoot = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedFbxPath);
+            GameObject prefabRoot = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedPrefabPath);
 
             if (fbxRoot == null)
             {
-                Debug.LogWarning($"[AvatarSetupWizard] Could not load FBX asset at '{copiedFbxPath}'.");
+                Debug.LogWarning($"[AvatarSetupWizard] Could not load FBX asset at '{entry.copiedFbxPath}'.");
                 return;
             }
 
             if (prefabRoot == null)
             {
-                Debug.LogWarning($"[AvatarSetupWizard] Could not load prefab asset at '{copiedPrefabPath}'.");
+                Debug.LogWarning($"[AvatarSetupWizard] Could not load prefab asset at '{entry.copiedPrefabPath}'.");
                 return;
             }
 
-            // Collect all Mesh sub-assets from the FBX file.
-            // In Unity 2022.3, sharedMesh on SkinnedMeshRenderers loaded via LoadAssetAtPath<GameObject>
-            // can be null, so we load the meshes directly as sub-assets and match by name.
-            Dictionary<string, Mesh> fbxMeshSubAssets = LoadMeshSubAssets(copiedFbxPath);
-            Debug.Log($"[AvatarSetupWizard] Found {fbxMeshSubAssets.Count} mesh sub-asset(s) in FBX '{copiedFbxPath}': [{string.Join(", ", fbxMeshSubAssets.Keys)}]");
-
-            // Collect SkinnedMeshRenderers from the FBX hierarchy (without filtering by sharedMesh).
+            Dictionary<string, Mesh> fbxMeshSubAssets = LoadMeshSubAssets(entry.copiedFbxPath);
             List<RendererInfo> fbxRenderers = GetRendererInfos(fbxRoot, fbxMeshSubAssets);
-            Debug.Log($"[AvatarSetupWizard] Found {fbxRenderers.Count} SkinnedMeshRenderer(s) in FBX hierarchy.");
-
-            // Collect SkinnedMeshRenderers from the prefab hierarchy.
             List<RendererInfo> prefabRenderers = GetRendererInfos(prefabRoot, meshSubAssets: null);
-            Debug.Log($"[AvatarSetupWizard] Found {prefabRenderers.Count} SkinnedMeshRenderer(s) in prefab hierarchy.");
+            var usedPrefabPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            HashSet<string> usedPrefabPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            meshSelections = fbxRenderers
+            entry.meshSelections = fbxRenderers
                 .Select(fbxRenderer => CreateMeshSelectionState(fbxRenderer, prefabRenderers, usedPrefabPaths))
                 .OrderBy(selection => selection.fbxRelativePath, StringComparer.OrdinalIgnoreCase)
                 .ToList();
-
-            Debug.Log($"[AvatarSetupWizard] Created {meshSelections.Count} mesh selection(s). " +
-                      $"Matched: {meshSelections.Count(s => s.hasMatch)}, Unmatched: {meshSelections.Count(s => !s.hasMatch)}.");
         }
 
-        private void ApplySelectedMeshesToPrefab()
+        private void ApplySelectedMeshesToPrefab(AvatarEntry entry)
         {
-            List<MeshSelectionState> selectedMappings = meshSelections
+            List<MeshSelectionState> selectedMappings = entry.meshSelections
                 .Where(selection => selection.selected && selection.hasMatch)
                 .ToList();
 
@@ -474,19 +887,17 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
-            // Load mesh sub-assets from the FBX so we can reliably find each Mesh by name.
-            Dictionary<string, Mesh> fbxMeshSubAssets = LoadMeshSubAssets(copiedFbxPath);
+            Dictionary<string, Mesh> fbxMeshSubAssets = LoadMeshSubAssets(entry.copiedFbxPath);
             if (fbxMeshSubAssets.Count == 0)
             {
                 EditorUtility.DisplayDialog("FBX Missing Meshes", "No mesh sub-assets could be loaded from the duplicated FBX.", "OK");
                 return;
             }
 
-            GameObject prefabRoot = PrefabUtility.LoadPrefabContents(copiedPrefabPath);
+            GameObject prefabRoot = PrefabUtility.LoadPrefabContents(entry.copiedPrefabPath);
 
             try
             {
-                // Build a lookup of prefab SkinnedMeshRenderers keyed by relative path (excluding root).
                 Dictionary<string, SkinnedMeshRenderer> prefabRendererLookup = prefabRoot
                     .GetComponentsInChildren<SkinnedMeshRenderer>(true)
                     .ToDictionary(
@@ -500,13 +911,12 @@ namespace Pawlygon.UnityTools.Editor
                 {
                     if (string.IsNullOrEmpty(mapping.fbxMeshName))
                     {
-                        Debug.LogWarning($"[AvatarSetupWizard] Skipping '{mapping.fbxObjectName}': no FBX mesh name recorded.");
                         continue;
                     }
 
                     if (!fbxMeshSubAssets.TryGetValue(mapping.fbxMeshName, out Mesh fbxMesh))
                     {
-                        Debug.LogWarning($"[AvatarSetupWizard] Mesh sub-asset '{mapping.fbxMeshName}' not found in FBX '{copiedFbxPath}'.");
+                        Debug.LogWarning($"[AvatarSetupWizard] Mesh sub-asset '{mapping.fbxMeshName}' not found in FBX '{entry.copiedFbxPath}'.");
                         continue;
                     }
 
@@ -518,16 +928,13 @@ namespace Pawlygon.UnityTools.Editor
 
                     prefabRenderer.sharedMesh = fbxMesh;
                     replacedCount++;
-                    Debug.Log($"[AvatarSetupWizard] Replaced mesh on '{mapping.prefabRelativePath}' with '{mapping.fbxMeshName}'.");
                 }
 
-                PrefabUtility.SaveAsPrefabAsset(prefabRoot, copiedPrefabPath);
-
-                currentStep = WizardStep.Complete;
+                PrefabUtility.SaveAsPrefabAsset(prefabRoot, entry.copiedPrefabPath);
+                CompleteEntryReview(entry, "Applied");
                 statusMessage = replacedCount > 0
-                    ? $"Updated {replacedCount} mesh reference(s) on the copied prefab."
-                    : "No mapped skinned mesh renderers were updated on the copied prefab.";
-                EditorUtility.DisplayDialog("Avatar Setup Complete", statusMessage, "OK");
+                    ? $"Updated {replacedCount} mesh reference(s) on '{GetEntryDisplayName(entry)}'."
+                    : $"No mapped skinned mesh renderers were updated on '{GetEntryDisplayName(entry)}'.";
             }
             finally
             {
@@ -535,18 +942,255 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
-        private static bool CreateWorkingScene(string sceneAssetPath)
+        private void SkipEntryReview(AvatarEntry entry)
         {
-            var newScene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+            if (!EditorUtility.DisplayDialog("Skip Avatar Review", $"Skip mesh replacement for '{GetEntryDisplayName(entry)}'?", "Skip", "Cancel"))
+            {
+                return;
+            }
 
-            try
+            CompleteEntryReview(entry, "Skipped");
+            statusMessage = $"Skipped mesh replacement for '{GetEntryDisplayName(entry)}'.";
+        }
+
+        private void CompleteEntryReview(AvatarEntry entry, string reviewResultLabel)
+        {
+            entry.isMeshReviewComplete = true;
+            entry.reviewResultLabel = reviewResultLabel;
+
+            if (avatarEntries.All(item => item.isMeshReviewComplete))
             {
-                return EditorSceneManager.SaveScene(newScene, sceneAssetPath);
+                currentStep = WizardStep.Complete;
+                statusMessage = "All avatar entries were reviewed.";
+                return;
             }
-            finally
+
+            int nextIndex = FindNextIncompleteEntryIndex(selectedEntryIndex + 1);
+            if (nextIndex < 0)
             {
-                EditorSceneManager.CloseScene(newScene, true);
+                nextIndex = FindNextIncompleteEntryIndex(0);
             }
+
+            if (nextIndex >= 0)
+            {
+                selectedEntryIndex = nextIndex;
+            }
+        }
+
+        private int FindNextIncompleteEntryIndex(int startIndex)
+        {
+            for (int i = startIndex; i < avatarEntries.Count; i++)
+            {
+                if (!avatarEntries[i].isMeshReviewComplete)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private AvatarEntry GetSelectedEntry()
+        {
+            if (avatarEntries.Count == 0)
+            {
+                return null;
+            }
+
+            selectedEntryIndex = Mathf.Clamp(selectedEntryIndex, 0, avatarEntries.Count - 1);
+            return avatarEntries[selectedEntryIndex];
+        }
+
+        private void DrawEntrySelectionToolbar()
+        {
+            string[] labels = avatarEntries
+                .Select(entry =>
+                {
+                    string prefix = entry.isMeshReviewComplete ? $"[{entry.reviewResultLabel}] " : string.Empty;
+                    return prefix + GetEntryDisplayName(entry);
+                })
+                .ToArray();
+
+            selectedEntryIndex = GUILayout.Toolbar(Mathf.Clamp(selectedEntryIndex, 0, labels.Length - 1), labels);
+        }
+
+        private void DrawImportStatusSummary()
+        {
+            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 8, 8) }))
+            {
+                foreach (AvatarEntry entry in avatarEntries)
+                {
+                    using (new EditorGUILayout.HorizontalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) }))
+                    {
+                        GUIContent statusIcon = entry.hasImportedModifiedFbx
+                            ? EditorGUIUtility.IconContent("TestPassed")
+                            : EditorGUIUtility.IconContent("console.warnicon.sml");
+
+                        GUILayout.Label(statusIcon, GUILayout.Width(20f), GUILayout.Height(18f));
+
+                        using (new EditorGUILayout.VerticalScope())
+                        {
+                            EditorGUILayout.LabelField(GetEntryDisplayName(entry), EditorStyles.boldLabel);
+                            EditorGUILayout.LabelField(entry.hasImportedModifiedFbx ? "Updated" : "Waiting for updated FBX", richMiniLabelStyle);
+                            if (!string.IsNullOrEmpty(entry.copiedFbxPath))
+                            {
+                                EditorGUILayout.LabelField(entry.copiedFbxPath, richMiniLabelStyle);
+                            }
+                        }
+                    }
+
+                    EditorGUILayout.Space(3f);
+                }
+            }
+        }
+
+        private void DrawMeshReviewSummary(AvatarEntry entry)
+        {
+            int matchedCount = entry.meshSelections.Count(selection => selection.hasMatch);
+            int selectedCount = entry.meshSelections.Count(selection => selection.selected && selection.hasMatch);
+
+            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 8, 8) }))
+            {
+                EditorGUILayout.LabelField(GetEntryDisplayName(entry), EditorStyles.boldLabel);
+                EditorGUILayout.LabelField($"{matchedCount} matched renderer{(matchedCount == 1 ? string.Empty : "s")}, {selectedCount} selected", richMiniLabelStyle);
+                DrawReadOnlyPathField("Modified FBX", entry.copiedFbxPath);
+                DrawReadOnlyPathField("Target Prefab", entry.copiedPrefabPath);
+            }
+        }
+
+        private void DrawPathSummary(AvatarEntry entry, bool includeAvatarRoot, bool includeDiffGenerator)
+        {
+            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 8, 8) }))
+            {
+                if (includeAvatarRoot)
+                {
+                    DrawReadOnlyPathField("Avatar Root", entry.avatarRootPath);
+                }
+
+                if (!string.IsNullOrEmpty(entry.copiedFbxPath))
+                {
+                    DrawReadOnlyPathField("Modified FBX", entry.copiedFbxPath);
+                }
+
+                if (!string.IsNullOrEmpty(entry.copiedPrefabPath))
+                {
+                    DrawReadOnlyPathField("Target Prefab", entry.copiedPrefabPath);
+                }
+
+                if (!string.IsNullOrEmpty(entry.createdScenePath))
+                {
+                    DrawReadOnlyPathField("Working Scene", entry.createdScenePath);
+                }
+
+                if (includeDiffGenerator && !string.IsNullOrEmpty(entry.diffGeneratorAssetPath))
+                {
+                    DrawReadOnlyPathField("Diff Generator", entry.diffGeneratorAssetPath);
+                }
+            }
+        }
+
+        private void DrawMeshSelectionToolbar(AvatarEntry entry)
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("Select All", GUILayout.Width(90f)))
+                {
+                    SetMeshSelectionState(entry, true);
+                }
+
+                if (GUILayout.Button("Deselect All", GUILayout.Width(90f)))
+                {
+                    SetMeshSelectionState(entry, false);
+                }
+
+                GUILayout.FlexibleSpace();
+                GUILayout.Label($"{entry.meshSelections.Count(selection => selection.selected)} selected", EditorStyles.miniBoldLabel);
+            }
+        }
+
+        private void DrawMeshSelectionRow(MeshSelectionState meshSelection)
+        {
+            Color originalColor = GUI.backgroundColor;
+            GUI.backgroundColor = meshSelection.hasMatch ? originalColor : new Color(1f, 0.9f, 0.7f, 0.5f);
+
+            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) }))
+            {
+                GUI.backgroundColor = originalColor;
+
+                using (new EditorGUI.DisabledScope(!meshSelection.hasMatch))
+                {
+                    string meshLabel = string.IsNullOrEmpty(meshSelection.fbxMeshName)
+                        ? meshSelection.fbxObjectName
+                        : $"{meshSelection.fbxObjectName} ({meshSelection.fbxMeshName})";
+                    meshSelection.selected = EditorGUILayout.ToggleLeft(meshLabel, meshSelection.selected, EditorStyles.boldLabel);
+                }
+
+                EditorGUILayout.LabelField($"FBX: {meshSelection.fbxRelativePath}", richMiniLabelStyle);
+
+                GUIContent statusIcon = meshSelection.hasMatch
+                    ? EditorGUIUtility.IconContent("TestPassed")
+                    : EditorGUIUtility.IconContent("console.warnicon.sml");
+
+                string matchText = meshSelection.hasMatch
+                    ? $"<b>Prefab:</b> {meshSelection.prefabRelativePath} ({meshSelection.prefabMeshName}) [{meshSelection.matchReason}]"
+                    : "<b>Prefab:</b> <color=#c27725>No matching skinned mesh renderer found</color>";
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.Label(statusIcon, GUILayout.Width(18f), GUILayout.Height(16f));
+                    EditorGUILayout.LabelField(matchText, richMiniLabelStyle);
+                }
+            }
+
+            EditorGUILayout.Space(2f);
+        }
+
+        private static void SetMeshSelectionState(AvatarEntry entry, bool selected)
+        {
+            foreach (MeshSelectionState meshSelection in entry.meshSelections)
+            {
+                if (meshSelection.hasMatch)
+                {
+                    meshSelection.selected = selected;
+                }
+            }
+        }
+
+        private static string GetEntryDisplayName(AvatarEntry entry)
+        {
+            if (entry.sourceFbx != null)
+            {
+                return entry.sourceFbx.name;
+            }
+
+            if (!string.IsNullOrWhiteSpace(entry.avatarFolderName))
+            {
+                return entry.avatarFolderName;
+            }
+
+            return "Avatar";
+        }
+
+        private static string GetCopiedFbxFileName(string sourceFbxPath)
+        {
+            return $"{Path.GetFileNameWithoutExtension(sourceFbxPath)} FT{Path.GetExtension(sourceFbxPath)}";
+        }
+
+        private static bool HasDuplicateSharedTargetNames(Func<string, string> pathSelector, IEnumerable<GameObject> assets)
+        {
+            return assets
+                .Where(asset => asset != null)
+                .Select(asset => pathSelector(AssetDatabase.GetAssetPath(asset)))
+                .Where(name => !string.IsNullOrEmpty(name))
+                .GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .Any(group => group.Count() > 1);
+        }
+
+        private static Vector3 GetGridPosition(int index)
+        {
+            int column = index % SharedSceneGridColumns;
+            int row = index / SharedSceneGridColumns;
+            return new Vector3(column * SharedSceneGridSpacingX, 0f, row * SharedSceneGridSpacingZ);
         }
 
         private static void EnsureFolderExists(string folderPath)
@@ -595,19 +1239,13 @@ namespace Pawlygon.UnityTools.Editor
             return File.Exists(absolutePath) ? File.GetLastWriteTimeUtc(absolutePath).Ticks : 0L;
         }
 
-        /// <summary>
-        /// Loads all Mesh sub-assets from an FBX file. This is the reliable way to get meshes
-        /// from model assets in Unity 2022.3, since sharedMesh on SkinnedMeshRenderers obtained
-        /// via LoadAssetAtPath&lt;GameObject&gt; can be null.
-        /// </summary>
         private static Dictionary<string, Mesh> LoadMeshSubAssets(string fbxAssetPath)
         {
             var result = new Dictionary<string, Mesh>(StringComparer.OrdinalIgnoreCase);
-
             UnityEngine.Object[] allSubAssets = AssetDatabase.LoadAllAssetsAtPath(fbxAssetPath);
+
             if (allSubAssets == null || allSubAssets.Length == 0)
             {
-                Debug.LogWarning($"[AvatarSetupWizard] LoadAllAssetsAtPath returned no assets for '{fbxAssetPath}'.");
                 return result;
             }
 
@@ -622,32 +1260,20 @@ namespace Pawlygon.UnityTools.Editor
             return result;
         }
 
-        /// <summary>
-        /// Collects SkinnedMeshRenderer info from a root GameObject hierarchy.
-        /// Does NOT filter by sharedMesh != null. Instead, if meshSubAssets is provided,
-        /// tries to resolve the mesh name from the sub-asset dictionary by matching the
-        /// GameObject name to mesh names (common Unity FBX convention).
-        /// </summary>
         private static List<RendererInfo> GetRendererInfos(GameObject root, Dictionary<string, Mesh> meshSubAssets)
         {
             var results = new List<RendererInfo>();
-
             SkinnedMeshRenderer[] renderers = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
-            Debug.Log($"[AvatarSetupWizard] GetRendererInfos: root='{root.name}', " +
-                      $"GetComponentsInChildren found {renderers.Length} SkinnedMeshRenderer(s).");
 
             foreach (SkinnedMeshRenderer renderer in renderers)
             {
                 if (renderer == null)
+                {
                     continue;
+                }
 
                 string objectName = renderer.gameObject.name;
                 string relativePath = GetRelativeTransformPath(renderer.transform);
-
-                // Determine the mesh name. Priority:
-                // 1. sharedMesh.name (if available)
-                // 2. Match from meshSubAssets by GameObject name
-                // 3. Empty string (no mesh found)
                 string meshName = string.Empty;
 
                 if (renderer.sharedMesh != null)
@@ -656,14 +1282,12 @@ namespace Pawlygon.UnityTools.Editor
                 }
                 else if (meshSubAssets != null)
                 {
-                    // Try exact match by GO name first, then case-insensitive search.
                     if (meshSubAssets.TryGetValue(objectName, out Mesh _))
                     {
                         meshName = objectName;
                     }
                     else
                     {
-                        // Try to find a mesh whose name contains the GO name or vice versa.
                         string found = meshSubAssets.Keys.FirstOrDefault(
                             key => key.IndexOf(objectName, StringComparison.OrdinalIgnoreCase) >= 0 ||
                                    objectName.IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0);
@@ -673,10 +1297,6 @@ namespace Pawlygon.UnityTools.Editor
                         }
                     }
                 }
-
-                Debug.Log($"[AvatarSetupWizard]   SMR '{objectName}' at '{relativePath}' => " +
-                          $"sharedMesh={(renderer.sharedMesh != null ? renderer.sharedMesh.name : "null")}, " +
-                          $"resolvedMeshName='{meshName}'");
 
                 results.Add(new RendererInfo
                 {
@@ -690,10 +1310,7 @@ namespace Pawlygon.UnityTools.Editor
             return results;
         }
 
-        private static MeshSelectionState CreateMeshSelectionState(
-            RendererInfo fbxRenderer,
-            List<RendererInfo> prefabRenderers,
-            ISet<string> usedPrefabPaths)
+        private static MeshSelectionState CreateMeshSelectionState(RendererInfo fbxRenderer, List<RendererInfo> prefabRenderers, ISet<string> usedPrefabPaths)
         {
             RendererInfo matchedRenderer = FindBestRendererMatch(fbxRenderer, prefabRenderers, usedPrefabPaths, out string matchReason);
 
@@ -716,13 +1333,8 @@ namespace Pawlygon.UnityTools.Editor
             };
         }
 
-        private static RendererInfo FindBestRendererMatch(
-            RendererInfo fbxRenderer,
-            List<RendererInfo> prefabRenderers,
-            ISet<string> usedPrefabPaths,
-            out string matchReason)
+        private static RendererInfo FindBestRendererMatch(RendererInfo fbxRenderer, List<RendererInfo> prefabRenderers, ISet<string> usedPrefabPaths, out string matchReason)
         {
-            // 1. Match by relative path (strongest match).
             RendererInfo relativePathMatch = prefabRenderers.FirstOrDefault(renderer =>
                 !usedPrefabPaths.Contains(renderer.RelativePath) &&
                 string.Equals(renderer.RelativePath, fbxRenderer.RelativePath, StringComparison.OrdinalIgnoreCase));
@@ -733,7 +1345,6 @@ namespace Pawlygon.UnityTools.Editor
                 return relativePathMatch;
             }
 
-            // 2. Match by GameObject name.
             RendererInfo objectNameMatch = prefabRenderers.FirstOrDefault(renderer =>
                 !usedPrefabPaths.Contains(renderer.RelativePath) &&
                 string.Equals(renderer.ObjectName, fbxRenderer.ObjectName, StringComparison.OrdinalIgnoreCase));
@@ -744,7 +1355,6 @@ namespace Pawlygon.UnityTools.Editor
                 return objectNameMatch;
             }
 
-            // 3. Match by mesh name (fallback).
             if (!string.IsNullOrEmpty(fbxRenderer.MeshName))
             {
                 RendererInfo meshNameMatch = prefabRenderers.FirstOrDefault(renderer =>
@@ -763,23 +1373,17 @@ namespace Pawlygon.UnityTools.Editor
             return null;
         }
 
-        /// <summary>
-        /// Returns the relative transform path (excluding the root object name).
-        /// For example, if the hierarchy is Root/Armature/Body, this returns "Armature/Body".
-        /// If the transform IS the root, returns its own name.
-        /// </summary>
         private static string GetRelativeTransformPath(Transform transform)
         {
-            List<string> names = new List<string>();
-
+            var names = new List<string>();
             Transform current = transform;
+
             while (current != null && current.parent != null)
             {
                 names.Add(current.name);
                 current = current.parent;
             }
 
-            // If this IS the root (no parent), return its own name.
             if (names.Count == 0)
             {
                 return transform.name;
@@ -789,7 +1393,7 @@ namespace Pawlygon.UnityTools.Editor
             return string.Join("/", names);
         }
 
-        private void DrawReadOnlyPathField(string label, string value)
+        private static void DrawReadOnlyPathField(string label, string value)
         {
             using (new EditorGUI.DisabledScope(true))
             {
@@ -808,11 +1412,6 @@ namespace Pawlygon.UnityTools.Editor
             {
                 padding = new RectOffset(12, 12, 12, 12),
                 margin = new RectOffset(0, 0, 0, 0)
-            };
-
-            sectionHeaderStyle = new GUIStyle(EditorStyles.boldLabel)
-            {
-                fontSize = 13
             };
 
             titleStyle = new GUIStyle(EditorStyles.boldLabel)
@@ -875,11 +1474,14 @@ namespace Pawlygon.UnityTools.Editor
         {
             bool isPast = currentStep > step;
             bool isCurrent = currentStep == step;
-
             GUIStyle style = new GUIStyle(isCurrent ? currentStepStyle : stepStyle);
-            if (isPast) style.normal.textColor = new Color(0.3f, 0.7f, 0.3f); // Green text for past steps
 
-            GUIContent content = isPast 
+            if (isPast)
+            {
+                style.normal.textColor = new Color(0.3f, 0.7f, 0.3f);
+            }
+
+            GUIContent content = isPast
                 ? new GUIContent($" {label}", EditorGUIUtility.IconContent("TestPassed").image)
                 : new GUIContent(label);
 
@@ -913,7 +1515,7 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
-        private bool DrawPrimaryButton(string text, float height = 34f)
+        private static bool DrawPrimaryButton(string text, float height = 34f)
         {
             Color oldColor = GUI.backgroundColor;
             GUI.backgroundColor = EditorGUIUtility.isProSkin ? new Color(0.2f, 0.6f, 1f) : new Color(0.1f, 0.4f, 0.8f);
@@ -922,123 +1524,31 @@ namespace Pawlygon.UnityTools.Editor
             return clicked;
         }
 
-        private void DrawPathSummary(bool includeAvatarRoot = false)
+        private void EnsureAtLeastOneEntry()
         {
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 8, 8) }))
+            if (avatarEntries == null)
             {
-                if (includeAvatarRoot)
-                {
-                    DrawReadOnlyPathField("Avatar Root", avatarRootPath);
-                }
-
-                if (!string.IsNullOrEmpty(copiedFbxPath))
-                {
-                    DrawReadOnlyPathField("Modified FBX", copiedFbxPath);
-                }
-
-                if (!string.IsNullOrEmpty(copiedPrefabPath))
-                {
-                    DrawReadOnlyPathField("Target Prefab", copiedPrefabPath);
-                }
-
-                if (!string.IsNullOrEmpty(createdScenePath))
-                {
-                    DrawReadOnlyPathField("Working Scene", createdScenePath);
-                }
-            }
-        }
-
-        private void DrawMeshSelectionToolbar()
-        {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                if (GUILayout.Button("Select All", GUILayout.Width(90f)))
-                {
-                    SetMeshSelectionState(true);
-                }
-
-                if (GUILayout.Button("Deselect All", GUILayout.Width(90f)))
-                {
-                    SetMeshSelectionState(false);
-                }
-
-                GUILayout.FlexibleSpace();
-                GUILayout.Label($"{meshSelections.Count(selection => selection.selected)} selected", EditorStyles.miniBoldLabel);
-            }
-        }
-
-        private void DrawMeshSelectionRow(MeshSelectionState meshSelection)
-        {
-            Color originalColor = GUI.backgroundColor;
-            GUI.backgroundColor = meshSelection.hasMatch ? originalColor : new Color(1f, 0.9f, 0.7f, 0.5f);
-            
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) }))
-            {
-                GUI.backgroundColor = originalColor;
-
-                using (new EditorGUI.DisabledScope(!meshSelection.hasMatch))
-                {
-                    string meshLabel = string.IsNullOrEmpty(meshSelection.fbxMeshName)
-                        ? meshSelection.fbxObjectName
-                        : $"{meshSelection.fbxObjectName} ({meshSelection.fbxMeshName})";
-                    meshSelection.selected = EditorGUILayout.ToggleLeft(meshLabel, meshSelection.selected, EditorStyles.boldLabel);
-                }
-
-                EditorGUILayout.LabelField($"FBX: {meshSelection.fbxRelativePath}", richMiniLabelStyle);
-
-                GUIContent statusIcon = meshSelection.hasMatch
-                    ? EditorGUIUtility.IconContent("TestPassed")
-                    : EditorGUIUtility.IconContent("console.warnicon.sml");
-
-                string matchText = meshSelection.hasMatch
-                    ? $"<b>Prefab:</b> {meshSelection.prefabRelativePath} ({meshSelection.prefabMeshName}) [{meshSelection.matchReason}]"
-                    : "<b>Prefab:</b> <color=#c27725>No matching skinned mesh renderer found</color>";
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.Label(statusIcon, GUILayout.Width(18f), GUILayout.Height(16f));
-                    EditorGUILayout.LabelField(matchText, richMiniLabelStyle);
-                }
+                avatarEntries = new List<AvatarEntry>();
             }
 
-            EditorGUILayout.Space(2f);
-        }
-
-        private void SetMeshSelectionState(bool selected)
-        {
-            foreach (MeshSelectionState meshSelection in meshSelections)
+            if (avatarEntries.Count == 0)
             {
-                if (meshSelection.hasMatch)
-                {
-                    meshSelection.selected = selected;
-                }
+                avatarEntries.Add(new AvatarEntry());
             }
         }
 
         private void ResetWizard()
         {
-            sourceFbx = null;
-            sourcePrefab = null;
-            avatarName = DefaultAvatarName;
-            copiedFbxPath = string.Empty;
-            copiedPrefabPath = string.Empty;
-            createdScenePath = string.Empty;
-            avatarRootPath = string.Empty;
-            watchedFbxWriteTimeUtcTicks = 0L;
-            meshSelections.Clear();
+            mainFolderName = DefaultMainFolderName;
+            useSeparateFolderPerAvatar = false;
+            sharedAvatarFolderName = DefaultAvatarName;
+            avatarEntries = new List<AvatarEntry> { new AvatarEntry() };
+            selectedEntryIndex = 0;
             statusMessage = string.Empty;
             EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
             pendingImportTransition = false;
             importLoadAttempts = 0;
             currentStep = WizardStep.Setup;
-        }
-
-        private class RendererInfo
-        {
-            public SkinnedMeshRenderer Renderer;
-            public string ObjectName;
-            public string RelativePath;
-            public string MeshName;
         }
     }
 }

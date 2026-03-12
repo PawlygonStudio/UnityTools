@@ -6,14 +6,14 @@ namespace Pawlygon.UnityTools.Editor
     [CustomEditor(typeof(FTDiffGenerator))]
     public class FTDiffGeneratorEditor : UnityEditor.Editor
     {
-        private SerializedProperty originalModelPrefabProperty;
-        private SerializedProperty modifiedModelPrefabProperty;
+        private SerializedProperty originalModelFbxProperty;
+        private SerializedProperty modifiedModelFbxProperty;
         private SerializedProperty outputDirectoryProperty;
 
         private void OnEnable()
         {
-            originalModelPrefabProperty = serializedObject.FindProperty("originalModelPrefab");
-            modifiedModelPrefabProperty = serializedObject.FindProperty("modifiedModelPrefab");
+            originalModelFbxProperty = serializedObject.FindProperty("originalModelFbx");
+            modifiedModelFbxProperty = serializedObject.FindProperty("modifiedModelFbx");
             outputDirectoryProperty = serializedObject.FindProperty("outputDirectory");
         }
 
@@ -30,17 +30,17 @@ namespace Pawlygon.UnityTools.Editor
             EditorGUILayout.Space(5);
 
             EditorGUILayout.HelpBox(
-                "Generate .hdiff patch files from the original and modified FBX-backed prefabs, then write them into the selected output folder.",
+                "Generate .hdiff patch files from the original and modified FBX models, then write them into the selected output folder.",
                 MessageType.Info);
 
             EditorGUILayout.Space();
 
             using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 10, 10) }))
             {
-                EditorGUILayout.LabelField(new GUIContent(" Prefab References", EditorGUIUtility.IconContent("Prefab Icon").image), EditorStyles.boldLabel);
+                EditorGUILayout.LabelField(new GUIContent(" FBX References", EditorGUIUtility.IconContent("Prefab Icon").image), EditorStyles.boldLabel);
                 EditorGUILayout.Space(2);
-                EditorGUILayout.PropertyField(originalModelPrefabProperty);
-                EditorGUILayout.PropertyField(modifiedModelPrefabProperty);
+                EditorGUILayout.PropertyField(originalModelFbxProperty);
+                EditorGUILayout.PropertyField(modifiedModelFbxProperty);
 
                 EditorGUILayout.Space(10);
 
@@ -86,14 +86,14 @@ namespace Pawlygon.UnityTools.Editor
         {
             var generator = (FTDiffGenerator)target;
 
-            if (generator.originalModelPrefab == null)
+            if (generator.originalModelFbx == null)
             {
-                return "Assign the original model prefab.";
+                return "Assign the original FBX model.";
             }
 
-            if (generator.modifiedModelPrefab == null)
+            if (generator.modifiedModelFbx == null)
             {
-                return "Assign the modified model prefab.";
+                return "Assign the modified FBX model.";
             }
 
             if (generator.outputDirectory == null)
@@ -101,24 +101,14 @@ namespace Pawlygon.UnityTools.Editor
                 return "Choose an output directory asset.";
             }
 
-            if (!IsPrefabAsset(generator.originalModelPrefab))
+            if (!IsFbxAsset(generator.originalModelFbx))
             {
-                return "The original model reference must point to a prefab asset.";
+                return "The original model reference must point to an FBX asset.";
             }
 
-            if (!IsPrefabAsset(generator.modifiedModelPrefab))
+            if (!IsFbxAsset(generator.modifiedModelFbx))
             {
-                return "The modified model reference must point to a prefab asset.";
-            }
-
-            if (!PrefabBacksToFbx(generator.originalModelPrefab))
-            {
-                return "The original model prefab must be linked to an FBX model.";
-            }
-
-            if (!PrefabBacksToFbx(generator.modifiedModelPrefab))
-            {
-                return "The modified model prefab must be linked to an FBX model.";
+                return "The modified model reference must point to an FBX asset.";
             }
 
             string outputPath = AssetDatabase.GetAssetPath(generator.outputDirectory);
@@ -130,21 +120,11 @@ namespace Pawlygon.UnityTools.Editor
             return string.Empty;
         }
 
-        private static bool IsPrefabAsset(GameObject prefab)
+        private static bool IsFbxAsset(GameObject model)
         {
-            return PrefabUtility.GetPrefabAssetType(prefab) != PrefabAssetType.NotAPrefab;
-        }
-
-        private static bool PrefabBacksToFbx(GameObject prefab)
-        {
-            GameObject source = PrefabUtility.GetCorrespondingObjectFromOriginalSource(prefab);
-            if (source == null)
-            {
-                return false;
-            }
-
-            string sourcePath = AssetDatabase.GetAssetPath(source);
-            return string.Equals(System.IO.Path.GetExtension(sourcePath), ".fbx", System.StringComparison.OrdinalIgnoreCase);
+            if (model == null) return false;
+            string path = AssetDatabase.GetAssetPath(model);
+            return string.Equals(System.IO.Path.GetExtension(path), ".fbx", System.StringComparison.OrdinalIgnoreCase);
         }
     }
 }

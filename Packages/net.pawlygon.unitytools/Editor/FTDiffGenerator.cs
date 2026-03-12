@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Serialization;
 using Debug = UnityEngine.Debug;
 
 namespace Pawlygon.UnityTools.Editor
@@ -10,9 +11,12 @@ namespace Pawlygon.UnityTools.Editor
     [CreateAssetMenu(fileName = "NewFTDiffGenerator", menuName = "Pawlygon/FaceTracking Diff Generator")]
     public class FTDiffGenerator : ScriptableObject
     {
-        [Header("Prefab References")]
-        public GameObject originalModelPrefab;
-        public GameObject modifiedModelPrefab;
+        [Header("FBX References")]
+        [FormerlySerializedAs("originalModelPrefab")]
+        public GameObject originalModelFbx;
+
+        [FormerlySerializedAs("modifiedModelPrefab")]
+        public GameObject modifiedModelFbx;
 
         [Header("Output Settings")]
         public DefaultAsset outputDirectory;
@@ -20,12 +24,12 @@ namespace Pawlygon.UnityTools.Editor
         [ContextMenu("Generate Diff Files")]
         public void GenerateDiffFiles()
         {
-            string originalFbxPath = GetFBXPathFromPrefab(originalModelPrefab);
-            string modifiedFbxPath = GetFBXPathFromPrefab(modifiedModelPrefab);
+            string originalFbxPath = GetFBXPath(originalModelFbx);
+            string modifiedFbxPath = GetFBXPath(modifiedModelFbx);
 
             if (string.IsNullOrEmpty(originalFbxPath) || string.IsNullOrEmpty(modifiedFbxPath))
             {
-                Debug.LogError("Failed to resolve FBX paths from the given prefabs. Make sure your prefabs reference FBX models.");
+                Debug.LogError("Failed to resolve FBX paths from the given models. Make sure your references are FBX models.");
                 return;
             }
 
@@ -118,25 +122,22 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
-        private string GetFBXPathFromPrefab(GameObject prefab)
+        private string GetFBXPath(GameObject model)
         {
-            if (prefab == null)
+            if (model == null)
             {
                 return null;
             }
 
-            string prefabPath = AssetDatabase.GetAssetPath(prefab);
-            if (string.IsNullOrEmpty(prefabPath))
+            string modelPath = AssetDatabase.GetAssetPath(model);
+            if (string.IsNullOrEmpty(modelPath))
             {
                 return null;
             }
-
-            GameObject rootModel = PrefabUtility.GetCorrespondingObjectFromOriginalSource(prefab);
-            string modelPath = AssetDatabase.GetAssetPath(rootModel);
 
             if (!string.Equals(Path.GetExtension(modelPath), ".fbx", StringComparison.OrdinalIgnoreCase))
             {
-                Debug.LogWarning("The selected prefab is not linked to an FBX file: " + modelPath);
+                Debug.LogWarning("The selected model is not an FBX file: " + modelPath);
                 return null;
             }
 

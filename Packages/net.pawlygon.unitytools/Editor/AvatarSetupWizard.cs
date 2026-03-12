@@ -23,6 +23,13 @@ namespace Pawlygon.UnityTools.Editor
         private const string VrcftPrefabGuid = "ca618adb2c3333545a1f36d72a73a3ef";
         private const string VrcftPackageListingUrl = "https://vcc.pawlygon.net/";
         private const string PatcherHubLatestReleaseApiUrl = "https://api.github.com/repos/PawlygonStudio/PatcherHub/releases/latest";
+        private const string PawlygonWebsiteUrl = "https://www.pawlygon.net";
+        private const string PawlygonTwitterUrl = "https://x.com/Pawlygon_studio";
+        private const string PawlygonYouTubeUrl = "https://www.youtube.com/@Pawlygon";
+        private const string PawlygonDiscordUrl = "https://discord.com/invite/pZew3JGpjb";
+        private const string PackageJsonPath = "Packages/net.pawlygon.unitytools/package.json";
+        private const int SourceFbxPickerControlId = 9001;
+        private const int SourcePrefabPickerControlId = 9002;
 
         [SerializeField] private string mainFolderName = DefaultMainFolderName;
         [SerializeField] private bool useSeparateFolderPerAvatar;
@@ -41,6 +48,7 @@ namespace Pawlygon.UnityTools.Editor
         private string patcherHubImportStatusMessage = string.Empty;
         private bool patcherHubImportedThisSession;
         private Texture2D pawlygonLogoTexture;
+        private string packageVersion = "1.0.0";
         private GUIStyle sectionStyle;
         private GUIStyle titleStyle;
         private GUIStyle stepStyle;
@@ -49,6 +57,8 @@ namespace Pawlygon.UnityTools.Editor
         private GUIStyle richMiniLabelStyle;
         private GUIStyle headerTitleStyle;
         private GUIStyle headerSubtitleStyle;
+        private GUIStyle footerStyle;
+        private GUIStyle footerLinkStyle;
 
         private enum WizardStep
         {
@@ -114,6 +124,12 @@ namespace Pawlygon.UnityTools.Editor
             public string browser_download_url;
         }
 
+        [Serializable]
+        private class PackageManifestInfo
+        {
+            public string version;
+        }
+
         [MenuItem("!Pawlygon/Avatar Setup Wizard")]
         public static void ShowWindow()
         {
@@ -126,6 +142,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             FBXImportDetector.FbxReimported += HandleFbxReimported;
             EnsureAtLeastOneEntry();
+            LoadPackageVersion();
         }
 
         private void OnDisable()
@@ -138,6 +155,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             EnsureStyles();
             EnsureAtLeastOneEntry();
+            HandleObjectPickerSelection();
 
             DrawHeader();
             DrawStepIndicator();
@@ -167,6 +185,9 @@ namespace Pawlygon.UnityTools.Editor
                 EditorGUILayout.Space();
                 EditorGUILayout.HelpBox(statusMessage, MessageType.Info);
             }
+
+            EditorGUILayout.Space(8f);
+            DrawFooter();
         }
 
         private void DrawSetupStep()
@@ -259,8 +280,8 @@ namespace Pawlygon.UnityTools.Editor
                     }
                 }
 
-                entry.sourceFbx = (GameObject)EditorGUILayout.ObjectField("Source FBX", entry.sourceFbx, typeof(GameObject), false);
-                entry.sourcePrefab = (GameObject)EditorGUILayout.ObjectField("Source Prefab", entry.sourcePrefab, typeof(GameObject), false);
+                entry.sourceFbx = DrawFilteredAssetField("Source FBX", entry.sourceFbx, "fbx", SourceFbxPickerControlId + index * 2);
+                entry.sourcePrefab = DrawFilteredAssetField("Source Prefab", entry.sourcePrefab, "prefab", SourcePrefabPickerControlId + index * 2);
 
                 if (useSeparateFolderPerAvatar)
                 {
@@ -1726,6 +1747,66 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
+        private GameObject DrawFilteredAssetField(string label, GameObject currentValue, string extension, int controlId)
+        {
+            Rect totalRect = EditorGUILayout.GetControlRect();
+            Rect fieldRect = EditorGUI.PrefixLabel(totalRect, new GUIContent(label));
+
+            Event currentEvent = Event.current;
+            if (currentEvent.type == EventType.MouseDown && fieldRect.Contains(currentEvent.mousePosition))
+            {
+                bool clickedPickerButton = currentEvent.mousePosition.x >= fieldRect.xMax - 19f;
+                if (clickedPickerButton)
+                {
+                    EditorGUIUtility.ShowObjectPicker<GameObject>(currentValue, false, $"glob:\"*.{extension}\"", controlId);
+                    currentEvent.Use();
+                }
+            }
+
+            return (GameObject)EditorGUI.ObjectField(fieldRect, GUIContent.none, currentValue, typeof(GameObject), false);
+        }
+
+        private void HandleObjectPickerSelection()
+        {
+            Event currentEvent = Event.current;
+            if (currentEvent.type != EventType.ExecuteCommand && currentEvent.type != EventType.ValidateCommand)
+            {
+                return;
+            }
+
+            if (currentEvent.commandName != "ObjectSelectorUpdated" && currentEvent.commandName != "ObjectSelectorClosed")
+            {
+                return;
+            }
+
+            int pickerControlId = EditorGUIUtility.GetObjectPickerControlID();
+            UnityEngine.Object pickedObject = EditorGUIUtility.GetObjectPickerObject();
+            if (pickedObject is not GameObject pickedGameObject)
+            {
+                return;
+            }
+
+            string assetPath = AssetDatabase.GetAssetPath(pickedGameObject);
+            string extension = Path.GetExtension(assetPath);
+
+            for (int i = 0; i < avatarEntries.Count; i++)
+            {
+                if (pickerControlId == SourceFbxPickerControlId + i * 2 && string.Equals(extension, ".fbx", StringComparison.OrdinalIgnoreCase))
+                {
+                    avatarEntries[i].sourceFbx = pickedGameObject;
+                    Repaint();
+                    return;
+                }
+
+                if (pickerControlId == SourcePrefabPickerControlId + i * 2 && string.Equals(extension, ".prefab", StringComparison.OrdinalIgnoreCase))
+                {
+                    avatarEntries[i].sourcePrefab = pickedGameObject;
+                    Repaint();
+                    return;
+                }
+            }
+        }
+
         private void EnsureStyles()
         {
             if (sectionStyle != null)
@@ -1760,6 +1841,22 @@ namespace Pawlygon.UnityTools.Editor
             headerSubtitleStyle.normal.textColor = EditorGUIUtility.isProSkin
                 ? new Color(0.72f, 0.72f, 0.72f)
                 : new Color(0.35f, 0.35f, 0.35f);
+
+            footerStyle = new GUIStyle(EditorStyles.label)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 11
+            };
+
+            footerLinkStyle = new GUIStyle(EditorStyles.label)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 11,
+                stretchWidth = false
+            };
+
+            footerLinkStyle.normal.textColor = new Color(0.39f, 0.67f, 1f);
+            footerLinkStyle.hover.textColor = new Color(0.58f, 0.79f, 1f);
 
             stepStyle = new GUIStyle(EditorStyles.miniLabel)
             {
@@ -1800,11 +1897,12 @@ namespace Pawlygon.UnityTools.Editor
 
                 float logoSize = 70f;
                 float spacing = 16f;
-                float totalWidth = logoSize + spacing + 360f;
+                float textBlockWidth = Mathf.Min(520f, Mathf.Max(300f, headerRect.width - 140f));
+                float totalWidth = logoSize + spacing + textBlockWidth;
                 float startX = headerRect.x + Mathf.Max(0f, (headerRect.width - totalWidth) * 0.5f);
                 float logoY = headerRect.y + (headerRect.height - logoSize) * 0.5f;
                 float textX = startX + logoSize + spacing;
-                float textWidth = Mathf.Max(220f, headerRect.xMax - textX - 20f);
+                float textWidth = textBlockWidth;
 
                 if (pawlygonLogoTexture != null)
                 {
@@ -1814,12 +1912,55 @@ namespace Pawlygon.UnityTools.Editor
                 EditorGUI.LabelField(new Rect(textX, headerRect.y + 18f, textWidth, 22f), "Pawlygon Avatar Setup Wizard", headerTitleStyle);
                 EditorGUI.LabelField(new Rect(textX, headerRect.y + 40f, textWidth, 36f), "Tool to duplicate avatars, prepare face tracking assets, and build ready-to-edit prefabs.", headerSubtitleStyle);
 
-                EditorGUILayout.Space(10f);
-                Rect separatorRect = EditorGUILayout.GetControlRect(false, 1f);
-                EditorGUI.DrawRect(separatorRect, EditorGUIUtility.isProSkin ? new Color(0.34f, 0.34f, 0.34f) : new Color(0.65f, 0.65f, 0.65f));
             }
 
             EditorGUILayout.Space(6f);
+        }
+
+        private void DrawFooter()
+        {
+            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(12, 12, 10, 10) }))
+            {
+                EditorGUILayout.LabelField($"Made with ❤ by Pawlygon Studio  •  v{packageVersion}", footerStyle);
+                EditorGUILayout.Space(6f);
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.FlexibleSpace();
+                    DrawFooterLink("Website", PawlygonWebsiteUrl);
+                    GUILayout.Space(28f);
+                    DrawFooterLink("X (Twitter)", PawlygonTwitterUrl);
+                    GUILayout.Space(28f);
+                    DrawFooterLink("YouTube", PawlygonYouTubeUrl);
+                    GUILayout.Space(28f);
+                    DrawFooterLink("Discord", PawlygonDiscordUrl);
+
+                    GUILayout.FlexibleSpace();
+                }
+            }
+        }
+
+        private void DrawFooterLink(string label, string url)
+        {
+            if (GUILayout.Button(label, footerLinkStyle))
+            {
+                Application.OpenURL(url);
+            }
+        }
+
+        private void LoadPackageVersion()
+        {
+            TextAsset packageJson = AssetDatabase.LoadAssetAtPath<TextAsset>(PackageJsonPath);
+            if (packageJson == null || string.IsNullOrWhiteSpace(packageJson.text))
+            {
+                return;
+            }
+
+            PackageManifestInfo manifestInfo = JsonUtility.FromJson<PackageManifestInfo>(packageJson.text);
+            if (!string.IsNullOrWhiteSpace(manifestInfo?.version))
+            {
+                packageVersion = manifestInfo.version;
+            }
         }
 
         private void DrawStepIndicator()

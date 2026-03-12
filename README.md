@@ -52,5 +52,34 @@ The generator creates:
 - one `.hdiff` file for the FBX itself
 - one `.hdiff` file for the FBX `.meta`
 
-The wizard creates these generator assets for you automatically as part of the avatar setup flow.
+## Requirements
+
+- Unity 2022.3 or later
+
+## Credits
+
+- [**Hash's EditDistributionTools**](https://github.com/HashEdits/EditDistributionTools) — Inspiration for distribution workflows using binary patching
+- [**hpatchz**](https://github.com/sisong/HDiffPatch) — High-performance binary diff/patch library by housisong
+- **tkya** — Countless hours of technical support to the community
+- **VRChat Community** — Feedback, testing, and feature requests
+
+*Thank you to everyone who helped make PatcherHub possible!*
+
+## License
+
+This project is licensed under [CC BY-NC-SA 4.0](LICENSE.md).
+
+HDiffPatch (`hdiff/hpatchz/`) is distributed under the [MIT License](hdiff/hpatchz/License.txt).
+
+## Links
+
+- [Website](https://www.pawlygon.net)
+- [Discord](https://discord.com/invite/pZew3JGpjb)
+- [YouTube](https://www.youtube.com/@Pawlygon)
+- [X (Twitter)](https://x.com/Pawlygon_studio)
+
+---
+
+*Made with ❤ by Pawlygon Studio*
+
 

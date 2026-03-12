@@ -63,7 +63,7 @@ The generator creates:
 - **tkya** — Countless hours of technical support to the community
 - **VRChat Community** — Feedback, testing, and feature requests
 
-*Thank you to everyone who helped make PatcherHub possible!*
+*Thank you to everyone who helped make Pawlygon Unity Tools possible!*
 
 ## License
 

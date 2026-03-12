@@ -1,8 +1,8 @@
 {
     "name": "net.pawlygon.unitytools",
-    "version": "1.0.1",
+    "version": "1.1.0",
     "displayName": "Pawlygon - Unity Tools",
-    "description": "Lazy scripts for lazy people.",
+    "description": "Pawlygon tools for Unity. A collection of tools and utilities for VRChat avatar creation and development.",
     "unity": "2022.3",
     "unityRelease": "6f1",
     "documentationUrl": "https://github.com/PawlygonStudio/UnityTools",
@@ -10,7 +10,11 @@
     "licensesUrl": "https://github.com/PawlygonStudio/UnityTools/blob/main/LICENSE",
     "keywords": [
       "vrchat",
-      "Pawlygon"
+      "Pawlygon",
+      "unity",
+      "tools",
+      "avatar",
+      "development"
     ],
     "author": {
       "name": "Choki",

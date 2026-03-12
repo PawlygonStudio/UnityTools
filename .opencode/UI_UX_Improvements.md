@@ -2,49 +2,76 @@
 
 ## Overview
 
-This document outlines the UI/UX enhancements made to the Pawlygon Unity Tools to deliver a premium, native-feeling Editor experience. The changes target two primary components: the `AvatarSetupWizard` and the `FTDiffGenerator`.
+This document tracks the current UI and workflow improvements in Pawlygon Unity Tools. The focus is on making the editor flow easier to understand during multi-avatar setup, FBX reimport tracking, mesh review, and patch generation.
 
-All improvements use Unity's native Immediate Mode GUI (IMGUI) but leverage advanced styling, layout groups, and rich text to dramatically elevate the visual quality and user flow without introducing external UI framework dependencies.
-
----
-
-## 1. AvatarSetupWizard Improvements
-
-The `AvatarSetupWizard.cs` Editor Window has been transformed from a basic vertical list into a guided, step-by-step wizard.
-
-### Visual Architecture
-*   **Premium Header:** Added a large (18px) bold title paired with a native `AvatarSelector` icon and a subtle 1px divider line to anchor the window.
-*   **Dynamic Step Indicator:** Replaced text-based steps with a horizontal "breadcrumb" tracker. 
-    *   Completed steps show in green with a native checkmark icon (`TestPassed`).
-    *   The current step is highlighted in a theme-aware accent color.
-    *   Steps are separated by native foldout chevron icons.
-*   **Boxed Sections:** Interactive elements are now wrapped in padded `EditorStyles.helpBox` containers, visually grouping related inputs and separating them from instructions.
-
-### User Flow & Validation
-*   **Inline Validation:** Removed blocking `EditorUtility.DisplayDialog` popups for missing fields. Replaced with real-time, inline warning `HelpBox` messages that appear dynamically below inputs.
-*   **Primary Action Buttons (CTAs):** Introduced a custom `DrawPrimaryButton` method. Key progression buttons (e.g., "Create Avatar Structure", "Continue") now have a larger hit area (34-36f height), bold text, and a blue tint that adapts to Unity Personal/Pro skins. Buttons are automatically disabled via `EditorGUI.DisabledScope` when validation fails.
-*   **Clearer Path Summaries:** Read-only paths (like "Modified FBX") are grouped into a dedicated summary box, making it obvious they are reference data, not editable fields.
-
-### Mesh Selection Step (Step 3) Upgrades
-*   **Bulk Actions:** Added "Select All" and "Deselect All" toolbar buttons above the mesh list.
-*   **Enhanced Row Status:** 
-    *   Successfully matched meshes display a green checkmark.
-    *   Unmatched meshes are highlighted with a custom subtle yellow-tinted background, a warning icon, and rich text (`<color=#c27725>`) to immediately draw the user's eye to missing mappings.
+The tools continue to use Unity IMGUI, but the interaction model now behaves more like a guided production workflow than a basic utility window.
 
 ---
 
-## 2. FTDiffGenerator Improvements
+## 1. AvatarSetupWizard improvements
 
-The `FTDiffGenerator` previously relied on a hidden context menu to trigger its core function. A new custom inspector (`FTDiffGeneratorEditor.cs`) was created to surface its functionality.
+The `AvatarSetupWizard` has evolved into a multi-step workflow with clear progression and stronger batch-processing support.
 
-### Custom Inspector UI
-*   **Explicit Action Button:** Added a prominent, premium "Generate Diff Files" button at the bottom of the inspector, completely removing the reliance on the obscure three-dot context menu.
-*   **Icon-Driven Sections:** Grouped the `originalModelPrefab` and `modifiedModelPrefab` fields under a section titled with a "Prefab Icon", and the output directory under a section with a "Folder Icon".
-*   **Real-time Validation:** If any prefab references are missing, or if they don't trace back to an FBX asset, the "Generate Diff Files" button disables itself, and a descriptive inline warning is shown, preventing runtime errors.
+### Visual structure
+
+- Added a branded header and step indicator so users can immediately see where they are in the process
+- Wrapped major areas in boxed sections to separate setup, review, and optional helper actions
+- Styled primary actions so the main progression buttons stand out from secondary actions
+
+### Setup experience
+
+- Supports multiple avatar entries in one session instead of forcing a single-avatar flow
+- Lets users switch between shared-folder and separate-folder output modes
+- Uses inline validation so missing or invalid FBX/prefab inputs are shown before the user starts the process
+- Surfaces created paths and generated assets as part of the later review screens
+
+### Import tracking experience
+
+- Replaced a blind wait state with a per-entry import progress summary
+- Shows which copied FBXs have updated and which are still waiting on reimport
+- Supports both automatic transition after all imports are ready and a manual continue/skip path when the user needs it
+
+### Mesh review experience
+
+- Review is scoped to one avatar entry at a time, which keeps larger batch jobs understandable
+- Entry selection uses a toolbar so users can move between avatars quickly
+- Added bulk selection actions for mesh mappings
+- Matched and unmatched mesh rows show clearer status feedback so missing mappings are easier to spot
+- Users can explicitly apply mesh replacements or skip an avatar entry without leaving the wizard in an ambiguous state
+
+### Prefab helper experience
+
+- Added a dedicated `Prefabs` step instead of mixing optional post-processing into the main mesh workflow
+- Separates `Pawlygon VRCFT` setup from `PatcherHub` import so both actions are discoverable and independently optional
+- Displays contextual status messages after helper actions complete or fail
+
+### Completion experience
+
+- The finish screen summarizes output for every processed avatar entry
+- Users can review generated paths and restart the workflow from the same window
 
 ---
 
-## Technical Approach
-*   **No External Dependencies:** All styling relies on `GUIStyle`, `GUI.backgroundColor`, and `EditorGUIUtility.IconContent`.
-*   **Theme Awareness:** Colors (like the primary button blue and divider lines) explicitly check `EditorGUIUtility.isProSkin` to ensure the interface looks perfect in both Unity Dark (Pro) and Light (Personal) modes.
-*   **Spacing Conventions:** Enforced usage of `EditorGUIUtility.standardVerticalSpacing` and custom `RectOffsets` to match Unity's internal padding guidelines, ensuring the tools don't feel cluttered or dense.
+## 2. FTDiffGenerator improvements
+
+`FTDiffGenerator` is no longer hidden behind a context-only workflow. A custom inspector now presents the generator as a clear editor tool.
+
+### Inspector UX
+
+- Added a visible `Generate Diff Files` button to the inspector
+- Grouped the references and output settings into clearer sections
+- Updated validation around the current data model, which now uses FBX references rather than prefab references
+- Disables the main action until both FBX references and the output directory are valid
+
+### Workflow alignment
+
+- The wizard creates diff generator assets automatically, so the inspector now acts as both a fallback and a direct manual tool
+- The inspector language matches the actual patch workflow: compare original FBX against modified FBX and write `.hdiff` output
+
+---
+
+## Technical notes
+
+- No external editor UI framework is required
+- Styling is built with `GUIStyle`, `EditorStyles`, icon content, and theme-aware colors
+- Layout choices favor readability during longer batch sessions, especially in import review and mesh selection

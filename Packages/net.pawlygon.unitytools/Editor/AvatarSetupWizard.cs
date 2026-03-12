@@ -5,6 +5,7 @@ using System.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.Networking;
 using UnityEngine.SceneManagement;
 
 namespace Pawlygon.UnityTools.Editor
@@ -19,6 +20,9 @@ namespace Pawlygon.UnityTools.Editor
         private const int SharedSceneGridColumns = 3;
         private const float SharedSceneGridSpacingX = 1.5f;
         private const float SharedSceneGridSpacingZ = 1.5f;
+        private const string VrcftPrefabGuid = "ca618adb2c3333545a1f36d72a73a3ef";
+        private const string VrcftPackageListingUrl = "https://vcc.pawlygon.net/";
+        private const string PatcherHubLatestReleaseApiUrl = "https://api.github.com/repos/PawlygonStudio/PatcherHub/releases/latest";
 
         [SerializeField] private string mainFolderName = DefaultMainFolderName;
         [SerializeField] private bool useSeparateFolderPerAvatar;
@@ -33,18 +37,25 @@ namespace Pawlygon.UnityTools.Editor
         private string statusMessage = string.Empty;
         private bool pendingImportTransition;
         private int importLoadAttempts;
+        private string vrcftSetupStatusMessage = string.Empty;
+        private string patcherHubImportStatusMessage = string.Empty;
+        private bool patcherHubImportedThisSession;
+        private Texture2D pawlygonLogoTexture;
         private GUIStyle sectionStyle;
         private GUIStyle titleStyle;
         private GUIStyle stepStyle;
         private GUIStyle currentStepStyle;
         private GUIStyle subLabelStyle;
         private GUIStyle richMiniLabelStyle;
+        private GUIStyle headerTitleStyle;
+        private GUIStyle headerSubtitleStyle;
 
         private enum WizardStep
         {
             Setup,
             WaitForImport,
             SelectMeshes,
+            Prefabs,
             Complete
         }
 
@@ -88,6 +99,21 @@ namespace Pawlygon.UnityTools.Editor
             public string MeshName;
         }
 
+        [Serializable]
+        private class GitHubReleaseInfo
+        {
+            public string tag_name;
+            public string name;
+            public GitHubReleaseAsset[] assets;
+        }
+
+        [Serializable]
+        private class GitHubReleaseAsset
+        {
+            public string name;
+            public string browser_download_url;
+        }
+
         [MenuItem("!Pawlygon/Avatar Setup Wizard")]
         public static void ShowWindow()
         {
@@ -127,6 +153,9 @@ namespace Pawlygon.UnityTools.Editor
                     break;
                 case WizardStep.SelectMeshes:
                     DrawMeshSelectionStep();
+                    break;
+                case WizardStep.Prefabs:
+                    DrawPrefabsStep();
                     break;
                 case WizardStep.Complete:
                     DrawCompleteStep();
@@ -259,15 +288,32 @@ namespace Pawlygon.UnityTools.Editor
                     DrawImportStatusSummary();
                     EditorGUILayout.Space(SectionSpacing);
 
-                    if (DrawPrimaryButton("Continue After Import", 34f))
+                    using (new EditorGUILayout.HorizontalScope())
                     {
-                        if (AreAllEntriesImportedAndLoadable())
+                        if (DrawPrimaryButton("Continue After Import", 34f))
                         {
-                            MoveToMeshSelection();
+                            if (AreAllEntriesImportedAndLoadable())
+                            {
+                                int generatedDiffCount = GenerateDiffFilesForEntries(importedOnly: true);
+                                MoveToMeshSelection(generatedDiffCount, skippedImportWait: false);
+                            }
+                            else
+                            {
+                                statusMessage = "Not every modified FBX is ready yet. Finish importing all copied FBXs, then continue.";
+                            }
                         }
-                        else
+
+                        if (GUILayout.Button("Skip Waiting", GUILayout.Height(34f)))
                         {
-                            statusMessage = "Not every modified FBX is ready yet. Finish importing all copied FBXs, then continue.";
+                            if (CanLoadImportedAssets())
+                            {
+                                int generatedDiffCount = GenerateDiffFilesForEntries(importedOnly: false);
+                                MoveToMeshSelection(generatedDiffCount, skippedImportWait: true);
+                            }
+                            else
+                            {
+                                statusMessage = "The copied FBX and prefab assets are not loadable yet. Wait for Unity to finish importing before skipping.";
+                            }
                         }
                     }
                 });
@@ -338,8 +384,8 @@ namespace Pawlygon.UnityTools.Editor
         private void DrawCompleteStep()
         {
             DrawSection(
-                "Complete",
-                "All avatar entries have been reviewed. The duplicated prefabs now point to the selected meshes from the modified FBXs.",
+                "Finish",
+                "Your avatar setup is ready. Optional prefab tools were available in the previous step.",
                 () =>
                 {
                     GUIContent successIcon = EditorGUIUtility.IconContent("TestPassed");
@@ -366,6 +412,91 @@ namespace Pawlygon.UnityTools.Editor
                         ResetWizard();
                     }
                 });
+        }
+
+        private void DrawPrefabsStep()
+        {
+            bool isVrcftAvailable = IsVrcftPackageAvailable(out string vrcftPrefabPath);
+
+            DrawSection(
+                "Prefabs",
+                "Optional tools for adding prefab helpers and distributing patch assets.",
+                () =>
+                {
+                    DrawVrcftPrefabBlock(isVrcftAvailable, vrcftPrefabPath);
+                    EditorGUILayout.Space(SectionSpacing);
+                    DrawPatcherHubBlock();
+                    EditorGUILayout.Space(SectionSpacing);
+
+                    if (DrawPrimaryButton("Finish", 34f))
+                    {
+                        currentStep = WizardStep.Complete;
+                        statusMessage = "Avatar setup completed.";
+                    }
+                });
+        }
+
+        private void DrawVrcftPrefabBlock(bool isVrcftAvailable, string vrcftPrefabPath)
+        {
+            using (new EditorGUILayout.VerticalScope(sectionStyle))
+            {
+                EditorGUILayout.LabelField("Pawlygon VRCFT", new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 });
+                EditorGUILayout.Space(2f);
+
+                if (isVrcftAvailable)
+                {
+                    EditorGUILayout.LabelField("Package detected. Add the VRCFT setup to each generated prefab.", subLabelStyle);
+                    EditorGUILayout.Space(8f);
+
+                    if (DrawPrimaryButton("Add VRCFT To Prefabs", 32f))
+                    {
+                        AddVrcftSetupToPrefabs(vrcftPrefabPath);
+                    }
+                }
+                else
+                {
+                    EditorGUILayout.HelpBox($"Install Pawlygon - VRC Facetracking from VCC at {VrcftPackageListingUrl}. Once installed, this wizard can auto-add the VRCFT setup for you.", MessageType.Info);
+
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        if (GUILayout.Button("Refresh", GUILayout.Height(28f)))
+                        {
+                            bool refreshedAvailability = IsVrcftPackageAvailable(out _);
+                            vrcftSetupStatusMessage = refreshedAvailability
+                                ? "Pawlygon VRCFT package detected. You can now add the setup to the generated prefabs."
+                                : "Pawlygon VRCFT package is still not available in this project.";
+                        }
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(vrcftSetupStatusMessage))
+                {
+                    EditorGUILayout.Space(6f);
+                    EditorGUILayout.HelpBox(vrcftSetupStatusMessage, MessageType.None);
+                }
+            }
+        }
+
+        private void DrawPatcherHubBlock()
+        {
+            using (new EditorGUILayout.VerticalScope(sectionStyle))
+            {
+                EditorGUILayout.LabelField("PatcherHub", new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 });
+                EditorGUILayout.Space(2f);
+                EditorGUILayout.LabelField("Import the latest PatcherHub unitypackage so end users can patch the face-tracking changes onto the avatar FBX model.", subLabelStyle);
+                EditorGUILayout.Space(8f);
+
+                if (DrawPrimaryButton("Import Latest PatcherHub", 32f))
+                {
+                    ImportLatestPatcherHub();
+                }
+
+                if (patcherHubImportedThisSession || !string.IsNullOrEmpty(patcherHubImportStatusMessage))
+                {
+                    EditorGUILayout.Space(6f);
+                    EditorGUILayout.HelpBox(patcherHubImportStatusMessage, MessageType.None);
+                }
+            }
         }
 
         private void CreateAvatarStructures()
@@ -418,6 +549,10 @@ namespace Pawlygon.UnityTools.Editor
                 entry.reviewResultLabel = string.Empty;
                 entry.meshSelections = new List<MeshSelectionState>();
             }
+
+            vrcftSetupStatusMessage = string.Empty;
+            patcherHubImportStatusMessage = string.Empty;
+            patcherHubImportedThisSession = false;
 
             selectedEntryIndex = 0;
             currentStep = WizardStep.WaitForImport;
@@ -565,7 +700,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private static bool CreateSceneAsset(string sceneAssetPath, IReadOnlyList<string> prefabAssetPaths)
         {
-            Scene newScene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+            Scene newScene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Additive);
 
             try
             {
@@ -614,6 +749,153 @@ namespace Pawlygon.UnityTools.Editor
             diffGenerator.outputDirectory = outputDirectory;
             AssetDatabase.CreateAsset(diffGenerator, assetPath);
             return true;
+        }
+
+        private bool IsVrcftPackageAvailable(out string prefabAssetPath)
+        {
+            prefabAssetPath = AssetDatabase.GUIDToAssetPath(VrcftPrefabGuid);
+            return !string.IsNullOrEmpty(prefabAssetPath) && AssetDatabase.LoadAssetAtPath<GameObject>(prefabAssetPath) != null;
+        }
+
+        private void AddVrcftSetupToPrefabs(string vrcftPrefabPath)
+        {
+            GameObject vrcftPrefabAsset = AssetDatabase.LoadAssetAtPath<GameObject>(vrcftPrefabPath);
+            if (vrcftPrefabAsset == null)
+            {
+                vrcftSetupStatusMessage = "The VRCFT prefab could not be loaded from the installed package.";
+                return;
+            }
+
+            int addedCount = 0;
+            int alreadyConfiguredCount = 0;
+
+            foreach (AvatarEntry entry in avatarEntries)
+            {
+                GameObject prefabRoot = PrefabUtility.LoadPrefabContents(entry.copiedPrefabPath);
+
+                try
+                {
+                    Transform container = prefabRoot.transform.Find("!Pawlygon - VRCFT");
+                    if (container == null)
+                    {
+                        var containerObject = new GameObject("!Pawlygon - VRCFT");
+                        containerObject.transform.SetParent(prefabRoot.transform, false);
+                        container = containerObject.transform;
+                    }
+
+                    bool hasExistingSetup = false;
+                    foreach (Transform child in container)
+                    {
+                        GameObject source = PrefabUtility.GetCorrespondingObjectFromSource(child.gameObject);
+                        if (source == vrcftPrefabAsset)
+                        {
+                            hasExistingSetup = true;
+                            break;
+                        }
+                    }
+
+                    if (hasExistingSetup)
+                    {
+                        alreadyConfiguredCount++;
+                        continue;
+                    }
+
+                    GameObject instance = PrefabUtility.InstantiatePrefab(vrcftPrefabAsset) as GameObject;
+                    if (instance != null)
+                    {
+                        instance.transform.SetParent(container, false);
+                        addedCount++;
+                    }
+
+                    PrefabUtility.SaveAsPrefabAsset(prefabRoot, entry.copiedPrefabPath);
+                }
+                finally
+                {
+                    PrefabUtility.UnloadPrefabContents(prefabRoot);
+                }
+            }
+
+            vrcftSetupStatusMessage = $"Added VRCFT setup to {addedCount} prefab{(addedCount == 1 ? string.Empty : "s")}";
+            if (alreadyConfiguredCount > 0)
+            {
+                vrcftSetupStatusMessage += $", already present on {alreadyConfiguredCount}.";
+            }
+            else
+            {
+                vrcftSetupStatusMessage += ".";
+            }
+
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+        }
+
+        private void ImportLatestPatcherHub()
+        {
+            patcherHubImportStatusMessage = "Downloading latest PatcherHub release...";
+
+            try
+            {
+                GitHubReleaseInfo releaseInfo = FetchLatestPatcherHubReleaseInfo();
+                GitHubReleaseAsset unityPackageAsset = releaseInfo?.assets?.FirstOrDefault(asset =>
+                    !string.IsNullOrEmpty(asset.name) &&
+                    asset.name.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrEmpty(asset.browser_download_url));
+
+                if (unityPackageAsset == null)
+                {
+                    patcherHubImportStatusMessage = "Could not find a .unitypackage asset in the latest PatcherHub release.";
+                    return;
+                }
+
+                string downloadPath = Path.Combine(Path.GetTempPath(), unityPackageAsset.name);
+                DownloadFile(unityPackageAsset.browser_download_url, downloadPath);
+                AssetDatabase.ImportPackage(downloadPath, false);
+                patcherHubImportedThisSession = true;
+                patcherHubImportStatusMessage = $"Imported {unityPackageAsset.name} from {releaseInfo.tag_name}.";
+            }
+            catch (Exception ex)
+            {
+                patcherHubImportStatusMessage = $"Failed to import PatcherHub: {ex.Message}";
+            }
+        }
+
+        private static GitHubReleaseInfo FetchLatestPatcherHubReleaseInfo()
+        {
+            using var request = UnityWebRequest.Get(PatcherHubLatestReleaseApiUrl);
+            request.SetRequestHeader("User-Agent", "PawlygonUnityTools");
+            var operation = request.SendWebRequest();
+            while (!operation.isDone)
+            {
+            }
+
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                throw new InvalidOperationException(request.error);
+            }
+
+            GitHubReleaseInfo releaseInfo = JsonUtility.FromJson<GitHubReleaseInfo>(request.downloadHandler.text);
+            if (releaseInfo == null)
+            {
+                throw new InvalidOperationException("GitHub returned an invalid release payload.");
+            }
+
+            return releaseInfo;
+        }
+
+        private static void DownloadFile(string url, string destinationPath)
+        {
+            using var request = UnityWebRequest.Get(url);
+            request.SetRequestHeader("User-Agent", "PawlygonUnityTools");
+            request.downloadHandler = new DownloadHandlerFile(destinationPath);
+            var operation = request.SendWebRequest();
+            while (!operation.isDone)
+            {
+            }
+
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                throw new InvalidOperationException(request.error);
+            }
         }
 
         private bool ValidateSetupInputs(out string validationMessage)
@@ -800,7 +1082,8 @@ namespace Pawlygon.UnityTools.Editor
 
             if (CanLoadImportedAssets())
             {
-                MoveToMeshSelection();
+                int generatedDiffCount = GenerateDiffFilesForEntries(importedOnly: true);
+                MoveToMeshSelection(generatedDiffCount, skippedImportWait: false);
                 return;
             }
 
@@ -830,7 +1113,37 @@ namespace Pawlygon.UnityTools.Editor
             return avatarEntries.All(entry => entry.hasImportedModifiedFbx) && CanLoadImportedAssets();
         }
 
-        private void MoveToMeshSelection()
+        private int GenerateDiffFilesForEntries(bool importedOnly)
+        {
+            int generatedCount = 0;
+
+            foreach (AvatarEntry entry in avatarEntries)
+            {
+                if (importedOnly && !entry.hasImportedModifiedFbx)
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrEmpty(entry.diffGeneratorAssetPath))
+                {
+                    continue;
+                }
+
+                FTDiffGenerator diffGenerator = AssetDatabase.LoadAssetAtPath<FTDiffGenerator>(entry.diffGeneratorAssetPath);
+                if (diffGenerator == null)
+                {
+                    Debug.LogWarning($"[AvatarSetupWizard] Could not load diff generator asset at '{entry.diffGeneratorAssetPath}'.");
+                    continue;
+                }
+
+                diffGenerator.GenerateDiffFiles();
+                generatedCount++;
+            }
+
+            return generatedCount;
+        }
+
+        private void MoveToMeshSelection(int generatedDiffCount, bool skippedImportWait)
         {
             foreach (AvatarEntry entry in avatarEntries)
             {
@@ -841,7 +1154,19 @@ namespace Pawlygon.UnityTools.Editor
 
             selectedEntryIndex = Mathf.Clamp(FindNextIncompleteEntryIndex(0), 0, avatarEntries.Count - 1);
             currentStep = WizardStep.SelectMeshes;
-            statusMessage = "All modified FBXs imported. Review each avatar entry and apply the mesh replacements you want.";
+            if (skippedImportWait)
+            {
+                statusMessage = generatedDiffCount > 0
+                    ? $"Skipped the import wait and regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}. Review each avatar entry and apply the mesh replacements you want."
+                    : "Skipped the import wait. Review each avatar entry and apply the mesh replacements you want.";
+            }
+            else
+            {
+                statusMessage = generatedDiffCount > 0
+                    ? $"All modified FBXs imported. Regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}. Review each avatar entry and apply the mesh replacements you want."
+                    : "All modified FBXs imported. Review each avatar entry and apply the mesh replacements you want.";
+            }
+
             Repaint();
         }
 
@@ -960,8 +1285,8 @@ namespace Pawlygon.UnityTools.Editor
 
             if (avatarEntries.All(item => item.isMeshReviewComplete))
             {
-                currentStep = WizardStep.Complete;
-                statusMessage = "All avatar entries were reviewed.";
+                currentStep = WizardStep.Prefabs;
+                statusMessage = string.Empty;
                 return;
             }
 
@@ -1420,6 +1745,22 @@ namespace Pawlygon.UnityTools.Editor
                 fixedHeight = 24f
             };
 
+            headerTitleStyle = new GUIStyle(EditorStyles.boldLabel)
+            {
+                fontSize = 15,
+                alignment = TextAnchor.MiddleLeft
+            };
+
+            headerSubtitleStyle = new GUIStyle(EditorStyles.label)
+            {
+                alignment = TextAnchor.MiddleLeft,
+                wordWrap = true
+            };
+
+            headerSubtitleStyle.normal.textColor = EditorGUIUtility.isProSkin
+                ? new Color(0.72f, 0.72f, 0.72f)
+                : new Color(0.35f, 0.35f, 0.35f);
+
             stepStyle = new GUIStyle(EditorStyles.miniLabel)
             {
                 alignment = TextAnchor.MiddleCenter,
@@ -1446,14 +1787,39 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawHeader()
         {
-            EditorGUILayout.Space(5);
-            EditorGUILayout.LabelField(new GUIContent(" Avatar Setup Wizard", EditorGUIUtility.IconContent("AvatarSelector").image), new GUIStyle(EditorStyles.boldLabel) { fontSize = 18, fixedHeight = 28f });
-            EditorGUILayout.Space(2);
-            EditorGUILayout.LabelField("Guide the full avatar duplication flow without leaving the editor.", subLabelStyle);
-            EditorGUILayout.Space(4);
-            Rect separatorRect = EditorGUILayout.GetControlRect(false, 1f);
-            EditorGUI.DrawRect(separatorRect, EditorGUIUtility.isProSkin ? new Color(0.2f, 0.2f, 0.2f) : new Color(0.7f, 0.7f, 0.7f));
-            EditorGUILayout.Space(5);
+            if (pawlygonLogoTexture == null)
+            {
+                pawlygonLogoTexture = Resources.Load<Texture2D>("pawlygon_logo");
+            }
+
+            EditorGUILayout.Space(6f);
+
+            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(14, 14, 12, 12) }))
+            {
+                Rect headerRect = EditorGUILayout.GetControlRect(false, 84f);
+
+                float logoSize = 70f;
+                float spacing = 16f;
+                float totalWidth = logoSize + spacing + 360f;
+                float startX = headerRect.x + Mathf.Max(0f, (headerRect.width - totalWidth) * 0.5f);
+                float logoY = headerRect.y + (headerRect.height - logoSize) * 0.5f;
+                float textX = startX + logoSize + spacing;
+                float textWidth = Mathf.Max(220f, headerRect.xMax - textX - 20f);
+
+                if (pawlygonLogoTexture != null)
+                {
+                    GUI.DrawTexture(new Rect(startX, logoY, logoSize, logoSize), pawlygonLogoTexture, ScaleMode.ScaleToFit, true);
+                }
+
+                EditorGUI.LabelField(new Rect(textX, headerRect.y + 18f, textWidth, 22f), "Pawlygon Avatar Setup Wizard", headerTitleStyle);
+                EditorGUI.LabelField(new Rect(textX, headerRect.y + 40f, textWidth, 36f), "Tool to duplicate avatars, prepare face tracking assets, and build ready-to-edit prefabs.", headerSubtitleStyle);
+
+                EditorGUILayout.Space(10f);
+                Rect separatorRect = EditorGUILayout.GetControlRect(false, 1f);
+                EditorGUI.DrawRect(separatorRect, EditorGUIUtility.isProSkin ? new Color(0.34f, 0.34f, 0.34f) : new Color(0.65f, 0.65f, 0.65f));
+            }
+
+            EditorGUILayout.Space(6f);
         }
 
         private void DrawStepIndicator()
@@ -1466,7 +1832,9 @@ namespace Pawlygon.UnityTools.Editor
                 DrawStepArrow();
                 DrawStepBadge(WizardStep.SelectMeshes, "3. Meshes");
                 DrawStepArrow();
-                DrawStepBadge(WizardStep.Complete, "4. Finish");
+                DrawStepBadge(WizardStep.Prefabs, "4. Prefabs");
+                DrawStepArrow();
+                DrawStepBadge(WizardStep.Complete, "5. Finish");
             }
         }
 
@@ -1545,6 +1913,9 @@ namespace Pawlygon.UnityTools.Editor
             avatarEntries = new List<AvatarEntry> { new AvatarEntry() };
             selectedEntryIndex = 0;
             statusMessage = string.Empty;
+            vrcftSetupStatusMessage = string.Empty;
+            patcherHubImportStatusMessage = string.Empty;
+            patcherHubImportedThisSession = false;
             EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
             pendingImportTransition = false;
             importLoadAttempts = 0;

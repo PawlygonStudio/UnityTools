@@ -30,6 +30,71 @@ namespace Pawlygon.UnityTools.Editor
         private const string PackageJsonPath = "Packages/net.pawlygon.unitytools/package.json";
         private const int SourceFbxPickerControlId = 9001;
         private const int SourcePrefabPickerControlId = 9002;
+        private static readonly string[] RequiredUnifiedExpressionBlendshapes =
+        {
+            "BrowDownLeft",
+            "BrowDownRight",
+            "BrowInnerUpLeft",
+            "BrowInnerUpRight",
+            "BrowOuterUpLeft",
+            "BrowOuterUpRight",
+            "EyeClosedLeft",
+            "EyeClosedRight",
+            "EyeConstrict",
+            "EyeDilation",
+            "EyeLookDownLeft",
+            "EyeLookDownRight",
+            "EyeLookInLeft",
+            "EyeLookInRight",
+            "EyeLookOutLeft",
+            "EyeLookOutRight",
+            "EyeLookUpLeft",
+            "EyeLookUpRight",
+            "EyeSquintLeft",
+            "EyeSquintRight",
+            "EyeWideLeft",
+            "EyeWideRight",
+            "CheekPuffLeft",
+            "CheekPuffRight",
+            "CheekSquintLeft",
+            "CheekSquintRight",
+            "CheekSuckLeft",
+            "CheekSuckRight",
+            "LipFunnel",
+            "LipPucker",
+            "LipSuckLower",
+            "LipSuckUpper",
+            "JawForward",
+            "JawLeft",
+            "JawOpen",
+            "JawRight",
+            "MouthClosed",
+            "MouthFrownLeft",
+            "MouthFrownRight",
+            "MouthLeft",
+            "MouthLowerDown",
+            "MouthPress",
+            "MouthRaiserLower",
+            "MouthRaiserUpper",
+            "MouthRight",
+            "MouthSmileLeft",
+            "MouthSmileRight",
+            "MouthStretchLeft",
+            "MouthStretchRight",
+            "MouthTightenerLeft",
+            "MouthTightenerRight",
+            "MouthUpperUp",
+            "MouthUpperUpLeft",
+            "MouthUpperUpRight",
+            "NoseSneer",
+            "NoseSneerLeft",
+            "NoseSneerRight",
+            "TongueDown",
+            "TongueLeft",
+            "TongueOut",
+            "TongueRight",
+            "TongueUp"
+        };
 
         [SerializeField] private string mainFolderName = DefaultMainFolderName;
         [SerializeField] private bool useSeparateFolderPerAvatar;
@@ -39,8 +104,7 @@ namespace Pawlygon.UnityTools.Editor
         [SerializeField] private WizardStep currentStep = WizardStep.Setup;
         [SerializeField] private int selectedEntryIndex;
 
-        private Vector2 setupScrollPosition;
-        private Vector2 meshScrollPosition;
+        private Vector2 mainContentScrollPosition;
         private string statusMessage = string.Empty;
         private bool pendingImportTransition;
         private int importLoadAttempts;
@@ -84,7 +148,22 @@ namespace Pawlygon.UnityTools.Editor
             public bool hasImportedModifiedFbx;
             public bool isMeshReviewComplete;
             public string reviewResultLabel;
+            public AnimatorReplacementState animatorReplacement = new AnimatorReplacementState();
             public List<MeshSelectionState> meshSelections = new List<MeshSelectionState>();
+        }
+
+        [Serializable]
+        private class AnimatorReplacementState
+        {
+            public string prefabAnimatorObjectName;
+            public string prefabAnimatorRelativePath;
+            public string fbxAnimatorObjectName;
+            public string fbxAnimatorRelativePath;
+            public string fbxAvatarName;
+            public string matchReason;
+            public bool hasPrefabAnimator;
+            public bool hasHumanoidAvatar;
+            public bool selected;
         }
 
         [Serializable]
@@ -99,6 +178,9 @@ namespace Pawlygon.UnityTools.Editor
             public string matchReason;
             public bool hasMatch;
             public bool selected;
+            public bool isBodyMeshCandidate;
+            public string[] missingRequiredUnifiedBlendshapesOnFbx = Array.Empty<string>();
+            public bool showUnifiedBlendshapeWarningDetails;
         }
 
         private class RendererInfo
@@ -107,6 +189,15 @@ namespace Pawlygon.UnityTools.Editor
             public string ObjectName;
             public string RelativePath;
             public string MeshName;
+        }
+
+        private class AnimatorInfo
+        {
+            public Animator Animator;
+            public string ObjectName;
+            public string RelativePath;
+            public Avatar Avatar;
+            public int PriorityScore;
         }
 
         [Serializable]
@@ -161,29 +252,36 @@ namespace Pawlygon.UnityTools.Editor
             DrawStepIndicator();
             EditorGUILayout.Space(SectionSpacing);
 
-            switch (currentStep)
+            using (new EditorGUILayout.VerticalScope(GUILayout.ExpandHeight(true)))
             {
-                case WizardStep.Setup:
-                    DrawSetupStep();
-                    break;
-                case WizardStep.WaitForImport:
-                    DrawWaitForImportStep();
-                    break;
-                case WizardStep.SelectMeshes:
-                    DrawMeshSelectionStep();
-                    break;
-                case WizardStep.Prefabs:
-                    DrawPrefabsStep();
-                    break;
-                case WizardStep.Complete:
-                    DrawCompleteStep();
-                    break;
-            }
+                mainContentScrollPosition = EditorGUILayout.BeginScrollView(mainContentScrollPosition, GUILayout.ExpandHeight(true));
 
-            if (!string.IsNullOrEmpty(statusMessage))
-            {
-                EditorGUILayout.Space();
-                EditorGUILayout.HelpBox(statusMessage, MessageType.Info);
+                switch (currentStep)
+                {
+                    case WizardStep.Setup:
+                        DrawSetupStep();
+                        break;
+                    case WizardStep.WaitForImport:
+                        DrawWaitForImportStep();
+                        break;
+                    case WizardStep.SelectMeshes:
+                        DrawMeshSelectionStep();
+                        break;
+                    case WizardStep.Prefabs:
+                        DrawPrefabsStep();
+                        break;
+                    case WizardStep.Complete:
+                        DrawCompleteStep();
+                        break;
+                }
+
+                if (!string.IsNullOrEmpty(statusMessage))
+                {
+                    EditorGUILayout.Space();
+                    EditorGUILayout.HelpBox(statusMessage, MessageType.Info);
+                }
+
+                EditorGUILayout.EndScrollView();
             }
 
             EditorGUILayout.Space(8f);
@@ -199,8 +297,6 @@ namespace Pawlygon.UnityTools.Editor
                 "Choose the source assets and create the working avatar structure.",
                 () =>
                 {
-                    setupScrollPosition = EditorGUILayout.BeginScrollView(setupScrollPosition);
-
                     mainFolderName = EditorGUILayout.TextField("Main Folder Name", mainFolderName);
 
                     if (hasMultipleEntries)
@@ -235,8 +331,6 @@ namespace Pawlygon.UnityTools.Editor
                         GUILayout.FlexibleSpace();
                         EditorGUILayout.LabelField($"{avatarEntries.Count} avatar entr{(avatarEntries.Count == 1 ? "y" : "ies")}", EditorStyles.miniBoldLabel, GUILayout.Width(110f));
                     }
-
-                    EditorGUILayout.EndScrollView();
 
                     string validationMessage = GetSetupValidationMessage();
 
@@ -351,8 +445,8 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             DrawSection(
-                "Select Meshes",
-                "Review one avatar at a time. Apply the selected mesh replacements or explicitly skip that avatar.",
+                "Select Replacements",
+                "Review one avatar at a time. Apply the selected mesh and humanoid rig replacements or explicitly skip that avatar.",
                 () =>
                 {
                     DrawEntrySelectionToolbar();
@@ -371,14 +465,12 @@ namespace Pawlygon.UnityTools.Editor
 
                         using (new EditorGUILayout.VerticalScope(sectionStyle))
                         {
-                            meshScrollPosition = EditorGUILayout.BeginScrollView(meshScrollPosition, GUILayout.Height(260f));
+                            DrawAnimatorReplacementRow(selectedEntry.animatorReplacement);
 
                             foreach (MeshSelectionState meshSelection in selectedEntry.meshSelections)
                             {
                                 DrawMeshSelectionRow(meshSelection);
                             }
-
-                            EditorGUILayout.EndScrollView();
                         }
                     }
 
@@ -391,11 +483,11 @@ namespace Pawlygon.UnityTools.Editor
                             SkipEntryReview(selectedEntry);
                         }
 
-                        using (new EditorGUI.DisabledScope(selectedEntry.meshSelections.All(selection => !selection.selected)))
+                        using (new EditorGUI.DisabledScope(!HasAnySelectedReplacement(selectedEntry)))
                         {
-                            if (DrawPrimaryButton("Replace Selected Meshes", 34f))
+                            if (DrawPrimaryButton("Apply Selected Replacements", 34f))
                             {
-                                ApplySelectedMeshesToPrefab(selectedEntry);
+                                ApplySelectedReplacementsToPrefab(selectedEntry);
                             }
                         }
                     }
@@ -568,6 +660,7 @@ namespace Pawlygon.UnityTools.Editor
                 entry.hasImportedModifiedFbx = false;
                 entry.isMeshReviewComplete = false;
                 entry.reviewResultLabel = string.Empty;
+                entry.animatorReplacement = new AnimatorReplacementState();
                 entry.meshSelections = new List<MeshSelectionState>();
             }
 
@@ -1178,14 +1271,14 @@ namespace Pawlygon.UnityTools.Editor
             if (skippedImportWait)
             {
                 statusMessage = generatedDiffCount > 0
-                    ? $"Skipped the import wait and regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}. Review each avatar entry and apply the mesh replacements you want."
-                    : "Skipped the import wait. Review each avatar entry and apply the mesh replacements you want.";
+                    ? $"Skipped the import wait and regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}. Review each avatar entry and apply the mesh and rig replacements you want."
+                    : "Skipped the import wait. Review each avatar entry and apply the mesh and rig replacements you want.";
             }
             else
             {
                 statusMessage = generatedDiffCount > 0
-                    ? $"All modified FBXs imported. Regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}. Review each avatar entry and apply the mesh replacements you want."
-                    : "All modified FBXs imported. Review each avatar entry and apply the mesh replacements you want.";
+                    ? $"All modified FBXs imported. Regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}. Review each avatar entry and apply the mesh and rig replacements you want."
+                    : "All modified FBXs imported. Review each avatar entry and apply the mesh and rig replacements you want.";
             }
 
             Repaint();
@@ -1193,6 +1286,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private void LoadMeshSelections(AvatarEntry entry)
         {
+            entry.animatorReplacement = new AnimatorReplacementState();
             entry.meshSelections = new List<MeshSelectionState>();
 
             GameObject fbxRoot = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedFbxPath);
@@ -1210,6 +1304,8 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
+            entry.animatorReplacement = CreateAnimatorReplacementState(fbxRoot, prefabRoot, entry.copiedFbxPath);
+
             Dictionary<string, Mesh> fbxMeshSubAssets = LoadMeshSubAssets(entry.copiedFbxPath);
             List<RendererInfo> fbxRenderers = GetRendererInfos(fbxRoot, fbxMeshSubAssets);
             List<RendererInfo> prefabRenderers = GetRendererInfos(prefabRoot, meshSubAssets: null);
@@ -1219,24 +1315,41 @@ namespace Pawlygon.UnityTools.Editor
                 .Select(fbxRenderer => CreateMeshSelectionState(fbxRenderer, prefabRenderers, usedPrefabPaths))
                 .OrderBy(selection => selection.fbxRelativePath, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+
+            PopulateUnifiedBlendshapeWarnings(entry.meshSelections, fbxMeshSubAssets, RequiredUnifiedExpressionBlendshapes);
         }
 
-        private void ApplySelectedMeshesToPrefab(AvatarEntry entry)
+        private void ApplySelectedReplacementsToPrefab(AvatarEntry entry)
         {
             List<MeshSelectionState> selectedMappings = entry.meshSelections
                 .Where(selection => selection.selected && selection.hasMatch)
                 .ToList();
 
-            if (selectedMappings.Count == 0)
+            bool shouldReplaceAnimator = entry.animatorReplacement != null &&
+                entry.animatorReplacement.selected &&
+                entry.animatorReplacement.hasPrefabAnimator &&
+                entry.animatorReplacement.hasHumanoidAvatar;
+
+            if (selectedMappings.Count == 0 && !shouldReplaceAnimator)
             {
-                EditorUtility.DisplayDialog("No Meshes Selected", "Select at least one mapped skinned mesh renderer to replace on the prefab.", "OK");
+                EditorUtility.DisplayDialog("No Replacements Selected", "Select at least one mapped skinned mesh renderer or the humanoid rig replacement to update on the prefab.", "OK");
                 return;
             }
 
             Dictionary<string, Mesh> fbxMeshSubAssets = LoadMeshSubAssets(entry.copiedFbxPath);
-            if (fbxMeshSubAssets.Count == 0)
+            if (selectedMappings.Count > 0 && fbxMeshSubAssets.Count == 0)
             {
                 EditorUtility.DisplayDialog("FBX Missing Meshes", "No mesh sub-assets could be loaded from the duplicated FBX.", "OK");
+                return;
+            }
+
+            Avatar replacementAvatar = shouldReplaceAnimator
+                ? LoadReplacementAvatar(entry.animatorReplacement, entry.copiedFbxPath)
+                : null;
+
+            if (shouldReplaceAnimator && !IsValidHumanoidAvatar(replacementAvatar))
+            {
+                EditorUtility.DisplayDialog("FBX Missing Humanoid Avatar", "No valid humanoid avatar could be loaded from the duplicated FBX.", "OK");
                 return;
             }
 
@@ -1251,7 +1364,15 @@ namespace Pawlygon.UnityTools.Editor
                         renderer => renderer,
                         StringComparer.OrdinalIgnoreCase);
 
+                Dictionary<string, Animator> prefabAnimatorLookup = prefabRoot
+                    .GetComponentsInChildren<Animator>(true)
+                    .ToDictionary(
+                        animator => GetRelativeTransformPath(animator.transform),
+                        animator => animator,
+                        StringComparer.OrdinalIgnoreCase);
+
                 int replacedCount = 0;
+                bool replacedAnimator = false;
 
                 foreach (MeshSelectionState mapping in selectedMappings)
                 {
@@ -1276,11 +1397,22 @@ namespace Pawlygon.UnityTools.Editor
                     replacedCount++;
                 }
 
+                if (shouldReplaceAnimator)
+                {
+                    if (!prefabAnimatorLookup.TryGetValue(entry.animatorReplacement.prefabAnimatorRelativePath, out Animator prefabAnimator))
+                    {
+                        Debug.LogWarning($"[AvatarSetupWizard] No Animator at relative path '{entry.animatorReplacement.prefabAnimatorRelativePath}' in prefab.");
+                    }
+                    else
+                    {
+                        prefabAnimator.avatar = replacementAvatar;
+                        replacedAnimator = true;
+                    }
+                }
+
                 PrefabUtility.SaveAsPrefabAsset(prefabRoot, entry.copiedPrefabPath);
                 CompleteEntryReview(entry, "Applied");
-                statusMessage = replacedCount > 0
-                    ? $"Updated {replacedCount} mesh reference(s) on '{GetEntryDisplayName(entry)}'."
-                    : $"No mapped skinned mesh renderers were updated on '{GetEntryDisplayName(entry)}'.";
+                statusMessage = BuildReplacementStatusMessage(entry, replacedCount, replacedAnimator);
             }
             finally
             {
@@ -1290,13 +1422,13 @@ namespace Pawlygon.UnityTools.Editor
 
         private void SkipEntryReview(AvatarEntry entry)
         {
-            if (!EditorUtility.DisplayDialog("Skip Avatar Review", $"Skip mesh replacement for '{GetEntryDisplayName(entry)}'?", "Skip", "Cancel"))
+            if (!EditorUtility.DisplayDialog("Skip Avatar Review", $"Skip mesh and rig replacement for '{GetEntryDisplayName(entry)}'?", "Skip", "Cancel"))
             {
                 return;
             }
 
             CompleteEntryReview(entry, "Skipped");
-            statusMessage = $"Skipped mesh replacement for '{GetEntryDisplayName(entry)}'.";
+            statusMessage = $"Skipped mesh and rig replacement for '{GetEntryDisplayName(entry)}'.";
         }
 
         private void CompleteEntryReview(AvatarEntry entry, string reviewResultLabel)
@@ -1394,11 +1526,24 @@ namespace Pawlygon.UnityTools.Editor
         {
             int matchedCount = entry.meshSelections.Count(selection => selection.hasMatch);
             int selectedCount = entry.meshSelections.Count(selection => selection.selected && selection.hasMatch);
+            string rigStatus = GetAnimatorSelectionSummary(entry.animatorReplacement);
+            bool hasMissingUnifiedBlendshapes = entry.meshSelections.Any(HasMissingUnifiedBlendshapesWarning);
+            bool hasCompleteUnifiedBlendshapes = entry.meshSelections.Any(HasCompleteUnifiedBlendshapesInfo);
 
             using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 8, 8) }))
             {
                 EditorGUILayout.LabelField(GetEntryDisplayName(entry), EditorStyles.boldLabel);
                 EditorGUILayout.LabelField($"{matchedCount} matched renderer{(matchedCount == 1 ? string.Empty : "s")}, {selectedCount} selected", richMiniLabelStyle);
+                EditorGUILayout.LabelField($"Humanoid rig: {rigStatus}", richMiniLabelStyle);
+                if (hasMissingUnifiedBlendshapes)
+                {
+                    EditorGUILayout.LabelField("Warning: Missing Unified Expression Blendshapes", richMiniLabelStyle);
+                }
+                else if (hasCompleteUnifiedBlendshapes)
+                {
+                    EditorGUILayout.LabelField("Unified Expression Blendshapes: Complete", richMiniLabelStyle);
+                }
+
                 DrawReadOnlyPathField("Modified FBX", entry.copiedFbxPath);
                 DrawReadOnlyPathField("Target Prefab", entry.copiedPrefabPath);
             }
@@ -1450,8 +1595,58 @@ namespace Pawlygon.UnityTools.Editor
                 }
 
                 GUILayout.FlexibleSpace();
-                GUILayout.Label($"{entry.meshSelections.Count(selection => selection.selected)} selected", EditorStyles.miniBoldLabel);
+                GUILayout.Label($"{GetSelectedReplacementCount(entry)} selected", EditorStyles.miniBoldLabel);
             }
+        }
+
+        private void DrawAnimatorReplacementRow(AnimatorReplacementState animatorReplacement)
+        {
+            animatorReplacement ??= new AnimatorReplacementState();
+
+            Color originalColor = GUI.backgroundColor;
+            GUI.backgroundColor = animatorReplacement.hasPrefabAnimator && animatorReplacement.hasHumanoidAvatar
+                ? originalColor
+                : new Color(1f, 0.9f, 0.7f, 0.5f);
+
+            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) }))
+            {
+                GUI.backgroundColor = originalColor;
+
+                using (new EditorGUI.DisabledScope(!animatorReplacement.hasPrefabAnimator || !animatorReplacement.hasHumanoidAvatar))
+                {
+                    string label = string.IsNullOrEmpty(animatorReplacement.fbxAvatarName)
+                        ? "Primary Animator Rig"
+                        : $"Primary Animator Rig ({animatorReplacement.fbxAvatarName})";
+                    animatorReplacement.selected = EditorGUILayout.ToggleLeft(label, animatorReplacement.selected, EditorStyles.boldLabel);
+                }
+
+                GUIContent statusIcon = animatorReplacement.hasPrefabAnimator && animatorReplacement.hasHumanoidAvatar
+                    ? EditorGUIUtility.IconContent("TestPassed")
+                    : EditorGUIUtility.IconContent("console.warnicon.sml");
+
+                string matchText;
+                if (!animatorReplacement.hasPrefabAnimator)
+                {
+                    matchText = "No primary Animator found on the prefab";
+                }
+                else if (!animatorReplacement.hasHumanoidAvatar)
+                {
+                    matchText = "No humanoid FBX avatar found";
+                }
+                else
+                {
+                    matchText = "Ready to replace the primary humanoid rig";
+                }
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.Label(statusIcon, GUILayout.Width(18f), GUILayout.Height(16f));
+                    EditorGUILayout.LabelField(matchText, richMiniLabelStyle);
+                }
+
+            }
+
+            EditorGUILayout.Space(2f);
         }
 
         private void DrawMeshSelectionRow(MeshSelectionState meshSelection)
@@ -1486,6 +1681,39 @@ namespace Pawlygon.UnityTools.Editor
                     GUILayout.Label(statusIcon, GUILayout.Width(18f), GUILayout.Height(16f));
                     EditorGUILayout.LabelField(matchText, richMiniLabelStyle);
                 }
+
+                if (HasMissingUnifiedBlendshapesWarning(meshSelection))
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        GUILayout.Label(EditorGUIUtility.IconContent("console.warnicon.sml"), GUILayout.Width(18f), GUILayout.Height(16f));
+                        EditorGUILayout.LabelField("Missing Unified Expression Blendshapes", richMiniLabelStyle);
+                    }
+
+                    meshSelection.showUnifiedBlendshapeWarningDetails = EditorGUILayout.Foldout(
+                        meshSelection.showUnifiedBlendshapeWarningDetails,
+                        $"Show missing blendshapes ({meshSelection.missingRequiredUnifiedBlendshapesOnFbx.Length})",
+                        true);
+
+                    if (meshSelection.showUnifiedBlendshapeWarningDetails)
+                    {
+                        using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 6, 6) }))
+                        {
+                            foreach (string blendshapeName in meshSelection.missingRequiredUnifiedBlendshapesOnFbx)
+                            {
+                                EditorGUILayout.LabelField($"- {blendshapeName}", richMiniLabelStyle);
+                            }
+                        }
+                    }
+                }
+                else if (HasCompleteUnifiedBlendshapesInfo(meshSelection))
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        GUILayout.Label(EditorGUIUtility.IconContent("TestPassed"), GUILayout.Width(18f), GUILayout.Height(16f));
+                        EditorGUILayout.LabelField("All Unified Expression Blendshapes found", richMiniLabelStyle);
+                    }
+                }
             }
 
             EditorGUILayout.Space(2f);
@@ -1500,6 +1728,93 @@ namespace Pawlygon.UnityTools.Editor
                     meshSelection.selected = selected;
                 }
             }
+        }
+
+        private static bool HasAnySelectedReplacement(AvatarEntry entry)
+        {
+            if (entry == null)
+            {
+                return false;
+            }
+
+            return entry.meshSelections.Any(selection => selection.selected && selection.hasMatch) ||
+                   (entry.animatorReplacement != null &&
+                    entry.animatorReplacement.selected &&
+                    entry.animatorReplacement.hasPrefabAnimator &&
+                    entry.animatorReplacement.hasHumanoidAvatar);
+        }
+
+        private static int GetSelectedReplacementCount(AvatarEntry entry)
+        {
+            if (entry == null)
+            {
+                return 0;
+            }
+
+            int selectedMeshCount = entry.meshSelections.Count(selection => selection.selected && selection.hasMatch);
+            int selectedRigCount = entry.animatorReplacement != null &&
+                entry.animatorReplacement.selected &&
+                entry.animatorReplacement.hasPrefabAnimator &&
+                entry.animatorReplacement.hasHumanoidAvatar
+                ? 1
+                : 0;
+
+            return selectedMeshCount + selectedRigCount;
+        }
+
+        private static string GetAnimatorSelectionSummary(AnimatorReplacementState animatorReplacement)
+        {
+            if (animatorReplacement == null || !animatorReplacement.hasPrefabAnimator)
+            {
+                return "unavailable";
+            }
+
+            if (!animatorReplacement.hasHumanoidAvatar)
+            {
+                return "no humanoid FBX avatar found";
+            }
+
+            return animatorReplacement.selected
+                ? $"selected ({animatorReplacement.fbxAvatarName})"
+                : $"available ({animatorReplacement.fbxAvatarName})";
+        }
+
+        private static string BuildReplacementStatusMessage(AvatarEntry entry, int replacedMeshCount, bool replacedAnimator)
+        {
+            string displayName = GetEntryDisplayName(entry);
+
+            if (replacedMeshCount > 0 && replacedAnimator)
+            {
+                return $"Updated {replacedMeshCount} mesh reference(s) and the primary Animator rig on '{displayName}'.";
+            }
+
+            if (replacedMeshCount > 0)
+            {
+                return $"Updated {replacedMeshCount} mesh reference(s) on '{displayName}'.";
+            }
+
+            if (replacedAnimator)
+            {
+                return $"Updated the primary Animator rig on '{displayName}'.";
+            }
+
+            return $"No mapped skinned mesh renderers or humanoid rig were updated on '{displayName}'.";
+        }
+
+        private static bool HasMissingUnifiedBlendshapesWarning(MeshSelectionState meshSelection)
+        {
+            return meshSelection != null &&
+                meshSelection.isBodyMeshCandidate &&
+                meshSelection.missingRequiredUnifiedBlendshapesOnFbx != null &&
+                meshSelection.missingRequiredUnifiedBlendshapesOnFbx.Length > 0;
+        }
+
+        private static bool HasCompleteUnifiedBlendshapesInfo(MeshSelectionState meshSelection)
+        {
+            return meshSelection != null &&
+                meshSelection.isBodyMeshCandidate &&
+                meshSelection.missingRequiredUnifiedBlendshapesOnFbx != null &&
+                meshSelection.missingRequiredUnifiedBlendshapesOnFbx.Length == 0;
         }
 
         private static string GetEntryDisplayName(AvatarEntry entry)
@@ -1606,6 +1921,128 @@ namespace Pawlygon.UnityTools.Editor
             return result;
         }
 
+        private static void PopulateUnifiedBlendshapeWarnings(List<MeshSelectionState> meshSelections, Dictionary<string, Mesh> fbxMeshSubAssets, string[] requiredBlendshapes)
+        {
+            if (meshSelections == null)
+            {
+                return;
+            }
+
+            foreach (MeshSelectionState meshSelection in meshSelections)
+            {
+                meshSelection.isBodyMeshCandidate = IsBodyMeshSelection(meshSelection);
+                meshSelection.showUnifiedBlendshapeWarningDetails = false;
+                meshSelection.missingRequiredUnifiedBlendshapesOnFbx = Array.Empty<string>();
+
+                if (!meshSelection.isBodyMeshCandidate)
+                {
+                    continue;
+                }
+
+                Mesh fbxMesh = ResolveFbxMeshForSelection(meshSelection, fbxMeshSubAssets);
+                meshSelection.missingRequiredUnifiedBlendshapesOnFbx = GetMissingRequiredUnifiedBlendshapes(fbxMesh, requiredBlendshapes);
+            }
+        }
+
+        private static Mesh ResolveFbxMeshForSelection(MeshSelectionState meshSelection, Dictionary<string, Mesh> fbxMeshSubAssets)
+        {
+            if (meshSelection == null || fbxMeshSubAssets == null || fbxMeshSubAssets.Count == 0)
+            {
+                return null;
+            }
+
+            if (!string.IsNullOrEmpty(meshSelection.fbxMeshName) && fbxMeshSubAssets.TryGetValue(meshSelection.fbxMeshName, out Mesh meshByName))
+            {
+                return meshByName;
+            }
+
+            if (!string.IsNullOrEmpty(meshSelection.fbxObjectName) && fbxMeshSubAssets.TryGetValue(meshSelection.fbxObjectName, out Mesh meshByObjectName))
+            {
+                return meshByObjectName;
+            }
+
+            return null;
+        }
+
+        private static string[] GetMissingRequiredUnifiedBlendshapes(Mesh mesh, string[] requiredBlendshapes)
+        {
+            if (mesh == null)
+            {
+                return requiredBlendshapes?.ToArray() ?? Array.Empty<string>();
+            }
+
+            var availableBlendshapes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            for (int i = 0; i < mesh.blendShapeCount; i++)
+            {
+                string blendshapeName = mesh.GetBlendShapeName(i);
+                if (!string.IsNullOrWhiteSpace(blendshapeName))
+                {
+                    availableBlendshapes.Add(blendshapeName);
+                }
+            }
+
+            return (requiredBlendshapes ?? Array.Empty<string>())
+                .Where(requiredBlendshape => !availableBlendshapes.Contains(requiredBlendshape))
+                .ToArray();
+        }
+
+        private static List<Avatar> LoadHumanoidAvatarSubAssets(string fbxAssetPath)
+        {
+            var result = new List<Avatar>();
+            UnityEngine.Object[] allSubAssets = AssetDatabase.LoadAllAssetsAtPath(fbxAssetPath);
+
+            if (allSubAssets == null || allSubAssets.Length == 0)
+            {
+                return result;
+            }
+
+            foreach (UnityEngine.Object subAsset in allSubAssets)
+            {
+                if (subAsset is Avatar avatar && IsValidHumanoidAvatar(avatar))
+                {
+                    result.Add(avatar);
+                }
+            }
+
+            return result;
+        }
+
+        private static AnimatorReplacementState CreateAnimatorReplacementState(GameObject fbxRoot, GameObject prefabRoot, string fbxAssetPath)
+        {
+            AnimatorInfo prefabAnimator = GetPrimaryAnimatorInfo(prefabRoot);
+            AnimatorInfo fbxAnimator = GetPrimaryAnimatorInfo(fbxRoot);
+            Avatar replacementAvatar = null;
+            string matchReason;
+
+            if (IsValidHumanoidAvatar(fbxAnimator?.Avatar))
+            {
+                replacementAvatar = fbxAnimator.Avatar;
+                matchReason = "Using the duplicated FBX's primary Animator avatar.";
+            }
+            else
+            {
+                List<Avatar> avatars = LoadHumanoidAvatarSubAssets(fbxAssetPath);
+                replacementAvatar = avatars.FirstOrDefault();
+                matchReason = replacementAvatar != null
+                    ? "Using the duplicated FBX's humanoid Avatar sub-asset."
+                    : "No valid humanoid Avatar was found on the duplicated FBX.";
+            }
+
+            return new AnimatorReplacementState
+            {
+                prefabAnimatorObjectName = prefabAnimator?.ObjectName ?? string.Empty,
+                prefabAnimatorRelativePath = prefabAnimator?.RelativePath ?? string.Empty,
+                fbxAnimatorObjectName = fbxAnimator?.ObjectName ?? string.Empty,
+                fbxAnimatorRelativePath = fbxAnimator?.RelativePath ?? string.Empty,
+                fbxAvatarName = replacementAvatar != null ? replacementAvatar.name : string.Empty,
+                matchReason = matchReason,
+                hasPrefabAnimator = prefabAnimator != null,
+                hasHumanoidAvatar = replacementAvatar != null,
+                selected = prefabAnimator != null && replacementAvatar != null
+            };
+        }
+
         private static List<RendererInfo> GetRendererInfos(GameObject root, Dictionary<string, Mesh> meshSubAssets)
         {
             var results = new List<RendererInfo>();
@@ -1656,6 +2093,70 @@ namespace Pawlygon.UnityTools.Editor
             return results;
         }
 
+        private static AnimatorInfo GetPrimaryAnimatorInfo(GameObject root)
+        {
+            if (root == null)
+            {
+                return null;
+            }
+
+            return root
+                .GetComponentsInChildren<Animator>(true)
+                .Select(animator => new AnimatorInfo
+                {
+                    Animator = animator,
+                    ObjectName = animator.gameObject.name,
+                    RelativePath = GetRelativeTransformPath(animator.transform),
+                    Avatar = animator.avatar,
+                    PriorityScore = GetAnimatorPriorityScore(root.transform, animator)
+                })
+                .OrderByDescending(info => info.PriorityScore)
+                .ThenBy(info => info.RelativePath, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+        }
+
+        private static int GetAnimatorPriorityScore(Transform rootTransform, Animator animator)
+        {
+            if (animator == null)
+            {
+                return int.MinValue;
+            }
+
+            int score = 0;
+
+            if (IsValidHumanoidAvatar(animator.avatar))
+            {
+                score += 1000;
+            }
+
+            if (animator.transform == rootTransform)
+            {
+                score += 500;
+            }
+            else if (animator.transform.parent == rootTransform)
+            {
+                score += 250;
+            }
+
+            score += animator.GetComponentsInChildren<SkinnedMeshRenderer>(true).Length * 10;
+            score -= GetTransformDepth(animator.transform, rootTransform);
+            return score;
+        }
+
+        private static int GetTransformDepth(Transform transform, Transform rootTransform)
+        {
+            int depth = 0;
+            Transform current = transform;
+
+            while (current != null && current != rootTransform)
+            {
+                depth++;
+                current = current.parent;
+            }
+
+            return depth;
+        }
+
         private static MeshSelectionState CreateMeshSelectionState(RendererInfo fbxRenderer, List<RendererInfo> prefabRenderers, ISet<string> usedPrefabPaths)
         {
             RendererInfo matchedRenderer = FindBestRendererMatch(fbxRenderer, prefabRenderers, usedPrefabPaths, out string matchReason);
@@ -1677,6 +2178,18 @@ namespace Pawlygon.UnityTools.Editor
                 hasMatch = matchedRenderer != null,
                 selected = matchedRenderer != null
             };
+        }
+
+        private static bool IsBodyMeshSelection(MeshSelectionState meshSelection)
+        {
+            if (meshSelection == null)
+            {
+                return false;
+            }
+
+            return string.Equals(meshSelection.fbxObjectName, "Body", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(meshSelection.fbxMeshName, "Body", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(GetLastPathSegment(meshSelection.fbxRelativePath), "Body", StringComparison.OrdinalIgnoreCase);
         }
 
         private static RendererInfo FindBestRendererMatch(RendererInfo fbxRenderer, List<RendererInfo> prefabRenderers, ISet<string> usedPrefabPaths, out string matchReason)
@@ -1737,6 +2250,65 @@ namespace Pawlygon.UnityTools.Editor
 
             names.Reverse();
             return string.Join("/", names);
+        }
+
+        private static string GetLastPathSegment(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                return string.Empty;
+            }
+
+            int separatorIndex = path.LastIndexOf('/');
+            return separatorIndex >= 0 ? path.Substring(separatorIndex + 1) : path;
+        }
+
+        private static Transform FindTransformByRelativePath(Transform root, string relativePath)
+        {
+            if (root == null || string.IsNullOrEmpty(relativePath))
+            {
+                return null;
+            }
+
+            if (string.Equals(relativePath, root.name, StringComparison.OrdinalIgnoreCase))
+            {
+                return root;
+            }
+
+            string rootPrefix = root.name + "/";
+            string localPath = relativePath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase)
+                ? relativePath.Substring(rootPrefix.Length)
+                : relativePath;
+
+            return root.Find(localPath);
+        }
+
+        private static Avatar LoadReplacementAvatar(AnimatorReplacementState animatorReplacement, string fbxAssetPath)
+        {
+            if (animatorReplacement == null)
+            {
+                return null;
+            }
+
+            GameObject fbxRoot = AssetDatabase.LoadAssetAtPath<GameObject>(fbxAssetPath);
+            if (fbxRoot != null && !string.IsNullOrEmpty(animatorReplacement.fbxAnimatorRelativePath))
+            {
+                Transform animatorTransform = FindTransformByRelativePath(fbxRoot.transform, animatorReplacement.fbxAnimatorRelativePath);
+                Animator fbxAnimator = animatorTransform != null ? animatorTransform.GetComponent<Animator>() : null;
+                if (IsValidHumanoidAvatar(fbxAnimator?.avatar))
+                {
+                    return fbxAnimator.avatar;
+                }
+            }
+
+            List<Avatar> avatars = LoadHumanoidAvatarSubAssets(fbxAssetPath);
+            return avatars.FirstOrDefault(avatar => string.Equals(avatar.name, animatorReplacement.fbxAvatarName, StringComparison.OrdinalIgnoreCase))
+                ?? avatars.FirstOrDefault();
+        }
+
+        private static bool IsValidHumanoidAvatar(Avatar avatar)
+        {
+            return avatar != null && avatar.isValid && avatar.isHuman;
         }
 
         private static void DrawReadOnlyPathField(string label, string value)
@@ -1971,7 +2543,7 @@ namespace Pawlygon.UnityTools.Editor
                 DrawStepArrow();
                 DrawStepBadge(WizardStep.WaitForImport, "2. Import");
                 DrawStepArrow();
-                DrawStepBadge(WizardStep.SelectMeshes, "3. Meshes");
+                DrawStepBadge(WizardStep.SelectMeshes, "3. Replacements");
                 DrawStepArrow();
                 DrawStepBadge(WizardStep.Prefabs, "4. Prefabs");
                 DrawStepArrow();

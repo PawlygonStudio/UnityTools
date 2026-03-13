@@ -2,7 +2,7 @@
 
 Unity Editor tools for Pawlygon's avatar face-tracking workflow.
 
-This package helps you duplicate source avatar assets, prepare a working folder structure, swap updated meshes from a modified FBX back onto a prefab, and generate `.hdiff` patch files for distribution.
+This package helps you duplicate source avatar assets, prepare a working folder structure, swap updated meshes and the primary humanoid Animator rig from a modified FBX back onto a prefab, and generate `.hdiff` patch files for distribution.
 
 
 ## Main features
@@ -12,7 +12,7 @@ This package helps you duplicate source avatar assets, prepare a working folder 
 - Shared-folder or separate-folder output layouts depending on your project needs
 - Automatic creation of working folders, copied FBX assets, copied prefabs, and working scenes
 - Reimport detection for modified FBX files
-- Mesh review UI for matching FBX skinned meshes to prefab skinned meshes before applying replacements
+- Review UI for matching FBX skinned meshes to prefab skinned meshes and replacing the prefab's primary humanoid Animator rig before applying replacements
 - Automatic creation of `FTDiffGenerator` assets for patch generation
 - `.hdiff` generation for both FBX and `.meta` changes using bundled `hdiffz` binaries
 - Optional prefab helpers for [Pawlygon VRCFT](https://github.com/PawlygonStudio/VRC-Facetracking) setup and importing the latest [PatcherHub](https://github.com/PawlygonStudio/PatcherHub) package
@@ -23,7 +23,7 @@ The current workflow is built around a five-step editor wizard:
 
 1. `Setup` - choose source FBX/prefab assets, configure output folders, and create the working structure
 2. `Import Modified FBX` - replace the copied FBX with your edited version and wait for Unity to reimport it
-3. `Select Meshes` - review detected skinned mesh matches and choose which replacements to apply
+3. `Select Replacements` - review detected skinned mesh matches plus the primary humanoid Animator rig and choose which replacements to apply
 4. `Prefabs` - optionally add [Pawlygon VRCFT](https://github.com/PawlygonStudio/VRC-Facetracking) setup or import the latest [PatcherHub](https://github.com/PawlygonStudio/PatcherHub) unitypackage
 5. `Finish` - review the generated paths and completed output
 
@@ -53,4 +53,3 @@ The generator creates:
 - one `.hdiff` file for the FBX `.meta`
 
 The wizard creates these generator assets for you automatically as part of the avatar setup flow.
-

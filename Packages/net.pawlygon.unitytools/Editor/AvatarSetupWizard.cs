@@ -394,7 +394,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             DrawSection(
                 "Import Modified FBX",
-                "Replace each copied FBX on disk with its edited version. Continue after every model below shows Updated.",
+                "Replace each copied FBX on disk with its edited version, or choose an edited FBX below. Continue after every model below shows Updated.",
                 () =>
                 {
                     int importedCount = avatarEntries.Count(entry => entry.hasImportedModifiedFbx);
@@ -1151,15 +1151,7 @@ namespace Pawlygon.UnityTools.Editor
                     continue;
                 }
 
-                long currentWriteTimeUtcTicks = GetAssetWriteTimeUtcTicks(entry.copiedFbxPath);
-                if (currentWriteTimeUtcTicks <= entry.watchedFbxWriteTimeUtcTicks)
-                {
-                    continue;
-                }
-
-                entry.watchedFbxWriteTimeUtcTicks = currentWriteTimeUtcTicks;
-                entry.hasImportedModifiedFbx = true;
-                matchedAny = true;
+                matchedAny |= TryMarkEntryAsImported(entry, force: false);
             }
 
             if (matchedAny)
@@ -1179,6 +1171,125 @@ namespace Pawlygon.UnityTools.Editor
             importLoadAttempts = 0;
             EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
             EditorApplication.delayCall += TryMoveToMeshSelectionAfterImport;
+        }
+
+        private bool TryMarkEntryAsImported(AvatarEntry entry, bool force)
+        {
+            if (entry == null || string.IsNullOrEmpty(entry.copiedFbxPath))
+            {
+                return false;
+            }
+
+            long currentWriteTimeUtcTicks = GetAssetWriteTimeUtcTicks(entry.copiedFbxPath);
+            if (!force && currentWriteTimeUtcTicks <= entry.watchedFbxWriteTimeUtcTicks)
+            {
+                return false;
+            }
+
+            entry.watchedFbxWriteTimeUtcTicks = currentWriteTimeUtcTicks;
+            entry.hasImportedModifiedFbx = true;
+            return true;
+        }
+
+        private void PromptForModifiedFbx(AvatarEntry entry)
+        {
+            if (entry == null)
+            {
+                return;
+            }
+
+            string initialDirectory = string.Empty;
+
+            if (!string.IsNullOrEmpty(entry.copiedFbxPath))
+            {
+                string copiedFbxAbsolutePath = ToAbsolutePath(entry.copiedFbxPath);
+                if (File.Exists(copiedFbxAbsolutePath))
+                {
+                    initialDirectory = Path.GetDirectoryName(copiedFbxAbsolutePath) ?? string.Empty;
+                }
+            }
+
+            string selectedPath = EditorUtility.OpenFilePanel("Choose Modified FBX", initialDirectory, "fbx");
+            if (string.IsNullOrEmpty(selectedPath))
+            {
+                return;
+            }
+
+            ImportModifiedFbxForEntry(entry, selectedPath);
+        }
+
+        private void ImportModifiedFbxForEntry(AvatarEntry entry, string sourcePath)
+        {
+            if (entry == null)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(sourcePath))
+            {
+                statusMessage = "Select a single .fbx file to import.";
+                return;
+            }
+
+            string resolvedSourcePath = ResolveAbsoluteFilePath(sourcePath);
+            if (string.IsNullOrEmpty(resolvedSourcePath) || !File.Exists(resolvedSourcePath))
+            {
+                statusMessage = "The selected FBX file could not be found.";
+                return;
+            }
+
+            if (!string.Equals(Path.GetExtension(resolvedSourcePath), ".fbx", StringComparison.OrdinalIgnoreCase))
+            {
+                statusMessage = "Only .fbx files can be imported here.";
+                return;
+            }
+
+            if (string.IsNullOrEmpty(entry.copiedFbxPath))
+            {
+                statusMessage = $"No copied FBX path is available for '{GetEntryDisplayName(entry)}'.";
+                return;
+            }
+
+            string targetAbsolutePath = ToAbsolutePath(entry.copiedFbxPath);
+
+            try
+            {
+                if (!string.Equals(Path.GetFullPath(resolvedSourcePath), Path.GetFullPath(targetAbsolutePath), StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Copy(resolvedSourcePath, targetAbsolutePath, true);
+                }
+
+                AssetDatabase.ImportAsset(entry.copiedFbxPath, ImportAssetOptions.ForceSynchronousImport);
+
+                if (AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedFbxPath) == null)
+                {
+                    statusMessage = $"Unity could not import '{Path.GetFileName(resolvedSourcePath)}' as an FBX.";
+                    return;
+                }
+
+                TryMarkEntryAsImported(entry, force: true);
+                statusMessage = $"Imported '{Path.GetFileName(resolvedSourcePath)}' into '{Path.GetFileName(entry.copiedFbxPath)}'.";
+                QueueMoveToMeshSelection();
+            }
+            catch (Exception exception)
+            {
+                statusMessage = $"Failed to import '{Path.GetFileName(resolvedSourcePath)}': {exception.Message}";
+            }
+
+            Repaint();
+        }
+
+        private string ResolveAbsoluteFilePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return string.Empty;
+            }
+
+            string normalizedPath = NormalizeAssetPath(path);
+            return Path.IsPathRooted(normalizedPath)
+                ? Path.GetFullPath(normalizedPath)
+                : ToAbsolutePath(normalizedPath);
         }
 
         private void TryMoveToMeshSelectionAfterImport()
@@ -1498,7 +1609,8 @@ namespace Pawlygon.UnityTools.Editor
             {
                 foreach (AvatarEntry entry in avatarEntries)
                 {
-                    using (new EditorGUILayout.HorizontalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) }))
+                    EditorGUILayout.BeginVertical(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) });
+                    using (new EditorGUILayout.HorizontalScope())
                     {
                         GUIContent statusIcon = entry.hasImportedModifiedFbx
                             ? EditorGUIUtility.IconContent("TestPassed")
@@ -1515,7 +1627,17 @@ namespace Pawlygon.UnityTools.Editor
                                 EditorGUILayout.LabelField(entry.copiedFbxPath, richMiniLabelStyle);
                             }
                         }
+
+                        GUILayout.FlexibleSpace();
+
+                        if (GUILayout.Button("Choose FBX...", GUILayout.Width(100f), GUILayout.Height(24f)))
+                        {
+                            PromptForModifiedFbx(entry);
+                        }
                     }
+
+                    EditorGUILayout.LabelField("Choose an updated FBX to replace this copied file", richMiniLabelStyle);
+                    EditorGUILayout.EndVertical();
 
                     EditorGUILayout.Space(3f);
                 }

@@ -19,6 +19,8 @@ This package helps you duplicate source avatar assets, prepare a working folder 
 - Automatic creation of `FTDiffGenerator` assets for patch generation
 - `.hdiff` generation for both FBX and `.meta` changes using bundled `hdiffz` binaries
 - Optional prefab helpers for [Pawlygon VRCFT](https://github.com/PawlygonStudio/VRC-Facetracking) setup and importing the latest [PatcherHub](https://github.com/PawlygonStudio/PatcherHub) package
+- `FX Gesture Checker` available from `!Pawlygon/Tools/FX Gesture Checker` — scans an avatar's FX AnimatorController for gesture-driven facial expression transitions (`GestureLeft`/`GestureRight`) and applies a `FacialExpressionsDisabled` guard so they do not fire when face tracking is active. Supports per-transition and per-layer guards, work-on-copy mode, and full undo
+- `Eye Muscle Settings` available from `!Pawlygon/Tools/Eye Muscle Settings` — reads and adjusts the humanoid eye muscle limit settings (In, Out, Up, Down) on an avatar's ModelImporter for face tracking compatibility. Provides synced or split left/right sliders, live scene preview with bone rotation and blendshape activation, and writes changes back to the ModelImporter with a single click
 
 ## Wizard workflow
 

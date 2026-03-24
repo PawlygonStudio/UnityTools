@@ -27,71 +27,6 @@ namespace Pawlygon.UnityTools.Editor
 
         private const int SourceFbxPickerControlId = 9001;
         private const int SourcePrefabPickerControlId = 9002;
-        private static readonly string[] RequiredUnifiedExpressionBlendshapes =
-        {
-            "BrowDownLeft",
-            "BrowDownRight",
-            "BrowInnerUpLeft",
-            "BrowInnerUpRight",
-            "BrowOuterUpLeft",
-            "BrowOuterUpRight",
-            "EyeClosedLeft",
-            "EyeClosedRight",
-            "EyeConstrict",
-            "EyeDilation",
-            "EyeLookDownLeft",
-            "EyeLookDownRight",
-            "EyeLookInLeft",
-            "EyeLookInRight",
-            "EyeLookOutLeft",
-            "EyeLookOutRight",
-            "EyeLookUpLeft",
-            "EyeLookUpRight",
-            "EyeSquintLeft",
-            "EyeSquintRight",
-            "EyeWideLeft",
-            "EyeWideRight",
-            "CheekPuffLeft",
-            "CheekPuffRight",
-            "CheekSquintLeft",
-            "CheekSquintRight",
-            "CheekSuckLeft",
-            "CheekSuckRight",
-            "LipFunnel",
-            "LipPucker",
-            "LipSuckLower",
-            "LipSuckUpper",
-            "JawForward",
-            "JawLeft",
-            "JawOpen",
-            "JawRight",
-            "MouthClosed",
-            "MouthFrownLeft",
-            "MouthFrownRight",
-            "MouthLeft",
-            "MouthLowerDown",
-            "MouthPress",
-            "MouthRaiserLower",
-            "MouthRaiserUpper",
-            "MouthRight",
-            "MouthSmileLeft",
-            "MouthSmileRight",
-            "MouthStretchLeft",
-            "MouthStretchRight",
-            "MouthTightenerLeft",
-            "MouthTightenerRight",
-            "MouthUpperUp",
-            "MouthUpperUpLeft",
-            "MouthUpperUpRight",
-            "NoseSneer",
-            "NoseSneerLeft",
-            "NoseSneerRight",
-            "TongueDown",
-            "TongueLeft",
-            "TongueOut",
-            "TongueRight",
-            "TongueUp"
-        };
 
         [SerializeField] private string mainFolderName = DefaultMainFolderName;
         [SerializeField] private bool useSeparateFolderPerAvatar;
@@ -112,6 +47,12 @@ namespace Pawlygon.UnityTools.Editor
         private GUIStyle currentStepStyle;
         private GUIStyle fxLayerHeaderStyle;
         private GUIStyle fxGuardedLabelStyle;
+        private GUIStyle helpBoxPadding10_8;
+        private GUIStyle helpBoxPadding8_6;
+        private GUIStyle helpBoxPadding10_6;
+        private GUIStyle helpBoxPadding5;
+        private GUIStyle boldLabel14;
+        private GUIStyle boldLabel13;
         private bool fxCheckAnalyzed;
         private readonly HashSet<int> fxExpandedLayers = new HashSet<int>();
 
@@ -545,7 +486,7 @@ namespace Pawlygon.UnityTools.Editor
                 () =>
                 {
                     GUIContent successIcon = EditorGUIUtility.IconContent("TestPassed");
-                    EditorGUILayout.LabelField(new GUIContent(" Batch avatar setup completed successfully", successIcon.image), new GUIStyle(EditorStyles.boldLabel) { fontSize = 14 });
+                    EditorGUILayout.LabelField(new GUIContent(" Batch avatar setup completed successfully", successIcon.image), boldLabel14);
                     EditorGUILayout.Space(EditorGUIUtility.standardVerticalSpacing);
 
                     foreach (AvatarEntry entry in avatarEntries)
@@ -596,7 +537,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
-                EditorGUILayout.LabelField("Pawlygon VRCFT", new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 });
+                EditorGUILayout.LabelField("Pawlygon VRCFT", boldLabel13);
                 EditorGUILayout.Space(2f);
 
                 if (isVrcftAvailable)
@@ -639,7 +580,7 @@ namespace Pawlygon.UnityTools.Editor
 
             using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
-                EditorGUILayout.LabelField("PatcherHub", new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 });
+                EditorGUILayout.LabelField("PatcherHub", boldLabel13);
                 EditorGUILayout.Space(2f);
 
                 if (isPatcherHubInstalled)
@@ -685,7 +626,7 @@ namespace Pawlygon.UnityTools.Editor
             string sanitizedMainFolderName = mainFolderName.Trim();
             string effectiveSharedAvatarFolderName = useSeparateFolderPerAvatar ? string.Empty : sharedAvatarFolderName.Trim();
 
-            EnsureFolderExists(CombineAssetPath("Assets", sanitizedMainFolderName));
+            PawlygonEditorUtils.EnsureFolderExists(PawlygonEditorUtils.CombineAssetPath("Assets", sanitizedMainFolderName));
 
             if (useSeparateFolderPerAvatar)
             {
@@ -734,21 +675,21 @@ namespace Pawlygon.UnityTools.Editor
             string sourceFbxPath = AssetDatabase.GetAssetPath(entry.sourceFbx);
             string sourcePrefabPath = AssetDatabase.GetAssetPath(entry.sourcePrefab);
 
-            entry.avatarRootPath = CombineAssetPath("Assets", sanitizedMainFolderName, avatarFolderName);
-            string fbxFolderPath = CombineAssetPath(entry.avatarRootPath, "FBX");
-            string prefabFolderPath = CombineAssetPath(entry.avatarRootPath, "Prefabs");
-            string internalFolderPath = CombineAssetPath(entry.avatarRootPath, "Internal");
-            string scenesFolderPath = CombineAssetPath(internalFolderPath, "Scenes");
+            entry.avatarRootPath = PawlygonEditorUtils.CombineAssetPath("Assets", sanitizedMainFolderName, avatarFolderName);
+            string fbxFolderPath = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "FBX");
+            string prefabFolderPath = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "Prefabs");
+            string internalFolderPath = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "Internal");
+            string scenesFolderPath = PawlygonEditorUtils.CombineAssetPath(internalFolderPath, "Scenes");
 
             string copiedFbxFileName = GetCopiedFbxFileName(sourceFbxPath);
             string copiedPrefabFileName = Path.GetFileName(sourcePrefabPath);
             string sceneFileName = $"{avatarFolderName} - Pawlygon VRCFT.unity";
             string diffGeneratorFileName = $"{Path.GetFileNameWithoutExtension(sourceFbxPath)} Face Tracking DiffGenerator.asset";
 
-            entry.copiedFbxPath = CombineAssetPath(fbxFolderPath, copiedFbxFileName);
-            entry.copiedPrefabPath = CombineAssetPath(prefabFolderPath, copiedPrefabFileName);
-            entry.createdScenePath = CombineAssetPath(scenesFolderPath, sceneFileName);
-            entry.diffGeneratorAssetPath = CombineAssetPath(internalFolderPath, diffGeneratorFileName);
+            entry.copiedFbxPath = PawlygonEditorUtils.CombineAssetPath(fbxFolderPath, copiedFbxFileName);
+            entry.copiedPrefabPath = PawlygonEditorUtils.CombineAssetPath(prefabFolderPath, copiedPrefabFileName);
+            entry.createdScenePath = PawlygonEditorUtils.CombineAssetPath(scenesFolderPath, sceneFileName);
+            entry.diffGeneratorAssetPath = PawlygonEditorUtils.CombineAssetPath(internalFolderPath, diffGeneratorFileName);
 
             if (AssetDatabase.IsValidFolder(entry.avatarRootPath))
             {
@@ -756,11 +697,11 @@ namespace Pawlygon.UnityTools.Editor
                 return false;
             }
 
-            EnsureFolderExists(entry.avatarRootPath);
-            EnsureFolderExists(fbxFolderPath);
-            EnsureFolderExists(prefabFolderPath);
-            EnsureFolderExists(internalFolderPath);
-            EnsureFolderExists(scenesFolderPath);
+            PawlygonEditorUtils.EnsureFolderExists(entry.avatarRootPath);
+            PawlygonEditorUtils.EnsureFolderExists(fbxFolderPath);
+            PawlygonEditorUtils.EnsureFolderExists(prefabFolderPath);
+            PawlygonEditorUtils.EnsureFolderExists(internalFolderPath);
+            PawlygonEditorUtils.EnsureFolderExists(scenesFolderPath);
 
             if (!CopyAvatarAssets(entry, sourceFbxPath, sourcePrefabPath))
             {
@@ -788,12 +729,12 @@ namespace Pawlygon.UnityTools.Editor
 
         private bool CreateSharedAvatarStructure(string sanitizedMainFolderName, string effectiveSharedAvatarFolderName)
         {
-            string avatarRootPath = CombineAssetPath("Assets", sanitizedMainFolderName, effectiveSharedAvatarFolderName);
-            string fbxFolderPath = CombineAssetPath(avatarRootPath, "FBX");
-            string prefabFolderPath = CombineAssetPath(avatarRootPath, "Prefabs");
-            string internalFolderPath = CombineAssetPath(avatarRootPath, "Internal");
-            string scenesFolderPath = CombineAssetPath(internalFolderPath, "Scenes");
-            string sharedScenePath = CombineAssetPath(scenesFolderPath, $"{effectiveSharedAvatarFolderName} - Pawlygon VRCFT.unity");
+            string avatarRootPath = PawlygonEditorUtils.CombineAssetPath("Assets", sanitizedMainFolderName, effectiveSharedAvatarFolderName);
+            string fbxFolderPath = PawlygonEditorUtils.CombineAssetPath(avatarRootPath, "FBX");
+            string prefabFolderPath = PawlygonEditorUtils.CombineAssetPath(avatarRootPath, "Prefabs");
+            string internalFolderPath = PawlygonEditorUtils.CombineAssetPath(avatarRootPath, "Internal");
+            string scenesFolderPath = PawlygonEditorUtils.CombineAssetPath(internalFolderPath, "Scenes");
+            string sharedScenePath = PawlygonEditorUtils.CombineAssetPath(scenesFolderPath, $"{effectiveSharedAvatarFolderName} - Pawlygon VRCFT.unity");
 
             if (AssetDatabase.IsValidFolder(avatarRootPath))
             {
@@ -801,11 +742,11 @@ namespace Pawlygon.UnityTools.Editor
                 return false;
             }
 
-            EnsureFolderExists(avatarRootPath);
-            EnsureFolderExists(fbxFolderPath);
-            EnsureFolderExists(prefabFolderPath);
-            EnsureFolderExists(internalFolderPath);
-            EnsureFolderExists(scenesFolderPath);
+            PawlygonEditorUtils.EnsureFolderExists(avatarRootPath);
+            PawlygonEditorUtils.EnsureFolderExists(fbxFolderPath);
+            PawlygonEditorUtils.EnsureFolderExists(prefabFolderPath);
+            PawlygonEditorUtils.EnsureFolderExists(internalFolderPath);
+            PawlygonEditorUtils.EnsureFolderExists(scenesFolderPath);
 
             var copiedPrefabPaths = new List<string>();
 
@@ -818,10 +759,10 @@ namespace Pawlygon.UnityTools.Editor
                 string diffGeneratorFileName = $"{Path.GetFileNameWithoutExtension(sourceFbxPath)} Face Tracking DiffGenerator.asset";
 
                 entry.avatarRootPath = avatarRootPath;
-                entry.copiedFbxPath = CombineAssetPath(fbxFolderPath, copiedFbxFileName);
-                entry.copiedPrefabPath = CombineAssetPath(prefabFolderPath, copiedPrefabFileName);
+                entry.copiedFbxPath = PawlygonEditorUtils.CombineAssetPath(fbxFolderPath, copiedFbxFileName);
+                entry.copiedPrefabPath = PawlygonEditorUtils.CombineAssetPath(prefabFolderPath, copiedPrefabFileName);
                 entry.createdScenePath = sharedScenePath;
-                entry.diffGeneratorAssetPath = CombineAssetPath(internalFolderPath, diffGeneratorFileName);
+                entry.diffGeneratorAssetPath = PawlygonEditorUtils.CombineAssetPath(internalFolderPath, diffGeneratorFileName);
 
                 if (!CopyAvatarAssets(entry, sourceFbxPath, sourcePrefabPath))
                 {
@@ -1034,6 +975,7 @@ namespace Pawlygon.UnityTools.Editor
             var operation = request.SendWebRequest();
             while (!operation.isDone)
             {
+                System.Threading.Thread.Sleep(10);
             }
 
             if (request.result != UnityWebRequest.Result.Success)
@@ -1058,6 +1000,7 @@ namespace Pawlygon.UnityTools.Editor
             var operation = request.SendWebRequest();
             while (!operation.isDone)
             {
+                System.Threading.Thread.Sleep(10);
             }
 
             if (request.result != UnityWebRequest.Result.Success)
@@ -1190,7 +1133,7 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
-            string normalizedImportedAssetPath = NormalizeAssetPath(importedAssetPath);
+            string normalizedImportedAssetPath = PawlygonEditorUtils.NormalizeAssetPath(importedAssetPath);
             bool matchedAny = false;
 
             foreach (AvatarEntry entry in avatarEntries)
@@ -1200,7 +1143,7 @@ namespace Pawlygon.UnityTools.Editor
                     continue;
                 }
 
-                if (!string.Equals(NormalizeAssetPath(entry.copiedFbxPath), normalizedImportedAssetPath, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(PawlygonEditorUtils.NormalizeAssetPath(entry.copiedFbxPath), normalizedImportedAssetPath, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -1340,7 +1283,7 @@ namespace Pawlygon.UnityTools.Editor
                 return string.Empty;
             }
 
-            string normalizedPath = NormalizeAssetPath(path);
+            string normalizedPath = PawlygonEditorUtils.NormalizeAssetPath(path);
             return Path.IsPathRooted(normalizedPath)
                 ? Path.GetFullPath(normalizedPath)
                 : ToAbsolutePath(normalizedPath);
@@ -1424,9 +1367,9 @@ namespace Pawlygon.UnityTools.Editor
                     string baseName = diffGenerator.GetBaseName();
                     if (!string.IsNullOrEmpty(baseName))
                     {
-                        string patcherFolder = CombineAssetPath(entry.avatarRootPath, "patcher");
-                        string diffFilesFolder = CombineAssetPath(patcherFolder, "data", "DiffFiles");
-                        string fbxFolder = CombineAssetPath(entry.avatarRootPath, "FBX");
+                        string patcherFolder = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "patcher");
+                        string diffFilesFolder = PawlygonEditorUtils.CombineAssetPath(patcherFolder, "data", "DiffFiles");
+                        string fbxFolder = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "FBX");
 
                         GameObject copiedPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedPrefabPath);
 
@@ -1434,8 +1377,8 @@ namespace Pawlygon.UnityTools.Editor
                         {
                             OriginalFbx = diffGenerator.originalModelFbx,
                             AvatarDisplayName = entry.avatarFolderName?.Trim(),
-                            FbxDiffAssetPath = CombineAssetPath(diffFilesFolder, baseName + ".hdiff"),
-                            MetaDiffAssetPath = CombineAssetPath(diffFilesFolder, baseName + "Meta.hdiff"),
+                            FbxDiffAssetPath = PawlygonEditorUtils.CombineAssetPath(diffFilesFolder, baseName + ".hdiff"),
+                            MetaDiffAssetPath = PawlygonEditorUtils.CombineAssetPath(diffFilesFolder, baseName + "Meta.hdiff"),
                             ConfigOutputFolder = patcherFolder,
                             FbxOutputPath = fbxFolder,
                             PatchedPrefabs = copiedPrefab != null ? new List<GameObject> { copiedPrefab } : null,
@@ -1509,7 +1452,7 @@ namespace Pawlygon.UnityTools.Editor
                 .OrderBy(selection => selection.fbxRelativePath, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            PopulateUnifiedBlendshapeWarnings(entry.meshSelections, fbxMeshSubAssets, RequiredUnifiedExpressionBlendshapes);
+            PopulateUnifiedBlendshapeWarnings(entry.meshSelections, fbxMeshSubAssets, PawlygonEditorUtils.RequiredUnifiedExpressionBlendshapes);
         }
 
         private void ApplySelectedReplacementsToPrefab(AvatarEntry entry)
@@ -1687,11 +1630,11 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawImportStatusSummary()
         {
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 8, 8) }))
+            using (new EditorGUILayout.VerticalScope(helpBoxPadding10_8))
             {
                 foreach (AvatarEntry entry in avatarEntries)
                 {
-                    EditorGUILayout.BeginVertical(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) });
+                    EditorGUILayout.BeginVertical(helpBoxPadding8_6);
                     using (new EditorGUILayout.HorizontalScope())
                     {
                         GUIContent statusIcon = entry.hasImportedModifiedFbx
@@ -1734,7 +1677,7 @@ namespace Pawlygon.UnityTools.Editor
             bool hasMissingUnifiedBlendshapes = entry.meshSelections.Any(HasMissingUnifiedBlendshapesWarning);
             bool hasCompleteUnifiedBlendshapes = entry.meshSelections.Any(HasCompleteUnifiedBlendshapesInfo);
 
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 8, 8) }))
+            using (new EditorGUILayout.VerticalScope(helpBoxPadding10_8))
             {
                 EditorGUILayout.LabelField(GetEntryDisplayName(entry), EditorStyles.boldLabel);
                 EditorGUILayout.LabelField($"{matchedCount} matched renderer{(matchedCount == 1 ? string.Empty : "s")}, {selectedCount} selected", PawlygonEditorUI.RichMiniLabelStyle);
@@ -1755,7 +1698,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawPathSummary(AvatarEntry entry, bool includeAvatarRoot, bool includeDiffGenerator)
         {
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 8, 8) }))
+            using (new EditorGUILayout.VerticalScope(helpBoxPadding10_8))
             {
                 if (includeAvatarRoot)
                 {
@@ -1817,7 +1760,7 @@ namespace Pawlygon.UnityTools.Editor
                 ? originalColor
                 : new Color(1f, 0.9f, 0.7f, 0.5f);
 
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) }))
+            using (new EditorGUILayout.VerticalScope(helpBoxPadding8_6))
             {
                 GUI.backgroundColor = originalColor;
 
@@ -1863,7 +1806,7 @@ namespace Pawlygon.UnityTools.Editor
             Color originalColor = GUI.backgroundColor;
             GUI.backgroundColor = meshSelection.hasMatch ? originalColor : new Color(1f, 0.9f, 0.7f, 0.5f);
 
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) }))
+            using (new EditorGUILayout.VerticalScope(helpBoxPadding8_6))
             {
                 GUI.backgroundColor = originalColor;
 
@@ -1906,7 +1849,7 @@ namespace Pawlygon.UnityTools.Editor
 
                     if (meshSelection.showUnifiedBlendshapeWarningDetails)
                     {
-                        using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 6, 6) }))
+                        using (new EditorGUILayout.VerticalScope(helpBoxPadding10_6))
                         {
                             foreach (string blendshapeName in meshSelection.missingRequiredUnifiedBlendshapesOnFbx)
                             {
@@ -2063,44 +2006,10 @@ namespace Pawlygon.UnityTools.Editor
             return new Vector3(column * SharedSceneGridSpacingX, 0f, row * SharedSceneGridSpacingZ);
         }
 
-        private static void EnsureFolderExists(string folderPath)
-        {
-            folderPath = NormalizeAssetPath(folderPath);
-            if (AssetDatabase.IsValidFolder(folderPath))
-            {
-                return;
-            }
-
-            string parentPath = Path.GetDirectoryName(folderPath)?.Replace("\\", "/");
-            string folderName = Path.GetFileName(folderPath);
-
-            if (string.IsNullOrEmpty(parentPath) || string.IsNullOrEmpty(folderName))
-            {
-                throw new InvalidOperationException($"Cannot create folder at '{folderPath}'.");
-            }
-
-            if (!AssetDatabase.IsValidFolder(parentPath))
-            {
-                EnsureFolderExists(parentPath);
-            }
-
-            AssetDatabase.CreateFolder(parentPath, folderName);
-        }
-
-        private static string CombineAssetPath(params string[] parts)
-        {
-            return string.Join("/", parts.Where(part => !string.IsNullOrWhiteSpace(part)).Select(part => part.Trim('/')));
-        }
-
-        private static string NormalizeAssetPath(string assetPath)
-        {
-            return assetPath.Replace("\\", "/");
-        }
-
         private static string ToAbsolutePath(string assetPath)
         {
             string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-            return Path.GetFullPath(Path.Combine(projectRoot, NormalizeAssetPath(assetPath)));
+            return Path.GetFullPath(Path.Combine(projectRoot, PawlygonEditorUtils.NormalizeAssetPath(assetPath)));
         }
 
         private static long GetAssetWriteTimeUtcTicks(string assetPath)
@@ -2149,7 +2058,7 @@ namespace Pawlygon.UnityTools.Editor
                 }
 
                 Mesh fbxMesh = ResolveFbxMeshForSelection(meshSelection, fbxMeshSubAssets);
-                meshSelection.missingRequiredUnifiedBlendshapesOnFbx = GetMissingRequiredUnifiedBlendshapes(fbxMesh, requiredBlendshapes);
+                meshSelection.missingRequiredUnifiedBlendshapesOnFbx = PawlygonEditorUtils.GetMissingRequiredUnifiedBlendshapes(fbxMesh, requiredBlendshapes);
             }
         }
 
@@ -2171,29 +2080,6 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             return null;
-        }
-
-        private static string[] GetMissingRequiredUnifiedBlendshapes(Mesh mesh, string[] requiredBlendshapes)
-        {
-            if (mesh == null)
-            {
-                return requiredBlendshapes?.ToArray() ?? Array.Empty<string>();
-            }
-
-            var availableBlendshapes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            for (int i = 0; i < mesh.blendShapeCount; i++)
-            {
-                string blendshapeName = mesh.GetBlendShapeName(i);
-                if (!string.IsNullOrWhiteSpace(blendshapeName))
-                {
-                    availableBlendshapes.Add(blendshapeName);
-                }
-            }
-
-            return (requiredBlendshapes ?? Array.Empty<string>())
-                .Where(requiredBlendshape => !availableBlendshapes.Contains(requiredBlendshape))
-                .ToArray();
         }
 
         private static List<Avatar> LoadHumanoidAvatarSubAssets(string fbxAssetPath)
@@ -2610,11 +2496,18 @@ namespace Pawlygon.UnityTools.Editor
             fxLayerHeaderStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 12 };
             fxGuardedLabelStyle = new GUIStyle(EditorStyles.miniLabel) { fontStyle = FontStyle.Italic };
             fxGuardedLabelStyle.normal.textColor = new Color(0.3f, 0.75f, 0.3f);
+
+            helpBoxPadding10_8 = new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 8, 8) };
+            helpBoxPadding8_6 = new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) };
+            helpBoxPadding10_6 = new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 6, 6) };
+            helpBoxPadding5 = new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(5, 5, 5, 5) };
+            boldLabel14 = new GUIStyle(EditorStyles.boldLabel) { fontSize = 14 };
+            boldLabel13 = new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 };
         }
 
         private void DrawStepIndicator()
         {
-            using (new EditorGUILayout.HorizontalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(5, 5, 5, 5) }))
+            using (new EditorGUILayout.HorizontalScope(helpBoxPadding5))
             {
                 DrawStepBadge(WizardStep.Setup, "1. Setup");
                 DrawStepArrow();
@@ -2634,8 +2527,9 @@ namespace Pawlygon.UnityTools.Editor
         {
             bool isPast = currentStep > step;
             bool isCurrent = currentStep == step;
-            GUIStyle style = new GUIStyle(isCurrent ? currentStepStyle : stepStyle);
+            GUIStyle style = isCurrent ? currentStepStyle : stepStyle;
 
+            Color savedColor = style.normal.textColor;
             if (isPast)
             {
                 style.normal.textColor = new Color(0.3f, 0.7f, 0.3f);
@@ -2651,6 +2545,8 @@ namespace Pawlygon.UnityTools.Editor
                 GUILayout.Label(content, style, GUILayout.ExpandWidth(true));
                 GUILayout.FlexibleSpace();
             }
+
+            style.normal.textColor = savedColor;
         }
 
         private static void DrawStepArrow()
@@ -2688,7 +2584,7 @@ namespace Pawlygon.UnityTools.Editor
                 () =>
                 {
                     // Check VRChat SDK availability
-                    if (FXGestureCheckerCore.FindVRCAvatarDescriptorType() == null)
+                    if (PawlygonEditorUtils.FindVRCAvatarDescriptorType() == null)
                     {
                         EditorGUILayout.HelpBox(
                             "VRChat SDK not detected. Skipping FX gesture check.",
@@ -3000,7 +2896,7 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             // 1. Copy FX controller to VRChat subfolder
-            string vrchatFolder = CombineAssetPath(entry.avatarRootPath, "VRChat");
+            string vrchatFolder = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "VRChat");
             AnimatorController copy = FXGestureCheckerCore.CopyFXController(
                 result.FXController, vrchatFolder, out string copyError);
             if (copy == null)

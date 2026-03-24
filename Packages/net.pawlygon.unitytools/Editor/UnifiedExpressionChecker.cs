@@ -16,72 +16,6 @@ namespace Pawlygon.UnityTools.Editor
         private const string MenuPath = "!Pawlygon/Tools/Face Tracking Blendshapes";
         private const float SectionSpacing = 10f;
 
-        private static readonly string[] RequiredUnifiedExpressionBlendshapes =
-        {
-            "BrowDownLeft",
-            "BrowDownRight",
-            "BrowInnerUpLeft",
-            "BrowInnerUpRight",
-            "BrowOuterUpLeft",
-            "BrowOuterUpRight",
-            "EyeClosedLeft",
-            "EyeClosedRight",
-            "EyeConstrict",
-            "EyeDilation",
-            "EyeLookDownLeft",
-            "EyeLookDownRight",
-            "EyeLookInLeft",
-            "EyeLookInRight",
-            "EyeLookOutLeft",
-            "EyeLookOutRight",
-            "EyeLookUpLeft",
-            "EyeLookUpRight",
-            "EyeSquintLeft",
-            "EyeSquintRight",
-            "EyeWideLeft",
-            "EyeWideRight",
-            "CheekPuffLeft",
-            "CheekPuffRight",
-            "CheekSquintLeft",
-            "CheekSquintRight",
-            "CheekSuckLeft",
-            "CheekSuckRight",
-            "LipFunnel",
-            "LipPucker",
-            "LipSuckLower",
-            "LipSuckUpper",
-            "JawForward",
-            "JawLeft",
-            "JawOpen",
-            "JawRight",
-            "MouthClosed",
-            "MouthFrownLeft",
-            "MouthFrownRight",
-            "MouthLeft",
-            "MouthLowerDown",
-            "MouthPress",
-            "MouthRaiserLower",
-            "MouthRaiserUpper",
-            "MouthRight",
-            "MouthSmileLeft",
-            "MouthSmileRight",
-            "MouthStretchLeft",
-            "MouthStretchRight",
-            "MouthTightenerLeft",
-            "MouthTightenerRight",
-            "MouthUpperUp",
-            "MouthUpperUpLeft",
-            "MouthUpperUpRight",
-            "NoseSneer",
-            "NoseSneerLeft",
-            "NoseSneerRight",
-            "TongueDown",
-            "TongueLeft",
-            "TongueOut",
-            "TongueRight",
-            "TongueUp"
-        };
-
         // --- State ---
         [SerializeField] private Vector2 scrollPosition;
         private GameObject selectedInput;
@@ -253,8 +187,8 @@ namespace Pawlygon.UnityTools.Editor
                 }
 
                 string hierarchyPath = GetRelativeHierarchyPath(sceneObject.transform, renderer.transform);
-                string[] missing = GetMissingRequiredUnifiedBlendshapes(mesh);
-                bool hasAny = missing.Length < RequiredUnifiedExpressionBlendshapes.Length;
+                string[] missing = PawlygonEditorUtils.GetMissingRequiredUnifiedBlendshapes(mesh);
+                bool hasAny = missing.Length < PawlygonEditorUtils.RequiredUnifiedExpressionBlendshapes.Length;
 
                 results.Add(new MeshAnalysis
                 {
@@ -288,8 +222,8 @@ namespace Pawlygon.UnityTools.Editor
             {
                 if (subAsset is Mesh mesh && mesh.blendShapeCount > 0)
                 {
-                    string[] missing = GetMissingRequiredUnifiedBlendshapes(mesh);
-                    bool hasAny = missing.Length < RequiredUnifiedExpressionBlendshapes.Length;
+                    string[] missing = PawlygonEditorUtils.GetMissingRequiredUnifiedBlendshapes(mesh);
+                    bool hasAny = missing.Length < PawlygonEditorUtils.RequiredUnifiedExpressionBlendshapes.Length;
 
                     results.Add(new MeshAnalysis
                     {
@@ -370,7 +304,7 @@ namespace Pawlygon.UnityTools.Editor
                     {
                         GUILayout.Label(EditorGUIUtility.IconContent("console.warnicon.sml"), GUILayout.Width(18f), GUILayout.Height(16f));
                         EditorGUILayout.LabelField(
-                            $"Missing {meshResult.MissingBlendshapes.Length} of {RequiredUnifiedExpressionBlendshapes.Length} Unified Expression Blendshapes",
+                            $"Missing {meshResult.MissingBlendshapes.Length} of {PawlygonEditorUtils.RequiredUnifiedExpressionBlendshapes.Length} Unified Expression Blendshapes",
                             PawlygonEditorUI.RichMiniLabelStyle);
                     }
 
@@ -398,30 +332,6 @@ namespace Pawlygon.UnityTools.Editor
         // =====================================================================
         // Utility
         // =====================================================================
-
-        private static string[] GetMissingRequiredUnifiedBlendshapes(Mesh mesh)
-        {
-            if (mesh == null)
-            {
-                return RequiredUnifiedExpressionBlendshapes.ToArray();
-            }
-
-            var availableBlendshapes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            for (int i = 0; i < mesh.blendShapeCount; i++)
-            {
-                string blendshapeName = mesh.GetBlendShapeName(i);
-
-                if (!string.IsNullOrWhiteSpace(blendshapeName))
-                {
-                    availableBlendshapes.Add(blendshapeName);
-                }
-            }
-
-            return RequiredUnifiedExpressionBlendshapes
-                .Where(required => !availableBlendshapes.Contains(required))
-                .ToArray();
-        }
 
         private static string GetRelativeHierarchyPath(Transform root, Transform target)
         {
@@ -475,7 +385,7 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             // Fall back to first root with a VRCAvatarDescriptor
-            Type descriptorType = FXGestureCheckerCore.FindVRCAvatarDescriptorType();
+            Type descriptorType = PawlygonEditorUtils.FindVRCAvatarDescriptorType();
 
             if (descriptorType != null)
             {

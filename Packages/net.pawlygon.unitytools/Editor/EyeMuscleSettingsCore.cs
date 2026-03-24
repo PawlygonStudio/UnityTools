@@ -96,39 +96,8 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         // =====================================================================
-        // Cached reflection types
-        // =====================================================================
-
-        private static Type cachedDescriptorType;
-        private static bool descriptorTypeLookedUp;
-
-        // =====================================================================
         // Avatar discovery
         // =====================================================================
-
-        /// <summary>
-        /// Finds the first VRCAvatarDescriptor type via TypeCache, caching the result.
-        /// Returns null if the VRChat Avatars SDK is not installed.
-        /// </summary>
-        internal static Type FindVRCAvatarDescriptorType()
-        {
-            if (descriptorTypeLookedUp) return cachedDescriptorType;
-
-            descriptorTypeLookedUp = true;
-            cachedDescriptorType = null;
-
-            TypeCache.TypeCollection monoBehaviourTypes = TypeCache.GetTypesDerivedFrom<MonoBehaviour>();
-            foreach (Type type in monoBehaviourTypes)
-            {
-                if (type.Name == "VRCAvatarDescriptor" && type.Namespace != null && type.Namespace.StartsWith("VRC"))
-                {
-                    cachedDescriptorType = type;
-                    break;
-                }
-            }
-
-            return cachedDescriptorType;
-        }
 
         /// <summary>
         /// Finds the first scene root GameObject that has a VRCAvatarDescriptor component.
@@ -149,7 +118,7 @@ namespace Pawlygon.UnityTools.Editor
                 return null;
             }
 
-            Type descriptorType = FindVRCAvatarDescriptorType();
+            Type descriptorType = PawlygonEditorUtils.FindVRCAvatarDescriptorType();
 
             // Prefer a root object with a VRCAvatarDescriptor
             if (descriptorType != null)

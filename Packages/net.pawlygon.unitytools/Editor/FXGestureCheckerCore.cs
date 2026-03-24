@@ -89,36 +89,9 @@ namespace Pawlygon.UnityTools.Editor
         // Cached reflection types
         // =====================================================================
 
-        private static Type cachedDescriptorType;
-        private static bool descriptorTypeLookedUp;
-
         // =====================================================================
         // Reflection helpers
         // =====================================================================
-
-        /// <summary>
-        /// Finds the VRCAvatarDescriptor type via TypeCache, caching the result.
-        /// Returns null if the VRChat Avatars SDK is not installed.
-        /// </summary>
-        internal static Type FindVRCAvatarDescriptorType()
-        {
-            if (descriptorTypeLookedUp) return cachedDescriptorType;
-
-            descriptorTypeLookedUp = true;
-            cachedDescriptorType = null;
-
-            TypeCache.TypeCollection monoBehaviourTypes = TypeCache.GetTypesDerivedFrom<MonoBehaviour>();
-            foreach (Type type in monoBehaviourTypes)
-            {
-                if (type.Name == "VRCAvatarDescriptor" && type.Namespace != null && type.Namespace.StartsWith("VRC"))
-                {
-                    cachedDescriptorType = type;
-                    break;
-                }
-            }
-
-            return cachedDescriptorType;
-        }
 
         /// <summary>
         /// Extracts the FX AnimatorController from a VRCAvatarDescriptor component using reflection.
@@ -206,7 +179,7 @@ namespace Pawlygon.UnityTools.Editor
                 };
             }
 
-            Type descriptorType = FindVRCAvatarDescriptorType();
+            Type descriptorType = PawlygonEditorUtils.FindVRCAvatarDescriptorType();
             if (descriptorType == null)
             {
                 return new AnalysisResult
@@ -576,7 +549,7 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             string folder = string.IsNullOrEmpty(outputFolder) ? "Assets" : outputFolder;
-            EnsureFolderExists(folder);
+            PawlygonEditorUtils.EnsureFolderExists(folder);
 
             string fileName = Path.GetFileNameWithoutExtension(sourcePath);
             string extension = Path.GetExtension(sourcePath);
@@ -666,22 +639,6 @@ namespace Pawlygon.UnityTools.Editor
 
             Debug.Log($"{LogPrefix} Assigned copied FX controller to VRCAvatarDescriptor on '{descriptor.gameObject.name}'.");
             return true;
-        }
-
-        /// <summary>
-        /// Recursively ensures that all folders in the given asset path exist,
-        /// creating them via <see cref="AssetDatabase.CreateFolder"/> as needed.
-        /// </summary>
-        internal static void EnsureFolderExists(string assetPath)
-        {
-            if (string.IsNullOrEmpty(assetPath) || AssetDatabase.IsValidFolder(assetPath)) return;
-
-            string parent = Path.GetDirectoryName(assetPath)?.Replace('\\', '/');
-            if (string.IsNullOrEmpty(parent)) return;
-
-            EnsureFolderExists(parent);
-            string folderName = Path.GetFileName(assetPath);
-            AssetDatabase.CreateFolder(parent, folderName);
         }
 
         // =====================================================================

@@ -32,6 +32,11 @@ namespace Pawlygon.UnityTools.Editor
         private static GUIStyle headerSubtitleStyle;
         private static GUIStyle footerStyle;
         private static GUIStyle footerLinkStyle;
+        private static GUIStyle headerBoxStyle;
+        private static GUIStyle footerBoxStyle;
+        private static GUIStyle primaryButtonStyle;
+        private static GUIStyle sectionBoxStyle;
+        private static GUIStyle sectionTitleStyle;
 
         // =====================================================================
         // Style Initialization
@@ -106,6 +111,26 @@ namespace Pawlygon.UnityTools.Editor
 
             footerLinkStyle.normal.textColor = new Color(0.39f, 0.67f, 1f);
             footerLinkStyle.hover.textColor = new Color(0.58f, 0.79f, 1f);
+
+            headerBoxStyle = new GUIStyle(EditorStyles.helpBox)
+            {
+                padding = new RectOffset(14, 14, 12, 12)
+            };
+
+            footerBoxStyle = new GUIStyle(EditorStyles.helpBox)
+            {
+                padding = new RectOffset(12, 12, 10, 10)
+            };
+
+            sectionBoxStyle = new GUIStyle(EditorStyles.helpBox)
+            {
+                padding = new RectOffset(15, 15, 15, 15)
+            };
+
+            sectionTitleStyle = new GUIStyle(EditorStyles.boldLabel)
+            {
+                fontSize = 14
+            };
         }
 
         // =====================================================================
@@ -126,7 +151,7 @@ namespace Pawlygon.UnityTools.Editor
 
             EditorGUILayout.Space(6f);
 
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(14, 14, 12, 12) }))
+            using (new EditorGUILayout.VerticalScope(headerBoxStyle))
             {
                 Rect headerRect = EditorGUILayout.GetControlRect(false, 84f);
 
@@ -162,7 +187,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             string version = GetPackageVersion();
 
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(12, 12, 10, 10) }))
+            using (new EditorGUILayout.VerticalScope(footerBoxStyle))
             {
                 EditorGUILayout.LabelField($"Made with \u2764 by Pawlygon Studio  \u2022  v{version}", footerStyle);
                 EditorGUILayout.Space(6f);
@@ -200,13 +225,16 @@ namespace Pawlygon.UnityTools.Editor
         /// <returns>True if the button was clicked.</returns>
         public static bool DrawPrimaryButton(string text, float height = 34f)
         {
+            if (primaryButtonStyle == null)
+            {
+                primaryButtonStyle = new GUIStyle(GUI.skin.button) { fontStyle = FontStyle.Bold, fontSize = 13 };
+            }
+
             Color oldColor = GUI.backgroundColor;
             GUI.backgroundColor = EditorGUIUtility.isProSkin
                 ? new Color(0.2f, 0.6f, 1f)
                 : new Color(0.1f, 0.4f, 0.8f);
-            bool clicked = GUILayout.Button(text,
-                new GUIStyle(GUI.skin.button) { fontStyle = FontStyle.Bold, fontSize = 13 },
-                GUILayout.Height(height));
+            bool clicked = GUILayout.Button(text, primaryButtonStyle, GUILayout.Height(height));
             GUI.backgroundColor = oldColor;
             return clicked;
         }
@@ -226,9 +254,9 @@ namespace Pawlygon.UnityTools.Editor
         /// </summary>
         public static void DrawSection(string title, string description, Action drawContent)
         {
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(15, 15, 15, 15) }))
+            using (new EditorGUILayout.VerticalScope(sectionBoxStyle))
             {
-                EditorGUILayout.LabelField(title, new GUIStyle(EditorStyles.boldLabel) { fontSize = 14 });
+                EditorGUILayout.LabelField(title, sectionTitleStyle);
                 EditorGUILayout.Space(2);
                 EditorGUILayout.LabelField(description, SubLabelStyle);
                 EditorGUILayout.Space(12);

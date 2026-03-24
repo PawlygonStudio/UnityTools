@@ -515,7 +515,7 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             // Prefer a root object with a VRCAvatarDescriptor
-            Type descriptorType = FXGestureCheckerCore.FindVRCAvatarDescriptorType();
+            Type descriptorType = PawlygonEditorUtils.FindVRCAvatarDescriptorType();
 
             if (descriptorType != null)
             {

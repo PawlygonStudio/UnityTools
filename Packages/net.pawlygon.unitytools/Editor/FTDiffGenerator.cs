@@ -87,7 +87,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             try
             {
-                var process = new Process
+                using var process = new Process
                 {
                     StartInfo = new ProcessStartInfo
                     {
@@ -164,26 +164,11 @@ namespace Pawlygon.UnityTools.Editor
             return AssetDatabase.GetAssetPath(outputDirectory) + "/patcher";
         }
 
-        /// <summary>
-        /// Converts an absolute file system path to a Unity asset path (relative to Assets/).
-        /// </summary>
-        internal static string ToAssetPath(string absolutePath)
-        {
-            string normalized = absolutePath.Replace('\\', '/');
-            string dataPath = Application.dataPath.Replace('\\', '/');
-            if (normalized.StartsWith(dataPath, StringComparison.OrdinalIgnoreCase))
-            {
-                return "Assets" + normalized.Substring(dataPath.Length);
-            }
-
-            return normalized;
-        }
-
         private bool SetExecutablePermission(string path)
         {
             try
             {
-                var chmod = new Process
+                using var chmod = new Process
                 {
                     StartInfo = new ProcessStartInfo
                     {

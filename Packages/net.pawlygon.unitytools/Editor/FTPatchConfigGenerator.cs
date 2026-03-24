@@ -114,7 +114,7 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             string assetName = ResolveAssetName(context);
-            string assetPath = CombineAssetPath(configFolder, assetName + ".asset");
+            string assetPath = PawlygonEditorUtils.CombineAssetPath(configFolder, assetName + ".asset");
 
             // Check if an existing config already exists at this path
             ScriptableObject existingConfig = AssetDatabase.LoadAssetAtPath<ScriptableObject>(assetPath);
@@ -136,7 +136,7 @@ namespace Pawlygon.UnityTools.Editor
             }
             else
             {
-                EnsureFolderExists(configFolder);
+                PawlygonEditorUtils.EnsureFolderExists(configFolder);
                 AssetDatabase.CreateAsset(config, assetPath);
                 Debug.Log($"{LogPrefix} Created new FTPatchConfig at '{assetPath}'.");
             }
@@ -320,29 +320,6 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             return "FTPatchConfig";
-        }
-
-        private static void EnsureFolderExists(string assetPath)
-        {
-            if (AssetDatabase.IsValidFolder(assetPath))
-            {
-                return;
-            }
-
-            string parent = Path.GetDirectoryName(assetPath)?.Replace('\\', '/');
-            if (string.IsNullOrEmpty(parent))
-            {
-                return;
-            }
-
-            EnsureFolderExists(parent);
-            string folderName = Path.GetFileName(assetPath);
-            AssetDatabase.CreateFolder(parent, folderName);
-        }
-
-        private static string CombineAssetPath(params string[] parts)
-        {
-            return string.Join("/", parts.Where(p => !string.IsNullOrEmpty(p)));
         }
     }
 }

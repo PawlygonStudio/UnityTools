@@ -74,6 +74,7 @@ namespace Pawlygon.UnityTools.Editor
                         if (targetObject is FTDiffGenerator generator)
                         {
                             generator.GenerateDiffFiles();
+                            GeneratePatchConfig(generator);
                         }
                     }
                 }
@@ -125,6 +126,36 @@ namespace Pawlygon.UnityTools.Editor
             if (model == null) return false;
             string path = AssetDatabase.GetAssetPath(model);
             return string.Equals(System.IO.Path.GetExtension(path), ".fbx", System.StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void GeneratePatchConfig(FTDiffGenerator generator)
+        {
+            if (!FTPatchConfigGenerator.IsPatcherHubAvailable())
+            {
+                return;
+            }
+
+            string baseName = generator.GetBaseName();
+            string patcherFolder = generator.GetPatcherFolderAssetPath();
+            if (string.IsNullOrEmpty(baseName) || string.IsNullOrEmpty(patcherFolder))
+            {
+                return;
+            }
+
+            string diffFilesFolder = patcherFolder + "/data/DiffFiles";
+            string fbxFolder = System.IO.Path.GetDirectoryName(
+                AssetDatabase.GetAssetPath(generator.originalModelFbx))?.Replace('\\', '/');
+
+            var context = new FTPatchConfigGenerator.ConfigContext
+            {
+                OriginalFbx = generator.originalModelFbx,
+                FbxDiffAssetPath = diffFilesFolder + "/" + baseName + ".hdiff",
+                MetaDiffAssetPath = diffFilesFolder + "/" + baseName + "Meta.hdiff",
+                ConfigOutputFolder = patcherFolder,
+                FbxOutputPath = fbxFolder
+            };
+
+            FTPatchConfigGenerator.GenerateConfig(context);
         }
     }
 }

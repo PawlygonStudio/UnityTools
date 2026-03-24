@@ -144,6 +144,41 @@ namespace Pawlygon.UnityTools.Editor
             return Path.GetFullPath(modelPath);
         }
 
+        /// <summary>
+        /// Gets the base name used for diff file naming (FBX filename with spaces replaced by underscores).
+        /// </summary>
+        public string GetBaseName()
+        {
+            if (originalModelFbx == null) return null;
+            string originalFbxPath = GetFBXPath(originalModelFbx);
+            if (string.IsNullOrEmpty(originalFbxPath)) return null;
+            return Path.GetFileNameWithoutExtension(originalFbxPath).Replace(" ", "_");
+        }
+
+        /// <summary>
+        /// Gets the Unity asset path of the output directory's patcher folder.
+        /// </summary>
+        public string GetPatcherFolderAssetPath()
+        {
+            if (outputDirectory == null) return null;
+            return AssetDatabase.GetAssetPath(outputDirectory) + "/patcher";
+        }
+
+        /// <summary>
+        /// Converts an absolute file system path to a Unity asset path (relative to Assets/).
+        /// </summary>
+        internal static string ToAssetPath(string absolutePath)
+        {
+            string normalized = absolutePath.Replace('\\', '/');
+            string dataPath = Application.dataPath.Replace('\\', '/');
+            if (normalized.StartsWith(dataPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return "Assets" + normalized.Substring(dataPath.Length);
+            }
+
+            return normalized;
+        }
+
         private bool SetExecutablePermission(string path)
         {
             try

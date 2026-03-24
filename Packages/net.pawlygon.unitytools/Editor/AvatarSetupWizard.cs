@@ -1363,6 +1363,34 @@ namespace Pawlygon.UnityTools.Editor
 
                 diffGenerator.GenerateDiffFiles();
                 generatedCount++;
+
+                // Generate FTPatchConfig with wizard context if PatcherHub is installed
+                if (FTPatchConfigGenerator.IsPatcherHubAvailable())
+                {
+                    string baseName = diffGenerator.GetBaseName();
+                    if (!string.IsNullOrEmpty(baseName))
+                    {
+                        string patcherFolder = CombineAssetPath(entry.avatarRootPath, "patcher");
+                        string diffFilesFolder = CombineAssetPath(patcherFolder, "data", "DiffFiles");
+                        string fbxFolder = CombineAssetPath(entry.avatarRootPath, "FBX");
+
+                        GameObject copiedPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedPrefabPath);
+
+                        var configContext = new FTPatchConfigGenerator.ConfigContext
+                        {
+                            OriginalFbx = diffGenerator.originalModelFbx,
+                            AvatarDisplayName = entry.avatarFolderName?.Trim(),
+                            FbxDiffAssetPath = CombineAssetPath(diffFilesFolder, baseName + ".hdiff"),
+                            MetaDiffAssetPath = CombineAssetPath(diffFilesFolder, baseName + "Meta.hdiff"),
+                            ConfigOutputFolder = patcherFolder,
+                            FbxOutputPath = fbxFolder,
+                            PatchedPrefabs = copiedPrefab != null ? new List<GameObject> { copiedPrefab } : null,
+                            ConfigAssetName = (entry.avatarFolderName?.Trim() ?? baseName) + " FTPatchConfig"
+                        };
+
+                        FTPatchConfigGenerator.GenerateConfig(configContext);
+                    }
+                }
             }
 
             return generatedCount;

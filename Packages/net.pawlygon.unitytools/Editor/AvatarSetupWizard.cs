@@ -219,6 +219,54 @@ namespace Pawlygon.UnityTools.Editor
             window.minSize = new Vector2(620f, 560f);
         }
 
+        private const string ImportPatcherHubMenuPath = "!Pawlygon/Import Latest PatcherHub";
+
+        [MenuItem(ImportPatcherHubMenuPath, validate = true)]
+        private static bool ValidateImportPatcherHub()
+        {
+            Menu.SetChecked(ImportPatcherHubMenuPath, FTPatchConfigGenerator.IsPatcherHubAvailable());
+            return true;
+        }
+
+        [MenuItem(ImportPatcherHubMenuPath, priority = 200)]
+        private static void ImportPatcherHubMenuItem()
+        {
+            if (FTPatchConfigGenerator.IsPatcherHubAvailable())
+            {
+                bool reimport = EditorUtility.DisplayDialog(
+                    "PatcherHub Already Installed",
+                    "PatcherHub is already installed in this project. Do you want to re-import the latest version?",
+                    "Re-import", "Cancel");
+                if (!reimport) return;
+            }
+
+            try
+            {
+                GitHubReleaseInfo releaseInfo = FetchLatestPatcherHubReleaseInfo();
+                GitHubReleaseAsset unityPackageAsset = releaseInfo?.assets?.FirstOrDefault(asset =>
+                    !string.IsNullOrEmpty(asset.name) &&
+                    asset.name.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrEmpty(asset.browser_download_url));
+
+                if (unityPackageAsset == null)
+                {
+                    EditorUtility.DisplayDialog("Import Failed",
+                        "Could not find a .unitypackage asset in the latest PatcherHub release.", "OK");
+                    return;
+                }
+
+                string downloadPath = Path.Combine(Path.GetTempPath(), unityPackageAsset.name);
+                DownloadFile(unityPackageAsset.browser_download_url, downloadPath);
+                AssetDatabase.ImportPackage(downloadPath, false);
+                Debug.Log($"[AvatarSetupWizard] Imported {unityPackageAsset.name} from {releaseInfo.tag_name}.");
+            }
+            catch (Exception ex)
+            {
+                EditorUtility.DisplayDialog("Import Failed",
+                    $"Failed to import PatcherHub: {ex.Message}", "OK");
+            }
+        }
+
         private void OnEnable()
         {
             FBXImportDetector.FbxReimported += HandleFbxReimported;
@@ -587,14 +635,25 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawPatcherHubBlock()
         {
+            bool isPatcherHubInstalled = FTPatchConfigGenerator.IsPatcherHubAvailable();
+
             using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
                 EditorGUILayout.LabelField("PatcherHub", new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 });
                 EditorGUILayout.Space(2f);
-                EditorGUILayout.LabelField("Import the latest PatcherHub unitypackage so end users can patch the face-tracking changes onto the avatar FBX model.", PawlygonEditorUI.SubLabelStyle);
+
+                if (isPatcherHubInstalled)
+                {
+                    EditorGUILayout.LabelField("PatcherHub detected. You can re-import to update to the latest version.", PawlygonEditorUI.SubLabelStyle);
+                }
+                else
+                {
+                    EditorGUILayout.LabelField("Import the latest PatcherHub unitypackage so end users can patch the face-tracking changes onto the avatar FBX model.", PawlygonEditorUI.SubLabelStyle);
+                }
+
                 EditorGUILayout.Space(8f);
 
-                if (PawlygonEditorUI.DrawPrimaryButton("Import Latest PatcherHub", 32f))
+                if (PawlygonEditorUI.DrawPrimaryButton(isPatcherHubInstalled ? "Re-import Latest PatcherHub" : "Import Latest PatcherHub", 32f))
                 {
                     ImportLatestPatcherHub();
                 }

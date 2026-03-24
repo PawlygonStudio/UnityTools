@@ -16,7 +16,7 @@ namespace Pawlygon.UnityTools.Editor
     /// </summary>
     public class FXGestureChecker : EditorWindow
     {
-        private const string MenuPath = "!Pawlygon/FX Gesture Checker";
+        private const string MenuPath = "!Pawlygon/Tools/FX Gesture Checker";
         private const float SectionSpacing = 10f;
 
         // --- State ---
@@ -48,6 +48,11 @@ namespace Pawlygon.UnityTools.Editor
             FXGestureChecker window = GetWindow<FXGestureChecker>();
             window.titleContent = new GUIContent("FX Gesture Checker");
             window.minSize = new Vector2(520f, 400f);
+        }
+
+        private void OnEnable()
+        {
+            AutoSelectFirstSceneRoot();
         }
 
         private void OnSelectionChange()
@@ -108,17 +113,7 @@ namespace Pawlygon.UnityTools.Editor
                 EditorGUILayout.LabelField("Avatar Selection", EditorStyles.boldLabel);
                 EditorGUILayout.Space(4f);
 
-                // Auto-populate from scene selection
-                GameObject sceneSelection = Selection.activeGameObject;
-                if (sceneSelection != null && sceneSelection.scene.IsValid())
-                {
-                    selectedAvatar = sceneSelection;
-                }
-
-                using (new EditorGUI.DisabledScope(true))
-                {
-                    EditorGUILayout.ObjectField("Selected Avatar", selectedAvatar, typeof(GameObject), true);
-                }
+                selectedAvatar = (GameObject)EditorGUILayout.ObjectField("Selected Avatar", selectedAvatar, typeof(GameObject), true);
 
                 if (fxController != null)
                 {
@@ -496,6 +491,53 @@ namespace Pawlygon.UnityTools.Editor
             };
 
             guardedLabelStyle.normal.textColor = new Color(0.3f, 0.75f, 0.3f);
+        }
+
+        private void AutoSelectFirstSceneRoot()
+        {
+            if (selectedAvatar != null)
+            {
+                return;
+            }
+
+            var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+
+            if (!activeScene.IsValid() || !activeScene.isLoaded)
+            {
+                return;
+            }
+
+            GameObject[] rootObjects = activeScene.GetRootGameObjects();
+
+            if (rootObjects == null || rootObjects.Length == 0)
+            {
+                return;
+            }
+
+            // Prefer a root object with a VRCAvatarDescriptor
+            Type descriptorType = FXGestureCheckerCore.FindVRCAvatarDescriptorType();
+
+            if (descriptorType != null)
+            {
+                foreach (GameObject root in rootObjects)
+                {
+                    if (root.GetComponentInChildren(descriptorType, true) != null)
+                    {
+                        selectedAvatar = root;
+                        return;
+                    }
+                }
+            }
+
+            // Fall back to first root with a SkinnedMeshRenderer
+            foreach (GameObject root in rootObjects)
+            {
+                if (root.GetComponentInChildren<SkinnedMeshRenderer>(true) != null)
+                {
+                    selectedAvatar = root;
+                    return;
+                }
+            }
         }
     }
 }

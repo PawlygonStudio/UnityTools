@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEditor;
+using UnityEditor.Animations;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -23,11 +24,7 @@ namespace Pawlygon.UnityTools.Editor
         private const string VrcftPrefabGuid = "ca618adb2c3333545a1f36d72a73a3ef";
         private const string VrcftPackageListingUrl = "https://vcc.pawlygon.net/";
         private const string PatcherHubLatestReleaseApiUrl = "https://api.github.com/repos/PawlygonStudio/PatcherHub/releases/latest";
-        private const string PawlygonWebsiteUrl = "https://www.pawlygon.net";
-        private const string PawlygonTwitterUrl = "https://x.com/Pawlygon_studio";
-        private const string PawlygonYouTubeUrl = "https://www.youtube.com/@Pawlygon";
-        private const string PawlygonDiscordUrl = "https://discord.com/invite/pZew3JGpjb";
-        private const string PackageJsonPath = "Packages/net.pawlygon.unitytools/package.json";
+
         private const int SourceFbxPickerControlId = 9001;
         private const int SourcePrefabPickerControlId = 9002;
         private static readonly string[] RequiredUnifiedExpressionBlendshapes =
@@ -111,18 +108,12 @@ namespace Pawlygon.UnityTools.Editor
         private string vrcftSetupStatusMessage = string.Empty;
         private string patcherHubImportStatusMessage = string.Empty;
         private bool patcherHubImportedThisSession;
-        private Texture2D pawlygonLogoTexture;
-        private string packageVersion = "1.0.0";
-        private GUIStyle sectionStyle;
-        private GUIStyle titleStyle;
         private GUIStyle stepStyle;
         private GUIStyle currentStepStyle;
-        private GUIStyle subLabelStyle;
-        private GUIStyle richMiniLabelStyle;
-        private GUIStyle headerTitleStyle;
-        private GUIStyle headerSubtitleStyle;
-        private GUIStyle footerStyle;
-        private GUIStyle footerLinkStyle;
+        private GUIStyle fxLayerHeaderStyle;
+        private GUIStyle fxGuardedLabelStyle;
+        private bool fxCheckAnalyzed;
+        private readonly HashSet<int> fxExpandedLayers = new HashSet<int>();
 
         private enum WizardStep
         {
@@ -130,6 +121,7 @@ namespace Pawlygon.UnityTools.Editor
             WaitForImport,
             SelectMeshes,
             Prefabs,
+            FXCheck,
             Complete
         }
 
@@ -150,6 +142,10 @@ namespace Pawlygon.UnityTools.Editor
             public string reviewResultLabel;
             public AnimatorReplacementState animatorReplacement = new AnimatorReplacementState();
             public List<MeshSelectionState> meshSelections = new List<MeshSelectionState>();
+            public string copiedFxControllerPath;
+            public string originalFxControllerPath;
+            [NonSerialized] public FXGestureCheckerCore.AnalysisResult fxAnalysisResult;
+            public bool fxCheckComplete;
         }
 
         [Serializable]
@@ -215,12 +211,6 @@ namespace Pawlygon.UnityTools.Editor
             public string browser_download_url;
         }
 
-        [Serializable]
-        private class PackageManifestInfo
-        {
-            public string version;
-        }
-
         [MenuItem("!Pawlygon/Avatar Setup Wizard")]
         public static void ShowWindow()
         {
@@ -233,7 +223,6 @@ namespace Pawlygon.UnityTools.Editor
         {
             FBXImportDetector.FbxReimported += HandleFbxReimported;
             EnsureAtLeastOneEntry();
-            LoadPackageVersion();
         }
 
         private void OnDisable()
@@ -244,11 +233,14 @@ namespace Pawlygon.UnityTools.Editor
 
         private void OnGUI()
         {
+            PawlygonEditorUI.EnsureStyles();
             EnsureStyles();
             EnsureAtLeastOneEntry();
             HandleObjectPickerSelection();
 
-            DrawHeader();
+            PawlygonEditorUI.DrawHeader(
+                "Pawlygon Avatar Setup Wizard",
+                "Tool to duplicate avatars, prepare face tracking assets, and build ready-to-edit prefabs.");
             DrawStepIndicator();
             EditorGUILayout.Space(SectionSpacing);
 
@@ -270,6 +262,9 @@ namespace Pawlygon.UnityTools.Editor
                     case WizardStep.Prefabs:
                         DrawPrefabsStep();
                         break;
+                    case WizardStep.FXCheck:
+                        DrawFXCheckStep();
+                        break;
                     case WizardStep.Complete:
                         DrawCompleteStep();
                         break;
@@ -285,14 +280,14 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             EditorGUILayout.Space(8f);
-            DrawFooter();
+            PawlygonEditorUI.DrawFooter();
         }
 
         private void DrawSetupStep()
         {
             bool hasMultipleEntries = avatarEntries.Count > 1;
 
-            DrawSection(
+            PawlygonEditorUI.DrawSection(
                 "Setup",
                 "Choose the source assets and create the working avatar structure.",
                 () =>
@@ -338,7 +333,7 @@ namespace Pawlygon.UnityTools.Editor
 
                     using (new EditorGUI.DisabledScope(!string.IsNullOrEmpty(validationMessage)))
                     {
-                        if (DrawPrimaryButton("Create Avatar Structure", 36f))
+                        if (PawlygonEditorUI.DrawPrimaryButton("Create Avatar Structure", 36f))
                         {
                             CreateAvatarStructures();
                         }
@@ -353,7 +348,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawAvatarEntryEditor(int index, AvatarEntry entry)
         {
-            using (new EditorGUILayout.VerticalScope(sectionStyle))
+            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
                 if (avatarEntries.Count > 1)
                 {
@@ -392,7 +387,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawWaitForImportStep()
         {
-            DrawSection(
+            PawlygonEditorUI.DrawSection(
                 "Import Modified FBX",
                 "Replace each copied FBX on disk with its edited version, or choose an edited FBX below. Continue after every model below shows Updated.",
                 () =>
@@ -405,7 +400,7 @@ namespace Pawlygon.UnityTools.Editor
 
                     using (new EditorGUILayout.HorizontalScope())
                     {
-                        if (DrawPrimaryButton("Continue After Import", 34f))
+                        if (PawlygonEditorUI.DrawPrimaryButton("Continue After Import", 34f))
                         {
                             if (AreAllEntriesImportedAndLoadable())
                             {
@@ -444,7 +439,7 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
-            DrawSection(
+            PawlygonEditorUI.DrawSection(
                 "Select Replacements",
                 "Review one avatar at a time. Apply the selected mesh and humanoid rig replacements or explicitly skip that avatar.",
                 () =>
@@ -463,7 +458,7 @@ namespace Pawlygon.UnityTools.Editor
                         DrawMeshSelectionToolbar(selectedEntry);
                         EditorGUILayout.Space(EditorGUIUtility.standardVerticalSpacing);
 
-                        using (new EditorGUILayout.VerticalScope(sectionStyle))
+                        using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
                         {
                             DrawAnimatorReplacementRow(selectedEntry.animatorReplacement);
 
@@ -485,7 +480,7 @@ namespace Pawlygon.UnityTools.Editor
 
                         using (new EditorGUI.DisabledScope(!HasAnySelectedReplacement(selectedEntry)))
                         {
-                            if (DrawPrimaryButton("Apply Selected Replacements", 34f))
+                            if (PawlygonEditorUI.DrawPrimaryButton("Apply Selected Replacements", 34f))
                             {
                                 ApplySelectedReplacementsToPrefab(selectedEntry);
                             }
@@ -496,7 +491,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawCompleteStep()
         {
-            DrawSection(
+            PawlygonEditorUI.DrawSection(
                 "Finish",
                 "Your avatar setup is ready. Optional prefab tools were available in the previous step.",
                 () =>
@@ -507,12 +502,12 @@ namespace Pawlygon.UnityTools.Editor
 
                     foreach (AvatarEntry entry in avatarEntries)
                     {
-                        using (new EditorGUILayout.VerticalScope(sectionStyle))
+                        using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
                         {
                             EditorGUILayout.LabelField(GetEntryDisplayName(entry), EditorStyles.boldLabel);
                             if (!string.IsNullOrEmpty(entry.reviewResultLabel))
                             {
-                                EditorGUILayout.LabelField($"Result: {entry.reviewResultLabel}", richMiniLabelStyle);
+                                EditorGUILayout.LabelField($"Result: {entry.reviewResultLabel}", PawlygonEditorUI.RichMiniLabelStyle);
                             }
                             DrawPathSummary(entry, includeAvatarRoot: true, includeDiffGenerator: true);
                         }
@@ -520,7 +515,7 @@ namespace Pawlygon.UnityTools.Editor
 
                     EditorGUILayout.Space(SectionSpacing);
 
-                    if (DrawPrimaryButton("Start Over", 34f))
+                    if (PawlygonEditorUI.DrawPrimaryButton("Start Over", 34f))
                     {
                         ResetWizard();
                     }
@@ -531,7 +526,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             bool isVrcftAvailable = IsVrcftPackageAvailable(out string vrcftPrefabPath);
 
-            DrawSection(
+            PawlygonEditorUI.DrawSection(
                 "Prefabs",
                 "Optional tools for adding prefab helpers and distributing patch assets.",
                 () =>
@@ -541,27 +536,27 @@ namespace Pawlygon.UnityTools.Editor
                     DrawPatcherHubBlock();
                     EditorGUILayout.Space(SectionSpacing);
 
-                    if (DrawPrimaryButton("Finish", 34f))
+                    if (PawlygonEditorUI.DrawPrimaryButton("Continue", 34f))
                     {
-                        currentStep = WizardStep.Complete;
-                        statusMessage = "Avatar setup completed.";
+                        currentStep = WizardStep.FXCheck;
+                        statusMessage = string.Empty;
                     }
                 });
         }
 
         private void DrawVrcftPrefabBlock(bool isVrcftAvailable, string vrcftPrefabPath)
         {
-            using (new EditorGUILayout.VerticalScope(sectionStyle))
+            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
                 EditorGUILayout.LabelField("Pawlygon VRCFT", new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 });
                 EditorGUILayout.Space(2f);
 
                 if (isVrcftAvailable)
                 {
-                    EditorGUILayout.LabelField("Package detected. Add the VRCFT setup to each generated prefab.", subLabelStyle);
+                    EditorGUILayout.LabelField("Package detected. Add the VRCFT setup to each generated prefab.", PawlygonEditorUI.SubLabelStyle);
                     EditorGUILayout.Space(8f);
 
-                    if (DrawPrimaryButton("Add VRCFT To Prefabs", 32f))
+                    if (PawlygonEditorUI.DrawPrimaryButton("Add VRCFT To Prefabs", 32f))
                     {
                         AddVrcftSetupToPrefabs(vrcftPrefabPath);
                     }
@@ -592,14 +587,14 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawPatcherHubBlock()
         {
-            using (new EditorGUILayout.VerticalScope(sectionStyle))
+            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
                 EditorGUILayout.LabelField("PatcherHub", new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 });
                 EditorGUILayout.Space(2f);
-                EditorGUILayout.LabelField("Import the latest PatcherHub unitypackage so end users can patch the face-tracking changes onto the avatar FBX model.", subLabelStyle);
+                EditorGUILayout.LabelField("Import the latest PatcherHub unitypackage so end users can patch the face-tracking changes onto the avatar FBX model.", PawlygonEditorUI.SubLabelStyle);
                 EditorGUILayout.Space(8f);
 
-                if (DrawPrimaryButton("Import Latest PatcherHub", 32f))
+                if (PawlygonEditorUI.DrawPrimaryButton("Import Latest PatcherHub", 32f))
                 {
                     ImportLatestPatcherHub();
                 }
@@ -1649,10 +1644,10 @@ namespace Pawlygon.UnityTools.Editor
                         using (new EditorGUILayout.VerticalScope())
                         {
                             EditorGUILayout.LabelField(GetEntryDisplayName(entry), EditorStyles.boldLabel);
-                            EditorGUILayout.LabelField(entry.hasImportedModifiedFbx ? "Updated" : "Waiting for updated FBX", richMiniLabelStyle);
+                            EditorGUILayout.LabelField(entry.hasImportedModifiedFbx ? "Updated" : "Waiting for updated FBX", PawlygonEditorUI.RichMiniLabelStyle);
                             if (!string.IsNullOrEmpty(entry.copiedFbxPath))
                             {
-                                EditorGUILayout.LabelField(entry.copiedFbxPath, richMiniLabelStyle);
+                                EditorGUILayout.LabelField(entry.copiedFbxPath, PawlygonEditorUI.RichMiniLabelStyle);
                             }
                         }
 
@@ -1664,7 +1659,7 @@ namespace Pawlygon.UnityTools.Editor
                         }
                     }
 
-                    EditorGUILayout.LabelField("Choose an updated FBX to replace this copied file", richMiniLabelStyle);
+                    EditorGUILayout.LabelField("Choose an updated FBX to replace this copied file", PawlygonEditorUI.RichMiniLabelStyle);
                     EditorGUILayout.EndVertical();
 
                     EditorGUILayout.Space(3f);
@@ -1683,15 +1678,15 @@ namespace Pawlygon.UnityTools.Editor
             using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 8, 8) }))
             {
                 EditorGUILayout.LabelField(GetEntryDisplayName(entry), EditorStyles.boldLabel);
-                EditorGUILayout.LabelField($"{matchedCount} matched renderer{(matchedCount == 1 ? string.Empty : "s")}, {selectedCount} selected", richMiniLabelStyle);
-                EditorGUILayout.LabelField($"Humanoid rig: {rigStatus}", richMiniLabelStyle);
+                EditorGUILayout.LabelField($"{matchedCount} matched renderer{(matchedCount == 1 ? string.Empty : "s")}, {selectedCount} selected", PawlygonEditorUI.RichMiniLabelStyle);
+                EditorGUILayout.LabelField($"Humanoid rig: {rigStatus}", PawlygonEditorUI.RichMiniLabelStyle);
                 if (hasMissingUnifiedBlendshapes)
                 {
-                    EditorGUILayout.LabelField("Warning: Missing Unified Expression Blendshapes", richMiniLabelStyle);
+                    EditorGUILayout.LabelField("Warning: Missing Unified Expression Blendshapes", PawlygonEditorUI.RichMiniLabelStyle);
                 }
                 else if (hasCompleteUnifiedBlendshapes)
                 {
-                    EditorGUILayout.LabelField("Unified Expression Blendshapes: Complete", richMiniLabelStyle);
+                    EditorGUILayout.LabelField("Unified Expression Blendshapes: Complete", PawlygonEditorUI.RichMiniLabelStyle);
                 }
 
                 DrawReadOnlyPathField("Modified FBX", entry.copiedFbxPath);
@@ -1726,6 +1721,11 @@ namespace Pawlygon.UnityTools.Editor
                 if (includeDiffGenerator && !string.IsNullOrEmpty(entry.diffGeneratorAssetPath))
                 {
                     DrawReadOnlyPathField("Diff Generator", entry.diffGeneratorAssetPath);
+                }
+
+                if (!string.IsNullOrEmpty(entry.copiedFxControllerPath))
+                {
+                    DrawReadOnlyPathField("FX Controller", entry.copiedFxControllerPath);
                 }
             }
         }
@@ -1791,7 +1791,7 @@ namespace Pawlygon.UnityTools.Editor
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     GUILayout.Label(statusIcon, GUILayout.Width(18f), GUILayout.Height(16f));
-                    EditorGUILayout.LabelField(matchText, richMiniLabelStyle);
+                    EditorGUILayout.LabelField(matchText, PawlygonEditorUI.RichMiniLabelStyle);
                 }
 
             }
@@ -1816,7 +1816,7 @@ namespace Pawlygon.UnityTools.Editor
                     meshSelection.selected = EditorGUILayout.ToggleLeft(meshLabel, meshSelection.selected, EditorStyles.boldLabel);
                 }
 
-                EditorGUILayout.LabelField($"FBX: {meshSelection.fbxRelativePath}", richMiniLabelStyle);
+                EditorGUILayout.LabelField($"FBX: {meshSelection.fbxRelativePath}", PawlygonEditorUI.RichMiniLabelStyle);
 
                 GUIContent statusIcon = meshSelection.hasMatch
                     ? EditorGUIUtility.IconContent("TestPassed")
@@ -1829,7 +1829,7 @@ namespace Pawlygon.UnityTools.Editor
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     GUILayout.Label(statusIcon, GUILayout.Width(18f), GUILayout.Height(16f));
-                    EditorGUILayout.LabelField(matchText, richMiniLabelStyle);
+                    EditorGUILayout.LabelField(matchText, PawlygonEditorUI.RichMiniLabelStyle);
                 }
 
                 if (HasMissingUnifiedBlendshapesWarning(meshSelection))
@@ -1837,7 +1837,7 @@ namespace Pawlygon.UnityTools.Editor
                     using (new EditorGUILayout.HorizontalScope())
                     {
                         GUILayout.Label(EditorGUIUtility.IconContent("console.warnicon.sml"), GUILayout.Width(18f), GUILayout.Height(16f));
-                        EditorGUILayout.LabelField("Missing Unified Expression Blendshapes", richMiniLabelStyle);
+                        EditorGUILayout.LabelField("Missing Unified Expression Blendshapes", PawlygonEditorUI.RichMiniLabelStyle);
                     }
 
                     meshSelection.showUnifiedBlendshapeWarningDetails = EditorGUILayout.Foldout(
@@ -1851,7 +1851,7 @@ namespace Pawlygon.UnityTools.Editor
                         {
                             foreach (string blendshapeName in meshSelection.missingRequiredUnifiedBlendshapesOnFbx)
                             {
-                                EditorGUILayout.LabelField($"- {blendshapeName}", richMiniLabelStyle);
+                                EditorGUILayout.LabelField($"- {blendshapeName}", PawlygonEditorUI.RichMiniLabelStyle);
                             }
                         }
                     }
@@ -1861,7 +1861,7 @@ namespace Pawlygon.UnityTools.Editor
                     using (new EditorGUILayout.HorizontalScope())
                     {
                         GUILayout.Label(EditorGUIUtility.IconContent("TestPassed"), GUILayout.Width(18f), GUILayout.Height(16f));
-                        EditorGUILayout.LabelField("All Unified Expression Blendshapes found", richMiniLabelStyle);
+                        EditorGUILayout.LabelField("All Unified Expression Blendshapes found", PawlygonEditorUI.RichMiniLabelStyle);
                     }
                 }
             }
@@ -2531,54 +2531,10 @@ namespace Pawlygon.UnityTools.Editor
 
         private void EnsureStyles()
         {
-            if (sectionStyle != null)
+            if (stepStyle != null)
             {
                 return;
             }
-
-            sectionStyle = new GUIStyle(EditorStyles.helpBox)
-            {
-                padding = new RectOffset(12, 12, 12, 12),
-                margin = new RectOffset(0, 0, 0, 0)
-            };
-
-            titleStyle = new GUIStyle(EditorStyles.boldLabel)
-            {
-                fontSize = 16,
-                fixedHeight = 24f
-            };
-
-            headerTitleStyle = new GUIStyle(EditorStyles.boldLabel)
-            {
-                fontSize = 15,
-                alignment = TextAnchor.MiddleLeft
-            };
-
-            headerSubtitleStyle = new GUIStyle(EditorStyles.label)
-            {
-                alignment = TextAnchor.MiddleLeft,
-                wordWrap = true
-            };
-
-            headerSubtitleStyle.normal.textColor = EditorGUIUtility.isProSkin
-                ? new Color(0.72f, 0.72f, 0.72f)
-                : new Color(0.35f, 0.35f, 0.35f);
-
-            footerStyle = new GUIStyle(EditorStyles.label)
-            {
-                alignment = TextAnchor.MiddleCenter,
-                fontSize = 11
-            };
-
-            footerLinkStyle = new GUIStyle(EditorStyles.label)
-            {
-                alignment = TextAnchor.MiddleCenter,
-                fontSize = 11,
-                stretchWidth = false
-            };
-
-            footerLinkStyle.normal.textColor = new Color(0.39f, 0.67f, 1f);
-            footerLinkStyle.hover.textColor = new Color(0.58f, 0.79f, 1f);
 
             stepStyle = new GUIStyle(EditorStyles.miniLabel)
             {
@@ -2592,97 +2548,9 @@ namespace Pawlygon.UnityTools.Editor
                 ? new Color(0.8f, 0.92f, 1f)
                 : new Color(0.1f, 0.35f, 0.7f);
 
-            subLabelStyle = new GUIStyle(EditorStyles.wordWrappedLabel)
-            {
-                richText = true
-            };
-
-            richMiniLabelStyle = new GUIStyle(EditorStyles.miniLabel)
-            {
-                richText = true,
-                wordWrap = true
-            };
-        }
-
-        private void DrawHeader()
-        {
-            if (pawlygonLogoTexture == null)
-            {
-                pawlygonLogoTexture = Resources.Load<Texture2D>("pawlygon_logo");
-            }
-
-            EditorGUILayout.Space(6f);
-
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(14, 14, 12, 12) }))
-            {
-                Rect headerRect = EditorGUILayout.GetControlRect(false, 84f);
-
-                float logoSize = 70f;
-                float spacing = 16f;
-                float textBlockWidth = Mathf.Min(520f, Mathf.Max(300f, headerRect.width - 140f));
-                float totalWidth = logoSize + spacing + textBlockWidth;
-                float startX = headerRect.x + Mathf.Max(0f, (headerRect.width - totalWidth) * 0.5f);
-                float logoY = headerRect.y + (headerRect.height - logoSize) * 0.5f;
-                float textX = startX + logoSize + spacing;
-                float textWidth = textBlockWidth;
-
-                if (pawlygonLogoTexture != null)
-                {
-                    GUI.DrawTexture(new Rect(startX, logoY, logoSize, logoSize), pawlygonLogoTexture, ScaleMode.ScaleToFit, true);
-                }
-
-                EditorGUI.LabelField(new Rect(textX, headerRect.y + 18f, textWidth, 22f), "Pawlygon Avatar Setup Wizard", headerTitleStyle);
-                EditorGUI.LabelField(new Rect(textX, headerRect.y + 40f, textWidth, 36f), "Tool to duplicate avatars, prepare face tracking assets, and build ready-to-edit prefabs.", headerSubtitleStyle);
-
-            }
-
-            EditorGUILayout.Space(6f);
-        }
-
-        private void DrawFooter()
-        {
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(12, 12, 10, 10) }))
-            {
-                EditorGUILayout.LabelField($"Made with ❤ by Pawlygon Studio  •  v{packageVersion}", footerStyle);
-                EditorGUILayout.Space(6f);
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.FlexibleSpace();
-                    DrawFooterLink("Website", PawlygonWebsiteUrl);
-                    GUILayout.Space(28f);
-                    DrawFooterLink("X (Twitter)", PawlygonTwitterUrl);
-                    GUILayout.Space(28f);
-                    DrawFooterLink("YouTube", PawlygonYouTubeUrl);
-                    GUILayout.Space(28f);
-                    DrawFooterLink("Discord", PawlygonDiscordUrl);
-
-                    GUILayout.FlexibleSpace();
-                }
-            }
-        }
-
-        private void DrawFooterLink(string label, string url)
-        {
-            if (GUILayout.Button(label, footerLinkStyle))
-            {
-                Application.OpenURL(url);
-            }
-        }
-
-        private void LoadPackageVersion()
-        {
-            TextAsset packageJson = AssetDatabase.LoadAssetAtPath<TextAsset>(PackageJsonPath);
-            if (packageJson == null || string.IsNullOrWhiteSpace(packageJson.text))
-            {
-                return;
-            }
-
-            PackageManifestInfo manifestInfo = JsonUtility.FromJson<PackageManifestInfo>(packageJson.text);
-            if (!string.IsNullOrWhiteSpace(manifestInfo?.version))
-            {
-                packageVersion = manifestInfo.version;
-            }
+            fxLayerHeaderStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 12 };
+            fxGuardedLabelStyle = new GUIStyle(EditorStyles.miniLabel) { fontStyle = FontStyle.Italic };
+            fxGuardedLabelStyle.normal.textColor = new Color(0.3f, 0.75f, 0.3f);
         }
 
         private void DrawStepIndicator()
@@ -2697,7 +2565,9 @@ namespace Pawlygon.UnityTools.Editor
                 DrawStepArrow();
                 DrawStepBadge(WizardStep.Prefabs, "4. Prefabs");
                 DrawStepArrow();
-                DrawStepBadge(WizardStep.Complete, "5. Finish");
+                DrawStepBadge(WizardStep.FXCheck, "5. FX Check");
+                DrawStepArrow();
+                DrawStepBadge(WizardStep.Complete, "6. Finish");
             }
         }
 
@@ -2734,27 +2604,6 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
-        private void DrawSection(string title, string description, Action drawContent)
-        {
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(15, 15, 15, 15) }))
-            {
-                EditorGUILayout.LabelField(title, new GUIStyle(EditorStyles.boldLabel) { fontSize = 14 });
-                EditorGUILayout.Space(2);
-                EditorGUILayout.LabelField(description, subLabelStyle);
-                EditorGUILayout.Space(12);
-                drawContent?.Invoke();
-            }
-        }
-
-        private static bool DrawPrimaryButton(string text, float height = 34f)
-        {
-            Color oldColor = GUI.backgroundColor;
-            GUI.backgroundColor = EditorGUIUtility.isProSkin ? new Color(0.2f, 0.6f, 1f) : new Color(0.1f, 0.4f, 0.8f);
-            bool clicked = GUILayout.Button(text, new GUIStyle(GUI.skin.button) { fontStyle = FontStyle.Bold, fontSize = 13 }, GUILayout.Height(height));
-            GUI.backgroundColor = oldColor;
-            return clicked;
-        }
-
         private void EnsureAtLeastOneEntry()
         {
             if (avatarEntries == null)
@@ -2765,6 +2614,462 @@ namespace Pawlygon.UnityTools.Editor
             if (avatarEntries.Count == 0)
             {
                 avatarEntries.Add(new AvatarEntry());
+            }
+        }
+
+        // =====================================================================
+        // FX Gesture Check step
+        // =====================================================================
+
+        private void DrawFXCheckStep()
+        {
+            PawlygonEditorUI.DrawSection(
+                "FX Gesture Check",
+                "Analyze and guard gesture-based facial expression transitions in the FX controller.",
+                () =>
+                {
+                    // Check VRChat SDK availability
+                    if (FXGestureCheckerCore.FindVRCAvatarDescriptorType() == null)
+                    {
+                        EditorGUILayout.HelpBox(
+                            "VRChat SDK not detected. Skipping FX gesture check.",
+                            MessageType.Info);
+                        EditorGUILayout.Space(SectionSpacing);
+                        if (PawlygonEditorUI.DrawPrimaryButton("Continue to Finish", 34f))
+                        {
+                            currentStep = WizardStep.Complete;
+                            statusMessage = "Avatar setup completed.";
+                        }
+                        return;
+                    }
+
+                    // Auto-analyze on first visit
+                    if (!fxCheckAnalyzed)
+                    {
+                        AnalyzeAllEntries();
+                        fxCheckAnalyzed = true;
+                    }
+
+                    // Entry selection tabs (FX-specific labels)
+                    DrawFXEntrySelectionToolbar();
+                    EditorGUILayout.Space(SectionSpacing);
+
+                    // Current entry results
+                    AvatarEntry entry = avatarEntries[selectedEntryIndex];
+                    if (entry.fxAnalysisResult == null)
+                    {
+                        EditorGUILayout.HelpBox("No analysis result available.", MessageType.Warning);
+                    }
+                    else if (!entry.fxAnalysisResult.Success)
+                    {
+                        EditorGUILayout.HelpBox(entry.fxAnalysisResult.StatusMessage,
+                            entry.fxAnalysisResult.StatusMessageType);
+                    }
+                    else if (entry.fxAnalysisResult.Layers == null ||
+                             entry.fxAnalysisResult.Layers.Count == 0)
+                    {
+                        EditorGUILayout.HelpBox(
+                            "No gesture-based facial expression transitions found.",
+                            MessageType.Info);
+                    }
+                    else
+                    {
+                        DrawFXResultsForEntry(entry);
+                        EditorGUILayout.Space(SectionSpacing);
+                        DrawFXApplySectionForEntry(entry);
+                    }
+
+                    // Navigation buttons
+                    EditorGUILayout.Space(SectionSpacing);
+                    bool allProcessed = avatarEntries.All(e => e.fxCheckComplete);
+
+                    if (!allProcessed)
+                    {
+                        if (GUILayout.Button("Skip FX Check", GUILayout.Height(28f)))
+                        {
+                            foreach (AvatarEntry e in avatarEntries) e.fxCheckComplete = true;
+                            currentStep = WizardStep.Complete;
+                            statusMessage = "Avatar setup completed.";
+                        }
+                    }
+
+                    if (allProcessed)
+                    {
+                        if (PawlygonEditorUI.DrawPrimaryButton("Continue to Finish", 34f))
+                        {
+                            currentStep = WizardStep.Complete;
+                            statusMessage = "Avatar setup completed.";
+                        }
+                    }
+                });
+        }
+
+        private void AnalyzeAllEntries()
+        {
+            foreach (AvatarEntry entry in avatarEntries)
+            {
+                // Validate prefab exists
+                GameObject prefabAsset = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedPrefabPath);
+                if (prefabAsset == null)
+                {
+                    entry.fxAnalysisResult = new FXGestureCheckerCore.AnalysisResult
+                    {
+                        StatusMessage = $"Could not load prefab at '{entry.copiedPrefabPath}'.",
+                        StatusMessageType = MessageType.Error,
+                        Success = false
+                    };
+                    entry.fxCheckComplete = true;
+                    continue;
+                }
+
+                // Open prefab contents to get a live GameObject for analysis
+                GameObject prefabRoot = null;
+                try
+                {
+                    prefabRoot = PrefabUtility.LoadPrefabContents(entry.copiedPrefabPath);
+                    entry.fxAnalysisResult = FXGestureCheckerCore.Analyze(prefabRoot);
+                }
+                finally
+                {
+                    if (prefabRoot != null)
+                        PrefabUtility.UnloadPrefabContents(prefabRoot);
+                }
+
+                // Store original FX controller path for shared controller detection
+                if (entry.fxAnalysisResult.FXController != null)
+                    entry.originalFxControllerPath = AssetDatabase.GetAssetPath(entry.fxAnalysisResult.FXController);
+
+                // Auto-skip entries with no actionable results
+                if (!entry.fxAnalysisResult.Success ||
+                    entry.fxAnalysisResult.Layers == null ||
+                    entry.fxAnalysisResult.Layers.Count == 0)
+                {
+                    entry.fxCheckComplete = true;
+                }
+            }
+        }
+
+        private void DrawFXEntrySelectionToolbar()
+        {
+            if (avatarEntries.Count <= 1) return;
+
+            string[] labels = new string[avatarEntries.Count];
+            for (int i = 0; i < avatarEntries.Count; i++)
+            {
+                AvatarEntry entry = avatarEntries[i];
+                string name = GetEntryDisplayName(entry);
+                if (entry.fxCheckComplete)
+                {
+                    bool hadFixes = !string.IsNullOrEmpty(entry.copiedFxControllerPath);
+                    name += hadFixes ? " [Fixed]" : " [Skipped]";
+                }
+                labels[i] = name;
+            }
+
+            selectedEntryIndex = GUILayout.Toolbar(
+                Mathf.Clamp(selectedEntryIndex, 0, labels.Length - 1), labels);
+        }
+
+        private void DrawFXResultsForEntry(AvatarEntry entry)
+        {
+            FXGestureCheckerCore.AnalysisResult result = entry.fxAnalysisResult;
+
+            // Summary
+            int totalTransitions = result.Layers.Sum(l => l.GestureTransitions.Count);
+            int guardedTransitions = result.Layers.Sum(l =>
+                l.GestureTransitions.Count(t => t.HasDisabledGuard));
+            EditorGUILayout.HelpBox(
+                $"Found {totalTransitions} gesture transition(s) across {result.Layers.Count} layer(s). " +
+                $"{guardedTransitions} already guarded.",
+                MessageType.Info);
+            EditorGUILayout.Space(4f);
+
+            // Per-layer foldouts
+            for (int i = 0; i < result.Layers.Count; i++)
+            {
+                DrawFXLayerAnalysis(result.Layers[i]);
+                EditorGUILayout.Space(4f);
+            }
+        }
+
+        private void DrawFXLayerAnalysis(FXGestureCheckerCore.LayerAnalysis layer)
+        {
+            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
+            {
+                bool isExpanded = fxExpandedLayers.Contains(layer.LayerIndex);
+                string gestureCount = $"{layer.GestureTransitions.Count} gesture transition{(layer.GestureTransitions.Count != 1 ? "s" : "")}";
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    bool newExpanded = EditorGUILayout.Foldout(isExpanded, "", true);
+                    EditorGUILayout.LabelField($"Layer: {layer.LayerName}", fxLayerHeaderStyle);
+                    GUILayout.FlexibleSpace();
+                    EditorGUILayout.LabelField($"({gestureCount})", EditorStyles.miniLabel, GUILayout.Width(150f));
+
+                    if (newExpanded != isExpanded)
+                    {
+                        if (newExpanded) fxExpandedLayers.Add(layer.LayerIndex);
+                        else fxExpandedLayers.Remove(layer.LayerIndex);
+                    }
+                }
+
+                if (!isExpanded) return;
+
+                EditorGUI.indentLevel++;
+
+                EditorGUILayout.Space(4f);
+                if (layer.AlreadyHasLayerGuard)
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        using (new EditorGUI.DisabledScope(true))
+                        {
+                            EditorGUILayout.ToggleLeft("Disable entire layer when FacialExpressionsDisabled", true);
+                        }
+                        EditorGUILayout.LabelField("[Applied]", fxGuardedLabelStyle, GUILayout.Width(60f));
+                    }
+                }
+                else
+                {
+                    layer.SelectedForLayerDisable = EditorGUILayout.ToggleLeft(
+                        "Disable entire layer when FacialExpressionsDisabled",
+                        layer.SelectedForLayerDisable);
+                }
+
+                EditorGUILayout.Space(4f);
+                PawlygonEditorUI.DrawSeparator();
+                EditorGUILayout.Space(4f);
+
+                foreach (FXGestureCheckerCore.TransitionAnalysis transition in layer.GestureTransitions)
+                {
+                    DrawFXTransitionRow(transition);
+                }
+
+                EditorGUI.indentLevel--;
+            }
+        }
+
+        private void DrawFXTransitionRow(FXGestureCheckerCore.TransitionAnalysis transition)
+        {
+            string gestureName = FXGestureCheckerCore.GetGestureName(transition.GestureValue);
+            string label = $"{transition.SourceName} -> {transition.DestinationName} ({transition.GestureParameter}={gestureName})";
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (transition.HasDisabledGuard)
+                {
+                    using (new EditorGUI.DisabledScope(true))
+                    {
+                        EditorGUILayout.ToggleLeft(label, true);
+                    }
+                    EditorGUILayout.LabelField("[Applied]", fxGuardedLabelStyle, GUILayout.Width(60f));
+                }
+                else
+                {
+                    transition.SelectedForFix = EditorGUILayout.ToggleLeft(label, transition.SelectedForFix);
+                }
+            }
+        }
+
+        private void DrawFXApplySectionForEntry(AvatarEntry entry)
+        {
+            FXGestureCheckerCore.AnalysisResult result = entry.fxAnalysisResult;
+            List<FXGestureCheckerCore.LayerAnalysis> layers = result.Layers;
+
+            bool anySelected = layers.Any(l =>
+                l.SelectedForLayerDisable ||
+                l.GestureTransitions.Any(t => t.SelectedForFix));
+
+            bool allGuarded = layers.All(l =>
+                l.AlreadyHasLayerGuard &&
+                l.GestureTransitions.All(t => t.HasDisabledGuard));
+
+            if (allGuarded)
+            {
+                EditorGUILayout.HelpBox(
+                    "All gesture transitions and layers are already guarded.",
+                    MessageType.Info);
+                entry.fxCheckComplete = true;
+                return;
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("Select All Unguarded", GUILayout.Height(26f), GUILayout.Width(160f)))
+                    FXGestureCheckerCore.SelectAllUnguarded(layers);
+                if (GUILayout.Button("Deselect All", GUILayout.Height(26f), GUILayout.Width(120f)))
+                    FXGestureCheckerCore.DeselectAll(layers);
+            }
+
+            EditorGUILayout.Space(4f);
+
+            using (new EditorGUI.DisabledScope(!anySelected))
+            {
+                if (PawlygonEditorUI.DrawPrimaryButton("Apply Fixes"))
+                {
+                    ApplyFXFixesForEntry(entry);
+                }
+            }
+
+            if (!anySelected)
+            {
+                EditorGUILayout.HelpBox(
+                    "Select transitions or layers to apply the FacialExpressionsDisabled guard.",
+                    MessageType.Info);
+            }
+        }
+
+        private void ApplyFXFixesForEntry(AvatarEntry entry)
+        {
+            FXGestureCheckerCore.AnalysisResult result = entry.fxAnalysisResult;
+            if (result.FXController == null) return;
+
+            // Capture user selections before re-analysis resets them
+            var selectedTransitionKeys = new HashSet<string>();
+            var selectedLayerIndices = new HashSet<int>();
+            foreach (FXGestureCheckerCore.LayerAnalysis layer in result.Layers)
+            {
+                if (layer.SelectedForLayerDisable)
+                    selectedLayerIndices.Add(layer.LayerIndex);
+                foreach (FXGestureCheckerCore.TransitionAnalysis t in layer.GestureTransitions)
+                {
+                    if (t.SelectedForFix)
+                        selectedTransitionKeys.Add(
+                            $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}");
+                }
+            }
+
+            // 1. Copy FX controller to VRChat subfolder
+            string vrchatFolder = CombineAssetPath(entry.avatarRootPath, "VRChat");
+            AnimatorController copy = FXGestureCheckerCore.CopyFXController(
+                result.FXController, vrchatFolder, out string copyError);
+            if (copy == null)
+            {
+                statusMessage = copyError ?? "Failed to copy FX controller.";
+                return;
+            }
+            entry.copiedFxControllerPath = AssetDatabase.GetAssetPath(copy);
+
+            // 2. Re-analyze on the copy so TransitionRef references point to the new asset
+            FXGestureCheckerCore.AnalysisResult copyResult = FXGestureCheckerCore.Analyze(copy);
+            if (!copyResult.Success || copyResult.Layers == null)
+            {
+                statusMessage = "Failed to analyze copied FX controller.";
+                return;
+            }
+
+            // Restore user selections on re-analyzed layers
+            foreach (FXGestureCheckerCore.LayerAnalysis layer in copyResult.Layers)
+            {
+                if (selectedLayerIndices.Contains(layer.LayerIndex))
+                    layer.SelectedForLayerDisable = true;
+                foreach (FXGestureCheckerCore.TransitionAnalysis t in layer.GestureTransitions)
+                {
+                    string key = $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}";
+                    if (selectedTransitionKeys.Contains(key))
+                        t.SelectedForFix = true;
+                }
+            }
+
+            // 3. Apply fixes on the copy
+            var (tFixes, lFixes) = FXGestureCheckerCore.ApplySelectedFixes(copy, copyResult.Layers);
+
+            // 4. Assign copy to descriptor — must reopen prefab to get fresh descriptor
+            GameObject prefabRoot = null;
+            try
+            {
+                prefabRoot = PrefabUtility.LoadPrefabContents(entry.copiedPrefabPath);
+                Type descriptorType = result.DescriptorType;
+                if (descriptorType != null)
+                {
+                    Component descriptor = prefabRoot.GetComponent(descriptorType);
+                    if (descriptor != null)
+                    {
+                        FXGestureCheckerCore.AssignFXControllerToDescriptor(
+                            descriptor, descriptorType, copy);
+                    }
+                }
+                PrefabUtility.SaveAsPrefabAsset(prefabRoot, entry.copiedPrefabPath);
+            }
+            finally
+            {
+                if (prefabRoot != null)
+                    PrefabUtility.UnloadPrefabContents(prefabRoot);
+            }
+
+            // 5. Re-analyze to refresh UI (shows [Applied] labels)
+            GameObject finalPrefabRoot = null;
+            try
+            {
+                finalPrefabRoot = PrefabUtility.LoadPrefabContents(entry.copiedPrefabPath);
+                entry.fxAnalysisResult = FXGestureCheckerCore.Analyze(finalPrefabRoot);
+            }
+            finally
+            {
+                if (finalPrefabRoot != null)
+                    PrefabUtility.UnloadPrefabContents(finalPrefabRoot);
+            }
+
+            entry.fxCheckComplete = true;
+            statusMessage = $"Applied {tFixes} transition guard(s) and {lFixes} layer guard(s).";
+
+            // Propagate to other entries sharing the same original FX controller
+            PropagateSharedFXFixes(entry, copy);
+        }
+
+        private void PropagateSharedFXFixes(AvatarEntry sourceEntry, AnimatorController fixedCopy)
+        {
+            if (string.IsNullOrEmpty(sourceEntry.originalFxControllerPath)) return;
+
+            foreach (AvatarEntry otherEntry in avatarEntries)
+            {
+                if (otherEntry == sourceEntry) continue;
+                if (otherEntry.fxCheckComplete) continue;
+                if (string.IsNullOrEmpty(otherEntry.originalFxControllerPath)) continue;
+
+                // Check if they share the same original FX controller
+                if (otherEntry.originalFxControllerPath != sourceEntry.originalFxControllerPath) continue;
+
+                // Assign the same fixed copy to this entry's prefab
+                otherEntry.copiedFxControllerPath = AssetDatabase.GetAssetPath(fixedCopy);
+
+                GameObject prefabRoot = null;
+                try
+                {
+                    prefabRoot = PrefabUtility.LoadPrefabContents(otherEntry.copiedPrefabPath);
+                    Type descriptorType = otherEntry.fxAnalysisResult?.DescriptorType;
+                    if (descriptorType != null)
+                    {
+                        Component descriptor = prefabRoot.GetComponent(descriptorType);
+                        if (descriptor != null)
+                        {
+                            FXGestureCheckerCore.AssignFXControllerToDescriptor(
+                                descriptor, descriptorType, fixedCopy);
+                        }
+                    }
+                    PrefabUtility.SaveAsPrefabAsset(prefabRoot, otherEntry.copiedPrefabPath);
+                }
+                finally
+                {
+                    if (prefabRoot != null)
+                        PrefabUtility.UnloadPrefabContents(prefabRoot);
+                }
+
+                // Re-analyze
+                GameObject finalRoot = null;
+                try
+                {
+                    finalRoot = PrefabUtility.LoadPrefabContents(otherEntry.copiedPrefabPath);
+                    otherEntry.fxAnalysisResult = FXGestureCheckerCore.Analyze(finalRoot);
+                }
+                finally
+                {
+                    if (finalRoot != null)
+                        PrefabUtility.UnloadPrefabContents(finalRoot);
+                }
+
+                otherEntry.fxCheckComplete = true;
             }
         }
 
@@ -2782,6 +3087,8 @@ namespace Pawlygon.UnityTools.Editor
             EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
             pendingImportTransition = false;
             importLoadAttempts = 0;
+            fxCheckAnalyzed = false;
+            fxExpandedLayers.Clear();
             currentStep = WizardStep.Setup;
         }
     }

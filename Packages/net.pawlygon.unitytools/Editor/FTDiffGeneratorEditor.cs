@@ -20,13 +20,13 @@ namespace Pawlygon.UnityTools.Editor
         public override void OnInspectorGUI()
         {
             serializedObject.Update();
+            PawlygonEditorUI.EnsureStyles();
 
-            // Premium Header
+            // Header
             EditorGUILayout.Space(5);
             EditorGUILayout.LabelField(new GUIContent(" FaceTracking Diff Generator", EditorGUIUtility.IconContent("AvatarSelector").image), new GUIStyle(EditorStyles.boldLabel) { fontSize = 14 });
             EditorGUILayout.Space(2);
-            Rect sep = EditorGUILayout.GetControlRect(false, 1f);
-            EditorGUI.DrawRect(sep, EditorGUIUtility.isProSkin ? new Color(0.2f, 0.2f, 0.2f) : new Color(0.7f, 0.7f, 0.7f));
+            PawlygonEditorUI.DrawSeparator();
             EditorGUILayout.Space(5);
 
             EditorGUILayout.HelpBox(
@@ -35,7 +35,7 @@ namespace Pawlygon.UnityTools.Editor
 
             EditorGUILayout.Space();
 
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 10, 10) }))
+            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
                 EditorGUILayout.LabelField(new GUIContent(" FBX References", EditorGUIUtility.IconContent("Prefab Icon").image), EditorStyles.boldLabel);
                 EditorGUILayout.Space(2);
@@ -62,12 +62,7 @@ namespace Pawlygon.UnityTools.Editor
 
             using (new EditorGUI.DisabledScope(!string.IsNullOrEmpty(validationMessage)))
             {
-                // Premium Primary Button
-                Color oldColor = GUI.backgroundColor;
-                if (string.IsNullOrEmpty(validationMessage))
-                    GUI.backgroundColor = EditorGUIUtility.isProSkin ? new Color(0.2f, 0.6f, 1f) : new Color(0.1f, 0.4f, 0.8f);
-                
-                if (GUILayout.Button("Generate Diff Files", new GUIStyle(GUI.skin.button) { fontStyle = FontStyle.Bold, fontSize = 13 }, GUILayout.Height(36f)))
+                if (PawlygonEditorUI.DrawPrimaryButton("Generate Diff Files", 36f))
                 {
                     foreach (Object targetObject in targets)
                     {
@@ -78,7 +73,6 @@ namespace Pawlygon.UnityTools.Editor
                         }
                     }
                 }
-                GUI.backgroundColor = oldColor;
             }
             EditorGUILayout.Space(5);
         }

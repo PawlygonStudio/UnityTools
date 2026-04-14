@@ -26,6 +26,65 @@ namespace Pawlygon.UnityTools.Editor
         internal const int AnimLayerTypeFX = 5;
         private const string LogPrefix = "[FXGestureCheckerCore]";
 
+        // Blink detection constants
+        internal const string EyeTrackingActiveParam = "EyeTrackingActive";
+        internal const float EyeTrackingActiveThreshold = 0.5f;
+        internal const string BlinkGuardStateName = "EyeTrackingActive_BlinkDisabled";
+
+        // Confidence thresholds
+        internal const int BlinkConfidenceHigh = 5;
+        internal const int BlinkConfidenceMedium = 3;
+
+        /// <summary>
+        /// Strong blink keywords for layer names (case-insensitive).
+        /// A match awards 3 points.
+        /// </summary>
+        private static readonly string[] BlinkLayerNameKeywordsStrong =
+        {
+            "blink", "blinking",
+            "まばたき", "瞬き", "瞬目",
+            "マバタキ"
+        };
+
+        /// <summary>
+        /// Weak blink keywords for layer names (case-insensitive).
+        /// A match awards 1 point.
+        /// </summary>
+        private static readonly string[] BlinkLayerNameKeywordsWeak =
+        {
+            "eye_close", "eyeclose", "eyes close", "eye close",
+            "目閉じ", "目を閉じ"
+        };
+
+        /// <summary>
+        /// Blendshape name keywords checked in animation clips (case-insensitive).
+        /// A match awards 3 points per layer (not per clip/binding).
+        /// </summary>
+        private static readonly string[] BlinkBlendshapeKeywords =
+        {
+            // English
+            "blink",
+            "blink_l", "blink_r",
+            "blink_left", "blink_right",
+            "eye_close", "eyeclosed",
+            "eyeclosedleft", "eyeclosedright",
+            "eye_close_l", "eye_close_r",
+            // Japanese
+            "まばたき",
+            "まばたき左", "まばたき右",
+            "瞬き",
+            "瞬き左", "瞬き右",
+            "目閉じ",
+            "目閉じ左", "目閉じ右",
+            "目を閉じ",
+            "目を閉じ左", "目を閉じ右",
+            "ウィンク",
+            "ウィンク左", "ウィンク右",
+            "ウインク",
+            "ウインク左", "ウインク右",
+            "mabataki"
+        };
+
         internal static readonly string[] GestureNames =
         {
             "Neutral",     // 0
@@ -78,11 +137,37 @@ namespace Pawlygon.UnityTools.Editor
         {
             public AnimatorController FXController;
             public List<LayerAnalysis> Layers;
+            public List<BlinkLayerAnalysis> BlinkLayers;
             public string StatusMessage;
             public MessageType StatusMessageType;
             public bool Success;
             public Component Descriptor;
             public Type DescriptorType;
+        }
+
+        /// <summary>
+        /// Confidence level for blink layer detection heuristics.
+        /// </summary>
+        internal enum BlinkConfidence
+        {
+            Low,
+            Medium,
+            High
+        }
+
+        /// <summary>
+        /// Holds the analysis results for a single animator controller layer
+        /// that was identified as a potential blink layer.
+        /// </summary>
+        internal class BlinkLayerAnalysis
+        {
+            public string LayerName;
+            public int LayerIndex;
+            public int ConfidenceScore;
+            public BlinkConfidence Confidence;
+            public bool SelectedForGuard;
+            public bool AlreadyHasBlinkGuard;
+            public List<string> DetectionReasons = new List<string>();
         }
 
         // =====================================================================
@@ -249,6 +334,7 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             result.Layers = analysisResults;
+            result.BlinkLayers = AnalyzeBlinkLayers(controller);
 
             if (analysisResults.Count == 0)
             {
@@ -679,6 +765,366 @@ namespace Pawlygon.UnityTools.Editor
                 {
                     t.SelectedForFix = false;
                 }
+            }
+        }
+
+        // =====================================================================
+        // Blink layer analysis
+        // =====================================================================
+
+        /// <summary>
+        /// Analyzes all layers of the FX controller to identify potential blink layers
+        /// using name and animation clip heuristics with confidence scoring.
+        /// </summary>
+        internal static List<BlinkLayerAnalysis> AnalyzeBlinkLayers(AnimatorController controller)
+        {
+            List<BlinkLayerAnalysis> results = new List<BlinkLayerAnalysis>();
+            AnimatorControllerLayer[] controllerLayers = controller.layers;
+
+            for (int i = 0; i < controllerLayers.Length; i++)
+            {
+                AnimatorControllerLayer layer = controllerLayers[i];
+                BlinkLayerAnalysis analysis = AnalyzeBlinkLayer(layer, i);
+
+                if (analysis.ConfidenceScore > 0)
+                {
+                    results.Add(analysis);
+                }
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Scores a single layer for blink likelihood using name keywords,
+        /// animation clip blendshape bindings, and state count heuristics.
+        /// </summary>
+        private static BlinkLayerAnalysis AnalyzeBlinkLayer(AnimatorControllerLayer layer, int layerIndex)
+        {
+            BlinkLayerAnalysis analysis = new BlinkLayerAnalysis
+            {
+                LayerName = layer.name,
+                LayerIndex = layerIndex,
+                AlreadyHasBlinkGuard = HasBlinkLayerGuard(layer)
+            };
+
+            string layerNameLower = layer.name.ToLowerInvariant();
+
+            // --- Layer name: strong keywords (+3) ---
+            foreach (string keyword in BlinkLayerNameKeywordsStrong)
+            {
+                if (layerNameLower.Contains(keyword.ToLowerInvariant()))
+                {
+                    analysis.ConfidenceScore += 3;
+                    analysis.DetectionReasons.Add($"Layer name contains \"{keyword}\"");
+                    break; // Only award once for name match
+                }
+            }
+
+            // --- Layer name: weak keywords (+1) ---
+            if (analysis.ConfidenceScore == 0) // Only check weak if no strong match
+            {
+                foreach (string keyword in BlinkLayerNameKeywordsWeak)
+                {
+                    if (layerNameLower.Contains(keyword.ToLowerInvariant()))
+                    {
+                        analysis.ConfidenceScore += 1;
+                        analysis.DetectionReasons.Add($"Layer name contains \"{keyword}\"");
+                        break;
+                    }
+                }
+            }
+
+            // --- Animation clip blendshape analysis (+3) ---
+            if (LayerClipsContainBlinkBlendshapes(layer, out List<string> matchedBlendshapes))
+            {
+                analysis.ConfidenceScore += 3;
+                string joined = string.Join(", ", matchedBlendshapes);
+                analysis.DetectionReasons.Add($"Clips animate blink blendshapes: {joined}");
+            }
+
+            // --- State count heuristic (+1 for simple layers) ---
+            AnimatorStateMachine stateMachine = layer.stateMachine;
+            if (stateMachine != null)
+            {
+                int stateCount = stateMachine.states.Length;
+                if (stateCount >= 1 && stateCount <= 4)
+                {
+                    analysis.ConfidenceScore += 1;
+                    analysis.DetectionReasons.Add($"Simple layer ({stateCount} state{(stateCount != 1 ? "s" : "")})");
+                }
+            }
+
+            // --- Determine confidence level ---
+            if (analysis.ConfidenceScore >= BlinkConfidenceHigh)
+            {
+                analysis.Confidence = BlinkConfidence.High;
+                analysis.SelectedForGuard = !analysis.AlreadyHasBlinkGuard;
+            }
+            else if (analysis.ConfidenceScore >= BlinkConfidenceMedium)
+            {
+                analysis.Confidence = BlinkConfidence.Medium;
+            }
+            else
+            {
+                analysis.Confidence = BlinkConfidence.Low;
+            }
+
+            return analysis;
+        }
+
+        /// <summary>
+        /// Checks whether any animation clips in the layer animate blendshape properties
+        /// whose names match known blink blendshape keywords.
+        /// </summary>
+        private static bool LayerClipsContainBlinkBlendshapes(AnimatorControllerLayer layer, out List<string> matchedBlendshapes)
+        {
+            matchedBlendshapes = new List<string>();
+            AnimatorStateMachine stateMachine = layer.stateMachine;
+            if (stateMachine == null) return false;
+
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (ChildAnimatorState childState in stateMachine.states)
+            {
+                AnimatorState state = childState.state;
+                if (state == null) continue;
+
+                Motion motion = state.motion;
+                CollectBlinkBlendshapesFromMotion(motion, seen);
+            }
+
+            matchedBlendshapes.AddRange(seen);
+            return matchedBlendshapes.Count > 0;
+        }
+
+        /// <summary>
+        /// Recursively inspects a Motion (AnimationClip or BlendTree) for blendshape
+        /// property bindings that match blink keywords.
+        /// </summary>
+        private static void CollectBlinkBlendshapesFromMotion(Motion motion, HashSet<string> seen)
+        {
+            if (motion == null) return;
+
+            if (motion is AnimationClip clip)
+            {
+                EditorCurveBinding[] bindings = AnimationUtility.GetCurveBindings(clip);
+                foreach (EditorCurveBinding binding in bindings)
+                {
+                    // Blendshape bindings use "blendShape." prefix on the propertyName
+                    if (!binding.propertyName.StartsWith("blendShape.", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    string blendshapeName = binding.propertyName.Substring("blendShape.".Length);
+
+                    foreach (string keyword in BlinkBlendshapeKeywords)
+                    {
+                        if (string.Equals(blendshapeName, keyword, StringComparison.OrdinalIgnoreCase))
+                        {
+                            seen.Add(blendshapeName);
+                            break;
+                        }
+                    }
+                }
+            }
+            else if (motion is BlendTree blendTree)
+            {
+                ChildMotion[] children = blendTree.children;
+                foreach (ChildMotion child in children)
+                {
+                    CollectBlinkBlendshapesFromMotion(child.motion, seen);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Checks whether a layer already has a blink guard (AnyState transition to
+        /// BlinkGuardStateName with an EyeTrackingActive condition).
+        /// </summary>
+        private static bool HasBlinkLayerGuard(AnimatorControllerLayer layer)
+        {
+            AnimatorStateMachine stateMachine = layer.stateMachine;
+            if (stateMachine == null) return false;
+
+            foreach (AnimatorStateTransition transition in stateMachine.anyStateTransitions)
+            {
+                if (transition.destinationState != null &&
+                    transition.destinationState.name == BlinkGuardStateName)
+                {
+                    foreach (AnimatorCondition condition in transition.conditions)
+                    {
+                        if (condition.parameter == EyeTrackingActiveParam)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        // =====================================================================
+        // Blink guard application
+        // =====================================================================
+
+        /// <summary>
+        /// Ensures the EyeTrackingActive float parameter exists on the controller.
+        /// If it already exists, this method is a no-op.
+        /// </summary>
+        internal static void EnsureEyeTrackingParameterExists(AnimatorController controller)
+        {
+            AnimatorControllerParameter[] existingParams = controller.parameters;
+            foreach (AnimatorControllerParameter param in existingParams)
+            {
+                if (param.name == EyeTrackingActiveParam)
+                {
+                    return;
+                }
+            }
+
+            controller.AddParameter(EyeTrackingActiveParam, AnimatorControllerParameterType.Float);
+            Debug.Log($"{LogPrefix} Added float parameter '{EyeTrackingActiveParam}' to FX controller.");
+        }
+
+        /// <summary>
+        /// Applies a blink guard to a layer by creating an empty state and an AnyState
+        /// transition that activates when EyeTrackingActive > 0.5, preventing the
+        /// blink layer from triggering.
+        /// The empty state's writeDefaultValues is set to match the dominant WD setting
+        /// of the existing states in the layer.
+        /// </summary>
+        internal static void ApplyBlinkGuard(AnimatorController controller, BlinkLayerAnalysis blinkLayer)
+        {
+            AnimatorControllerLayer[] controllerLayers = controller.layers;
+            if (blinkLayer.LayerIndex < 0 || blinkLayer.LayerIndex >= controllerLayers.Length) return;
+
+            AnimatorControllerLayer targetLayer = controllerLayers[blinkLayer.LayerIndex];
+            AnimatorStateMachine stateMachine = targetLayer.stateMachine;
+            if (stateMachine == null) return;
+
+            Undo.RecordObject(stateMachine, "Add blink layer EyeTrackingActive guard");
+
+            // Determine WD setting from existing states in the layer
+            bool writeDefaults = GetDominantWriteDefaultValues(stateMachine);
+
+            // Create the empty guard state (no motion/animation clip attached)
+            AnimatorState guardState = stateMachine.AddState(BlinkGuardStateName, new Vector3(30f, -80f, 0f));
+            guardState.writeDefaultValues = writeDefaults;
+
+            // Create AnyState -> Guard State transition with EyeTrackingActive > 0.5
+            AnimatorStateTransition guardTransition = stateMachine.AddAnyStateTransition(guardState);
+            guardTransition.hasExitTime = false;
+            guardTransition.duration = 0f;
+            guardTransition.canTransitionToSelf = true;
+            guardTransition.AddCondition(AnimatorConditionMode.Greater, EyeTrackingActiveThreshold, EyeTrackingActiveParam);
+
+            // Move the guard transition to index 0 for highest priority
+            AnimatorStateTransition[] anyTransitions = stateMachine.anyStateTransitions;
+            if (anyTransitions.Length > 1)
+            {
+                List<AnimatorStateTransition> reordered = new List<AnimatorStateTransition>(anyTransitions.Length);
+                reordered.Add(anyTransitions[anyTransitions.Length - 1]); // our new guard
+                for (int i = 0; i < anyTransitions.Length - 1; i++)
+                {
+                    reordered.Add(anyTransitions[i]);
+                }
+                stateMachine.anyStateTransitions = reordered.ToArray();
+            }
+
+            // Reassign layer array since Unity uses copy-on-read for layers
+            controller.layers = controllerLayers;
+
+            EditorUtility.SetDirty(stateMachine);
+        }
+
+        /// <summary>
+        /// Determines the dominant writeDefaultValues setting among existing states
+        /// in a state machine. Returns the value used by the majority of states,
+        /// defaulting to true if there are no states or an even split.
+        /// </summary>
+        private static bool GetDominantWriteDefaultValues(AnimatorStateMachine stateMachine)
+        {
+            int wdTrue = 0;
+            int wdFalse = 0;
+
+            foreach (ChildAnimatorState childState in stateMachine.states)
+            {
+                if (childState.state == null) continue;
+
+                if (childState.state.writeDefaultValues)
+                    wdTrue++;
+                else
+                    wdFalse++;
+            }
+
+            // Default to true if no states or even split
+            return wdFalse <= wdTrue;
+        }
+
+        /// <summary>
+        /// Orchestrates applying all selected blink guards to the given controller.
+        /// Ensures the EyeTrackingActive parameter exists and applies guards to each
+        /// selected layer.
+        /// </summary>
+        /// <returns>The number of blink guards applied.</returns>
+        internal static int ApplySelectedBlinkGuards(AnimatorController controller, List<BlinkLayerAnalysis> blinkLayers)
+        {
+            if (blinkLayers == null || blinkLayers.Count == 0) return 0;
+
+            Undo.RegisterCompleteObjectUndo(controller, "Apply EyeTrackingActive Blink Guards");
+
+            EnsureEyeTrackingParameterExists(controller);
+
+            int guardCount = 0;
+
+            foreach (BlinkLayerAnalysis blinkLayer in blinkLayers)
+            {
+                if (blinkLayer.SelectedForGuard && !blinkLayer.AlreadyHasBlinkGuard)
+                {
+                    ApplyBlinkGuard(controller, blinkLayer);
+                    guardCount++;
+                }
+            }
+
+            EditorUtility.SetDirty(controller);
+            AssetDatabase.SaveAssets();
+
+            Debug.Log($"{LogPrefix} Applied {guardCount} blink layer guard(s).");
+
+            return guardCount;
+        }
+
+        // =====================================================================
+        // Blink selection helpers
+        // =====================================================================
+
+        /// <summary>
+        /// Selects all unguarded blink layers for guard application.
+        /// </summary>
+        internal static void SelectAllUnguardedBlink(List<BlinkLayerAnalysis> blinkLayers)
+        {
+            if (blinkLayers == null) return;
+
+            foreach (BlinkLayerAnalysis layer in blinkLayers)
+            {
+                if (!layer.AlreadyHasBlinkGuard)
+                {
+                    layer.SelectedForGuard = true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Deselects all blink layers.
+        /// </summary>
+        internal static void DeselectAllBlink(List<BlinkLayerAnalysis> blinkLayers)
+        {
+            if (blinkLayers == null) return;
+
+            foreach (BlinkLayerAnalysis layer in blinkLayers)
+            {
+                layer.SelectedForGuard = false;
             }
         }
 

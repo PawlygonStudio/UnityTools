@@ -325,6 +325,11 @@ namespace Pawlygon.UnityTools.Editor
                         if (PawlygonEditorUI.DrawPrimaryButton("Create Avatar Structure", 36f))
                         {
                             CreateAvatarStructures();
+                            // CreateAvatarStructures performs scene/asset operations and may change
+                            // the wizard step, which invalidates the current IMGUI layout. Abort the
+                            // current OnGUI pass cleanly so the remaining EndLayoutGroup calls do not
+                            // mismatch the now-reset layout state.
+                            GUIUtility.ExitGUI();
                         }
                     }
 

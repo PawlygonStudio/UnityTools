@@ -45,8 +45,6 @@ namespace Pawlygon.UnityTools.Editor
         private bool patcherHubImportedThisSession;
         private GUIStyle stepStyle;
         private GUIStyle currentStepStyle;
-        private GUIStyle fxLayerHeaderStyle;
-        private GUIStyle fxGuardedLabelStyle;
         private GUIStyle helpBoxPadding10_8;
         private GUIStyle helpBoxPadding8_6;
         private GUIStyle helpBoxPadding10_6;
@@ -55,6 +53,8 @@ namespace Pawlygon.UnityTools.Editor
         private GUIStyle boldLabel13;
         private bool fxCheckAnalyzed;
         private readonly HashSet<int> fxExpandedLayers = new HashSet<int>();
+        private readonly HashSet<int> fxExpandedBlinkLayers = new HashSet<int>();
+        private bool fxShowAllBlinkLayers;
 
         private enum WizardStep
         {
@@ -2588,10 +2588,6 @@ namespace Pawlygon.UnityTools.Editor
                 ? new Color(0.8f, 0.92f, 1f)
                 : new Color(0.1f, 0.35f, 0.7f);
 
-            fxLayerHeaderStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 12 };
-            fxGuardedLabelStyle = new GUIStyle(EditorStyles.miniLabel) { fontStyle = FontStyle.Italic };
-            fxGuardedLabelStyle.normal.textColor = new Color(0.3f, 0.75f, 0.3f);
-
             helpBoxPadding10_8 = new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 8, 8) };
             helpBoxPadding8_6 = new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) };
             helpBoxPadding10_6 = new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 6, 6) };
@@ -2675,7 +2671,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             PawlygonEditorUI.DrawSection(
                 "FX Gesture Check",
-                "Analyze and guard gesture-based facial expression transitions in the FX controller.",
+                "Analyze and guard gesture-based facial expression transitions and eye-blink layers in the FX controller.",
                 () =>
                 {
                     // Check VRChat SDK availability
@@ -2715,18 +2711,36 @@ namespace Pawlygon.UnityTools.Editor
                         EditorGUILayout.HelpBox(entry.fxAnalysisResult.StatusMessage,
                             entry.fxAnalysisResult.StatusMessageType);
                     }
-                    else if (entry.fxAnalysisResult.Layers == null ||
-                             entry.fxAnalysisResult.Layers.Count == 0)
-                    {
-                        EditorGUILayout.HelpBox(
-                            "No gesture-based facial expression transitions found.",
-                            MessageType.Info);
-                    }
                     else
                     {
-                        DrawFXResultsForEntry(entry);
-                        EditorGUILayout.Space(SectionSpacing);
-                        DrawFXApplySectionForEntry(entry);
+                        bool hasGestureLayers = entry.fxAnalysisResult.Layers != null &&
+                                                entry.fxAnalysisResult.Layers.Count > 0;
+                        bool hasBlinkLayers = entry.fxAnalysisResult.BlinkLayers != null &&
+                                              entry.fxAnalysisResult.BlinkLayers.Count > 0;
+
+                        if (!hasGestureLayers && !hasBlinkLayers)
+                        {
+                            EditorGUILayout.HelpBox(
+                                "No gesture-based facial expression transitions or blink layers found.",
+                                MessageType.Info);
+                        }
+                        else
+                        {
+                            if (hasGestureLayers)
+                            {
+                                DrawFXResultsForEntry(entry);
+                            }
+
+                            if (hasBlinkLayers)
+                            {
+                                EditorGUILayout.Space(SectionSpacing);
+                                FXGestureCheckerUI.DrawBlinkSection(
+                                    entry.fxAnalysisResult.BlinkLayers, fxExpandedBlinkLayers, ref fxShowAllBlinkLayers);
+                            }
+
+                            EditorGUILayout.Space(SectionSpacing);
+                            DrawFXApplySectionForEntry(entry);
+                        }
                     }
 
                     // Navigation buttons
@@ -2789,10 +2803,27 @@ namespace Pawlygon.UnityTools.Editor
                 if (entry.fxAnalysisResult.FXController != null)
                     entry.originalFxControllerPath = AssetDatabase.GetAssetPath(entry.fxAnalysisResult.FXController);
 
-                // Auto-skip entries with no actionable results
-                if (!entry.fxAnalysisResult.Success ||
-                    entry.fxAnalysisResult.Layers == null ||
-                    entry.fxAnalysisResult.Layers.Count == 0)
+                // Pre-expand gesture layers so their transitions are visible without a click.
+                if (entry.fxAnalysisResult.Layers != null)
+                {
+                    foreach (FXGestureCheckerCore.LayerAnalysis l in entry.fxAnalysisResult.Layers)
+                        fxExpandedLayers.Add(l.LayerIndex);
+                }
+
+                // Sort detected blink layers by confidence (most likely first) and pre-expand them.
+                if (entry.fxAnalysisResult.BlinkLayers != null && entry.fxAnalysisResult.BlinkLayers.Count > 0)
+                {
+                    entry.fxAnalysisResult.BlinkLayers.Sort((a, b) => b.ConfidenceScore.CompareTo(a.ConfidenceScore));
+                    foreach (FXGestureCheckerCore.BlinkLayerAnalysis bl in entry.fxAnalysisResult.BlinkLayers)
+                        fxExpandedBlinkLayers.Add(bl.LayerIndex);
+                }
+
+                // Auto-skip entries with no actionable results (no gesture layers and no blink layers)
+                bool hasGestureLayers = entry.fxAnalysisResult.Layers != null &&
+                                        entry.fxAnalysisResult.Layers.Count > 0;
+                bool hasBlinkLayers = entry.fxAnalysisResult.BlinkLayers != null &&
+                                      entry.fxAnalysisResult.BlinkLayers.Count > 0;
+                if (!entry.fxAnalysisResult.Success || (!hasGestureLayers && !hasBlinkLayers))
                 {
                     entry.fxCheckComplete = true;
                 }
@@ -2834,110 +2865,29 @@ namespace Pawlygon.UnityTools.Editor
                 MessageType.Info);
             EditorGUILayout.Space(4f);
 
-            // Per-layer foldouts
-            for (int i = 0; i < result.Layers.Count; i++)
-            {
-                DrawFXLayerAnalysis(result.Layers[i]);
-                EditorGUILayout.Space(4f);
-            }
-        }
-
-        private void DrawFXLayerAnalysis(FXGestureCheckerCore.LayerAnalysis layer)
-        {
-            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
-            {
-                bool isExpanded = fxExpandedLayers.Contains(layer.LayerIndex);
-                string gestureCount = $"{layer.GestureTransitions.Count} gesture transition{(layer.GestureTransitions.Count != 1 ? "s" : "")}";
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    bool newExpanded = EditorGUILayout.Foldout(isExpanded, "", true);
-                    EditorGUILayout.LabelField($"Layer: {layer.LayerName}", fxLayerHeaderStyle);
-                    GUILayout.FlexibleSpace();
-                    EditorGUILayout.LabelField($"({gestureCount})", EditorStyles.miniLabel, GUILayout.Width(150f));
-
-                    if (newExpanded != isExpanded)
-                    {
-                        if (newExpanded) fxExpandedLayers.Add(layer.LayerIndex);
-                        else fxExpandedLayers.Remove(layer.LayerIndex);
-                    }
-                }
-
-                if (!isExpanded) return;
-
-                EditorGUI.indentLevel++;
-
-                EditorGUILayout.Space(4f);
-                if (layer.AlreadyHasLayerGuard)
-                {
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        using (new EditorGUI.DisabledScope(true))
-                        {
-                            EditorGUILayout.ToggleLeft("Disable entire layer when FacialExpressionsDisabled", true);
-                        }
-                        EditorGUILayout.LabelField("[Applied]", fxGuardedLabelStyle, GUILayout.Width(60f));
-                    }
-                }
-                else
-                {
-                    layer.SelectedForLayerDisable = EditorGUILayout.ToggleLeft(
-                        "Disable entire layer when FacialExpressionsDisabled",
-                        layer.SelectedForLayerDisable);
-                }
-
-                EditorGUILayout.Space(4f);
-                PawlygonEditorUI.DrawSeparator();
-                EditorGUILayout.Space(4f);
-
-                foreach (FXGestureCheckerCore.TransitionAnalysis transition in layer.GestureTransitions)
-                {
-                    DrawFXTransitionRow(transition);
-                }
-
-                EditorGUI.indentLevel--;
-            }
-        }
-
-        private void DrawFXTransitionRow(FXGestureCheckerCore.TransitionAnalysis transition)
-        {
-            string gestureName = FXGestureCheckerCore.GetGestureName(transition.GestureValue);
-            string label = $"{transition.SourceName} -> {transition.DestinationName} ({transition.GestureParameter}={gestureName})";
-
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                if (transition.HasDisabledGuard)
-                {
-                    using (new EditorGUI.DisabledScope(true))
-                    {
-                        EditorGUILayout.ToggleLeft(label, true);
-                    }
-                    EditorGUILayout.LabelField("[Applied]", fxGuardedLabelStyle, GUILayout.Width(60f));
-                }
-                else
-                {
-                    transition.SelectedForFix = EditorGUILayout.ToggleLeft(label, transition.SelectedForFix);
-                }
-            }
+            FXGestureCheckerUI.DrawGestureLayers(result.Layers, fxExpandedLayers);
         }
 
         private void DrawFXApplySectionForEntry(AvatarEntry entry)
         {
             FXGestureCheckerCore.AnalysisResult result = entry.fxAnalysisResult;
-            List<FXGestureCheckerCore.LayerAnalysis> layers = result.Layers;
+            List<FXGestureCheckerCore.LayerAnalysis> layers =
+                result.Layers ?? new List<FXGestureCheckerCore.LayerAnalysis>();
+            List<FXGestureCheckerCore.BlinkLayerAnalysis> blinkLayers =
+                result.BlinkLayers ?? new List<FXGestureCheckerCore.BlinkLayerAnalysis>();
 
-            bool anySelected = layers.Any(l =>
-                l.SelectedForLayerDisable ||
-                l.GestureTransitions.Any(t => t.SelectedForFix));
+            bool anySelected =
+                layers.Any(l => l.SelectedForLayerDisable || l.GestureTransitions.Any(t => t.SelectedForFix)) ||
+                blinkLayers.Any(b => b.SelectedForGuard);
 
-            bool allGuarded = layers.All(l =>
-                l.AlreadyHasLayerGuard &&
-                l.GestureTransitions.All(t => t.HasDisabledGuard));
+            bool allGuarded =
+                layers.All(l => l.AlreadyHasLayerGuard && l.GestureTransitions.All(t => t.HasDisabledGuard)) &&
+                blinkLayers.All(b => b.AlreadyHasBlinkGuard);
 
             if (allGuarded)
             {
                 EditorGUILayout.HelpBox(
-                    "All gesture transitions and layers are already guarded.",
+                    "All gesture transitions, layers, and blink layers are already guarded.",
                     MessageType.Info);
                 entry.fxCheckComplete = true;
                 return;
@@ -2947,9 +2897,15 @@ namespace Pawlygon.UnityTools.Editor
             {
                 GUILayout.FlexibleSpace();
                 if (GUILayout.Button("Select All Unguarded", GUILayout.Height(26f), GUILayout.Width(160f)))
+                {
                     FXGestureCheckerCore.SelectAllUnguarded(layers);
+                    FXGestureCheckerCore.SelectAllUnguardedBlink(blinkLayers);
+                }
                 if (GUILayout.Button("Deselect All", GUILayout.Height(26f), GUILayout.Width(120f)))
+                {
                     FXGestureCheckerCore.DeselectAll(layers);
+                    FXGestureCheckerCore.DeselectAllBlink(blinkLayers);
+                }
             }
 
             EditorGUILayout.Space(4f);
@@ -2965,7 +2921,7 @@ namespace Pawlygon.UnityTools.Editor
             if (!anySelected)
             {
                 EditorGUILayout.HelpBox(
-                    "Select transitions or layers to apply the FacialExpressionsDisabled guard.",
+                    "Select gesture transitions, layers, or blink layers to apply their guards.",
                     MessageType.Info);
             }
         }
@@ -2978,15 +2934,28 @@ namespace Pawlygon.UnityTools.Editor
             // Capture user selections before re-analysis resets them
             var selectedTransitionKeys = new HashSet<string>();
             var selectedLayerIndices = new HashSet<int>();
-            foreach (FXGestureCheckerCore.LayerAnalysis layer in result.Layers)
+            if (result.Layers != null)
             {
-                if (layer.SelectedForLayerDisable)
-                    selectedLayerIndices.Add(layer.LayerIndex);
-                foreach (FXGestureCheckerCore.TransitionAnalysis t in layer.GestureTransitions)
+                foreach (FXGestureCheckerCore.LayerAnalysis layer in result.Layers)
                 {
-                    if (t.SelectedForFix)
-                        selectedTransitionKeys.Add(
-                            $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}");
+                    if (layer.SelectedForLayerDisable)
+                        selectedLayerIndices.Add(layer.LayerIndex);
+                    foreach (FXGestureCheckerCore.TransitionAnalysis t in layer.GestureTransitions)
+                    {
+                        if (t.SelectedForFix)
+                            selectedTransitionKeys.Add(
+                                $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}");
+                    }
+                }
+            }
+
+            var selectedBlinkIndices = new HashSet<int>();
+            if (result.BlinkLayers != null)
+            {
+                foreach (FXGestureCheckerCore.BlinkLayerAnalysis bl in result.BlinkLayers)
+                {
+                    if (bl.SelectedForGuard)
+                        selectedBlinkIndices.Add(bl.LayerIndex);
                 }
             }
 
@@ -3001,29 +2970,46 @@ namespace Pawlygon.UnityTools.Editor
             }
             entry.copiedFxControllerPath = AssetDatabase.GetAssetPath(copy);
 
-            // 2. Re-analyze on the copy so TransitionRef references point to the new asset
+            // 2. Re-analyze on the copy so the analysis references point to the new asset
             FXGestureCheckerCore.AnalysisResult copyResult = FXGestureCheckerCore.Analyze(copy);
-            if (!copyResult.Success || copyResult.Layers == null)
+            if (!copyResult.Success)
             {
                 statusMessage = "Failed to analyze copied FX controller.";
                 return;
             }
 
-            // Restore user selections on re-analyzed layers
-            foreach (FXGestureCheckerCore.LayerAnalysis layer in copyResult.Layers)
+            // Restore user selections on re-analyzed gesture layers
+            if (copyResult.Layers != null)
             {
-                if (selectedLayerIndices.Contains(layer.LayerIndex))
-                    layer.SelectedForLayerDisable = true;
-                foreach (FXGestureCheckerCore.TransitionAnalysis t in layer.GestureTransitions)
+                foreach (FXGestureCheckerCore.LayerAnalysis layer in copyResult.Layers)
                 {
-                    string key = $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}";
-                    if (selectedTransitionKeys.Contains(key))
-                        t.SelectedForFix = true;
+                    if (selectedLayerIndices.Contains(layer.LayerIndex))
+                        layer.SelectedForLayerDisable = true;
+                    foreach (FXGestureCheckerCore.TransitionAnalysis t in layer.GestureTransitions)
+                    {
+                        string key = $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}";
+                        if (selectedTransitionKeys.Contains(key))
+                            t.SelectedForFix = true;
+                    }
                 }
             }
 
-            // 3. Apply fixes on the copy
-            var (tFixes, lFixes) = FXGestureCheckerCore.ApplySelectedFixes(copy, copyResult.Layers);
+            // Restore user selections on re-analyzed blink layers
+            if (copyResult.BlinkLayers != null)
+            {
+                foreach (FXGestureCheckerCore.BlinkLayerAnalysis bl in copyResult.BlinkLayers)
+                {
+                    if (selectedBlinkIndices.Contains(bl.LayerIndex))
+                        bl.SelectedForGuard = true;
+                }
+            }
+
+            // 3. Apply gesture and blink guards on the copy
+            var (tFixes, lFixes) = FXGestureCheckerCore.ApplySelectedFixes(
+                copy, copyResult.Layers ?? new List<FXGestureCheckerCore.LayerAnalysis>());
+            int bFixes = copyResult.BlinkLayers != null
+                ? FXGestureCheckerCore.ApplySelectedBlinkGuards(copy, copyResult.BlinkLayers)
+                : 0;
 
             // 4. Assign copy to descriptor — must reopen prefab to get fresh descriptor
             GameObject prefabRoot = null;
@@ -3062,7 +3048,7 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             entry.fxCheckComplete = true;
-            statusMessage = $"Applied {tFixes} transition guard(s) and {lFixes} layer guard(s).";
+            statusMessage = $"Applied {tFixes} transition guard(s), {lFixes} layer guard(s), and {bFixes} blink guard(s).";
 
             // Propagate to other entries sharing the same original FX controller
             PropagateSharedFXFixes(entry, copy);
@@ -3139,6 +3125,8 @@ namespace Pawlygon.UnityTools.Editor
             importLoadAttempts = 0;
             fxCheckAnalyzed = false;
             fxExpandedLayers.Clear();
+            fxExpandedBlinkLayers.Clear();
+            fxShowAllBlinkLayers = false;
             currentStep = WizardStep.Setup;
         }
     }

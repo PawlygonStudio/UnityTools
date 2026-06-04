@@ -85,6 +85,16 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
+        /// Returns the PatcherHub <c>FTPatchConfig</c> ScriptableObject type, or null if PatcherHub
+        /// is not installed. Exposed so other editor tools can filter object pickers and validate
+        /// assets without taking a compile-time dependency on PatcherHub.
+        /// </summary>
+        public static Type GetFTPatchConfigType()
+        {
+            return FindFTPatchConfigType();
+        }
+
+        /// <summary>
         /// Creates or updates an FTPatchConfig asset with the provided context.
         /// If an asset already exists at the target path, only diff-related fields and hashes are updated
         /// (preserving user-edited fields like avatarVersion, requiredDependency, etc.).

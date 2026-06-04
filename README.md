@@ -19,18 +19,21 @@ This package helps you duplicate source avatar assets, prepare a working folder 
 - Automatic creation of `FTDiffGenerator` assets for patch generation
 - `.hdiff` generation for both FBX and `.meta` changes using bundled `hdiffz` binaries
 - Optional prefab helpers for [Pawlygon VRCFT](https://github.com/PawlygonStudio/VRC-Facetracking) setup and importing the latest [PatcherHub](https://github.com/PawlygonStudio/PatcherHub) package
-- `FX Gesture Checker` available from `!Pawlygon/Tools/FX Gesture Checker` — scans an avatar's FX AnimatorController for gesture-driven facial expression transitions (`GestureLeft`/`GestureRight`) and applies a `FacialExpressionsDisabled` guard so they do not fire when face tracking is active. Supports per-transition and per-layer guards, work-on-copy mode, and full undo
+- Built-in `FX Check` wizard step that runs the gesture and eye-blink analysis on each generated avatar and applies guards in place
+- `FX Gesture Checker` available from `!Pawlygon/Tools/FX Gesture Checker` — scans an avatar's FX AnimatorController for gesture-driven facial expression transitions (`GestureLeft`/`GestureRight`) and applies a `FacialExpressionsDisabled` guard so they do not fire when face tracking is active, and detects eye-blink layers to apply an `EyeTrackingActive` guard so blinking stops while eye tracking is active. Supports per-transition and per-layer guards, blink-layer confidence detection, work-on-copy mode, and full undo
+- `Patch Config Package Rules` available from `!Pawlygon/Tools/Patch Config Package Rules` — adds per-config package requirements to existing [PatcherHub](https://github.com/PawlygonStudio/PatcherHub) `FTPatchConfig` assets. Auto-lists every config in the project for multi-select, auto-fills a rule from your installed packages (common avatar packages listed first) with pre-written missing/outdated messages, and supports full add/edit/reorder/remove plus batch-applying a rule to many configs at once
 - `Eye Muscle Settings` available from `!Pawlygon/Tools/Eye Muscle Settings` — reads and adjusts the humanoid eye muscle limit settings (In, Out, Up, Down) on an avatar's ModelImporter for face tracking compatibility. Provides synced or split left/right sliders, live scene preview with bone rotation and blendshape activation, and writes changes back to the ModelImporter with a single click
 
 ## Wizard workflow
 
-The current workflow is built around a five-step editor wizard:
+The current workflow is built around a six-step editor wizard:
 
 1. `Setup` - choose source FBX/prefab assets, configure output folders, and create the working structure
 2. `Import Modified FBX` - replace the copied FBX with your edited version and wait for Unity to reimport it
 3. `Select Replacements` - review detected skinned mesh matches plus the primary humanoid Animator rig and choose which replacements to apply
 4. `Prefabs` - optionally add [Pawlygon VRCFT](https://github.com/PawlygonStudio/VRC-Facetracking) setup or import the latest [PatcherHub](https://github.com/PawlygonStudio/PatcherHub) unitypackage
-5. `Finish` - review the generated paths and completed output
+5. `FX Check` - analyze each avatar's FX controller for gesture-driven facial expressions and eye-blink layers, then apply `FacialExpressionsDisabled` and `EyeTrackingActive` guards
+6. `Finish` - review the generated paths and completed output
 
 During setup, the wizard creates a working structure like this:
 

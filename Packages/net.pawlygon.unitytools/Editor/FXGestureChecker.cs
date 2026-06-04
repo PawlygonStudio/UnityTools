@@ -37,13 +37,6 @@ namespace Pawlygon.UnityTools.Editor
         private Component cachedDescriptor;
         private Type cachedDescriptorTypeInstance;
 
-        // --- Styles ---
-        private GUIStyle layerHeaderStyle;
-        private GUIStyle guardedLabelStyle;
-        private GUIStyle confidenceHighStyle;
-        private GUIStyle confidenceMediumStyle;
-        private GUIStyle confidenceLowStyle;
-
         // =====================================================================
         // Window lifecycle
         // =====================================================================
@@ -73,7 +66,6 @@ namespace Pawlygon.UnityTools.Editor
         private void OnGUI()
         {
             PawlygonEditorUI.EnsureStyles();
-            EnsureStyles();
 
             PawlygonEditorUI.DrawHeader(
                 "FX Gesture Checker",
@@ -210,95 +202,7 @@ namespace Pawlygon.UnityTools.Editor
             EditorGUILayout.LabelField("Analysis Results", EditorStyles.boldLabel);
             EditorGUILayout.Space(4f);
 
-            for (int i = 0; i < layers.Count; i++)
-            {
-                DrawLayerAnalysis(layers[i], i);
-                EditorGUILayout.Space(4f);
-            }
-        }
-
-        private void DrawLayerAnalysis(FXGestureCheckerCore.LayerAnalysis layer, int displayIndex)
-        {
-            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
-            {
-                // Foldout header
-                bool isExpanded = expandedLayers.Contains(layer.LayerIndex);
-                string gestureCount = $"{layer.GestureTransitions.Count} gesture transition{(layer.GestureTransitions.Count != 1 ? "s" : "")}";
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    bool newExpanded = EditorGUILayout.Foldout(isExpanded, "", true);
-                    EditorGUILayout.LabelField($"Layer: {layer.LayerName}", layerHeaderStyle);
-                    GUILayout.FlexibleSpace();
-                    EditorGUILayout.LabelField($"({gestureCount})", EditorStyles.miniLabel, GUILayout.Width(150f));
-
-                    if (newExpanded != isExpanded)
-                    {
-                        if (newExpanded) expandedLayers.Add(layer.LayerIndex);
-                        else expandedLayers.Remove(layer.LayerIndex);
-                    }
-                }
-
-                if (!isExpanded) return;
-
-                EditorGUI.indentLevel++;
-
-                // Layer-level disable option
-                EditorGUILayout.Space(4f);
-                if (layer.AlreadyHasLayerGuard)
-                {
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        using (new EditorGUI.DisabledScope(true))
-                        {
-                            EditorGUILayout.ToggleLeft("Disable entire layer when FacialExpressionsDisabled", true);
-                        }
-
-                        EditorGUILayout.LabelField("[Applied]", guardedLabelStyle, GUILayout.Width(60f));
-                    }
-                }
-                else
-                {
-                    layer.SelectedForLayerDisable = EditorGUILayout.ToggleLeft(
-                        "Disable entire layer when FacialExpressionsDisabled",
-                        layer.SelectedForLayerDisable);
-                }
-
-                EditorGUILayout.Space(4f);
-                PawlygonEditorUI.DrawSeparator();
-                EditorGUILayout.Space(4f);
-
-                // Individual transitions
-                foreach (FXGestureCheckerCore.TransitionAnalysis transition in layer.GestureTransitions)
-                {
-                    DrawTransitionRow(transition);
-                }
-
-                EditorGUI.indentLevel--;
-            }
-        }
-
-        private void DrawTransitionRow(FXGestureCheckerCore.TransitionAnalysis transition)
-        {
-            string gestureName = FXGestureCheckerCore.GetGestureName(transition.GestureValue);
-            string label = $"{transition.SourceName} -> {transition.DestinationName} ({transition.GestureParameter}={gestureName})";
-
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                if (transition.HasDisabledGuard)
-                {
-                    using (new EditorGUI.DisabledScope(true))
-                    {
-                        EditorGUILayout.ToggleLeft(label, true);
-                    }
-
-                    EditorGUILayout.LabelField("[Applied]", guardedLabelStyle, GUILayout.Width(60f));
-                }
-                else
-                {
-                    transition.SelectedForFix = EditorGUILayout.ToggleLeft(label, transition.SelectedForFix);
-                }
-            }
+            FXGestureCheckerUI.DrawGestureLayers(layers, expandedLayers);
         }
 
         // =====================================================================
@@ -368,106 +272,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawBlinkResults()
         {
-            EditorGUILayout.LabelField("Blink Layer Detection", EditorStyles.boldLabel);
-            EditorGUILayout.Space(4f);
-
-            // Determine which layers to show: by default only the highest confidence tier
-            FXGestureCheckerCore.BlinkConfidence topConfidence = blinkLayers[0].Confidence;
-            int topCount = blinkLayers.Count(l => l.Confidence == topConfidence);
-            int lowerCount = blinkLayers.Count - topCount;
-
-            int visibleCount = showAllBlinkLayers ? blinkLayers.Count : topCount;
-
-            for (int i = 0; i < visibleCount; i++)
-            {
-                DrawBlinkLayerAnalysis(blinkLayers[i]);
-                EditorGUILayout.Space(4f);
-            }
-
-            if (lowerCount > 0)
-            {
-                showAllBlinkLayers = EditorGUILayout.ToggleLeft(
-                    $"Show {lowerCount} more layer{(lowerCount != 1 ? "s" : "")} with lower confidence",
-                    showAllBlinkLayers);
-            }
-        }
-
-        private void DrawBlinkLayerAnalysis(FXGestureCheckerCore.BlinkLayerAnalysis blinkLayer)
-        {
-            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
-            {
-                bool isExpanded = expandedBlinkLayers.Contains(blinkLayer.LayerIndex);
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    bool newExpanded = EditorGUILayout.Foldout(isExpanded, "", true);
-
-                    EditorGUILayout.LabelField($"Layer: {blinkLayer.LayerName}", layerHeaderStyle);
-                    GUILayout.FlexibleSpace();
-
-                    // Confidence badge
-                    GUIStyle badgeStyle = GetConfidenceStyle(blinkLayer.Confidence);
-                    string badgeText = blinkLayer.Confidence.ToString();
-                    EditorGUILayout.LabelField(badgeText, badgeStyle, GUILayout.Width(60f));
-
-                    if (newExpanded != isExpanded)
-                    {
-                        if (newExpanded) expandedBlinkLayers.Add(blinkLayer.LayerIndex);
-                        else expandedBlinkLayers.Remove(blinkLayer.LayerIndex);
-                    }
-                }
-
-                if (!isExpanded) return;
-
-                EditorGUI.indentLevel++;
-
-                // Guard toggle
-                EditorGUILayout.Space(4f);
-                if (blinkLayer.AlreadyHasBlinkGuard)
-                {
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        using (new EditorGUI.DisabledScope(true))
-                        {
-                            EditorGUILayout.ToggleLeft("Disable blink when EyeTrackingActive > 0.5", true);
-                        }
-
-                        EditorGUILayout.LabelField("[Applied]", guardedLabelStyle, GUILayout.Width(60f));
-                    }
-                }
-                else
-                {
-                    blinkLayer.SelectedForGuard = EditorGUILayout.ToggleLeft(
-                        "Disable blink when EyeTrackingActive > 0.5",
-                        blinkLayer.SelectedForGuard);
-                }
-
-                // Detection reasons
-                EditorGUILayout.Space(4f);
-                PawlygonEditorUI.DrawSeparator();
-                EditorGUILayout.Space(4f);
-
-                EditorGUILayout.LabelField("Detection reasons:", EditorStyles.miniLabel);
-                foreach (string reason in blinkLayer.DetectionReasons)
-                {
-                    EditorGUILayout.LabelField($"  \u2022 {reason}", PawlygonEditorUI.RichMiniLabelStyle);
-                }
-
-                EditorGUI.indentLevel--;
-            }
-        }
-
-        private GUIStyle GetConfidenceStyle(FXGestureCheckerCore.BlinkConfidence confidence)
-        {
-            switch (confidence)
-            {
-                case FXGestureCheckerCore.BlinkConfidence.High:
-                    return confidenceHighStyle;
-                case FXGestureCheckerCore.BlinkConfidence.Medium:
-                    return confidenceMediumStyle;
-                default:
-                    return confidenceLowStyle;
-            }
+            FXGestureCheckerUI.DrawBlinkSection(blinkLayers, expandedBlinkLayers, ref showAllBlinkLayers);
         }
 
         // =====================================================================
@@ -737,44 +542,6 @@ namespace Pawlygon.UnityTools.Editor
         {
             statusMessage = message;
             statusMessageType = type;
-        }
-
-        private void EnsureStyles()
-        {
-            if (layerHeaderStyle != null) return;
-
-            layerHeaderStyle = new GUIStyle(EditorStyles.boldLabel)
-            {
-                fontSize = 12
-            };
-
-            guardedLabelStyle = new GUIStyle(EditorStyles.miniLabel)
-            {
-                fontStyle = FontStyle.Italic
-            };
-
-            guardedLabelStyle.normal.textColor = new Color(0.3f, 0.75f, 0.3f);
-
-            confidenceHighStyle = new GUIStyle(EditorStyles.miniLabel)
-            {
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleRight
-            };
-            confidenceHighStyle.normal.textColor = new Color(0.3f, 0.85f, 0.3f);
-
-            confidenceMediumStyle = new GUIStyle(EditorStyles.miniLabel)
-            {
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleRight
-            };
-            confidenceMediumStyle.normal.textColor = new Color(0.9f, 0.75f, 0.2f);
-
-            confidenceLowStyle = new GUIStyle(EditorStyles.miniLabel)
-            {
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleRight
-            };
-            confidenceLowStyle.normal.textColor = new Color(0.85f, 0.4f, 0.3f);
         }
 
         private void AutoSelectFirstSceneRoot()

@@ -626,6 +626,11 @@ namespace Pawlygon.UnityTools.Editor
             string sanitizedMainFolderName = mainFolderName.Trim();
             string effectiveSharedAvatarFolderName = useSeparateFolderPerAvatar ? string.Empty : sharedAvatarFolderName.Trim();
 
+            if (!ConfirmAndClearExistingTargets(sanitizedMainFolderName, effectiveSharedAvatarFolderName))
+            {
+                return;
+            }
+
             PawlygonEditorUtils.EnsureFolderExists(PawlygonEditorUtils.CombineAssetPath("Assets", sanitizedMainFolderName));
 
             if (useSeparateFolderPerAvatar)
@@ -634,6 +639,11 @@ namespace Pawlygon.UnityTools.Editor
                 {
                     if (!CreateSeparateAvatarStructure(avatarEntries[i], sanitizedMainFolderName, i == avatarEntries.Count - 1))
                     {
+                        if (string.IsNullOrEmpty(statusMessage))
+                        {
+                            statusMessage = $"Setup failed while creating the structure for '{GetEntryDisplayName(avatarEntries[i])}'.";
+                        }
+                        Repaint();
                         return;
                     }
                 }
@@ -642,6 +652,11 @@ namespace Pawlygon.UnityTools.Editor
             {
                 if (!CreateSharedAvatarStructure(sanitizedMainFolderName, effectiveSharedAvatarFolderName))
                 {
+                    if (string.IsNullOrEmpty(statusMessage))
+                    {
+                        statusMessage = "Setup failed while creating the shared avatar structure.";
+                    }
+                    Repaint();
                     return;
                 }
             }
@@ -669,6 +684,75 @@ namespace Pawlygon.UnityTools.Editor
             Repaint();
         }
 
+        /// <summary>
+        /// Detects target avatar folders that already exist from a previous run and, when found,
+        /// asks the user to confirm overwriting them. On confirmation the existing folders are
+        /// deleted so the structure can be recreated from scratch. Returns false (after setting an
+        /// inline status message) when the user cancels or a folder could not be removed, so the
+        /// caller never aborts silently.
+        /// </summary>
+        private bool ConfirmAndClearExistingTargets(string sanitizedMainFolderName, string effectiveSharedAvatarFolderName)
+        {
+            var existingRoots = new List<string>();
+
+            if (useSeparateFolderPerAvatar)
+            {
+                foreach (AvatarEntry entry in avatarEntries)
+                {
+                    string root = PawlygonEditorUtils.CombineAssetPath("Assets", sanitizedMainFolderName, entry.avatarFolderName.Trim());
+                    if (AssetDatabase.IsValidFolder(root) && !existingRoots.Contains(root))
+                    {
+                        existingRoots.Add(root);
+                    }
+                }
+            }
+            else
+            {
+                string root = PawlygonEditorUtils.CombineAssetPath("Assets", sanitizedMainFolderName, effectiveSharedAvatarFolderName);
+                if (AssetDatabase.IsValidFolder(root))
+                {
+                    existingRoots.Add(root);
+                }
+            }
+
+            if (existingRoots.Count == 0)
+            {
+                return true;
+            }
+
+            string folderList = string.Join("\n", existingRoots.Select(path => "• " + path));
+            bool overwrite = EditorUtility.DisplayDialog(
+                "Folder Already Exists",
+                $"These folders from a previous run already exist:\n\n{folderList}\n\nOverwriting deletes each folder and everything inside it, then recreates the avatar structure. This cannot be undone.",
+                "Overwrite",
+                "Cancel");
+
+            if (!overwrite)
+            {
+                statusMessage = "Setup cancelled — the existing folder(s) were left untouched.";
+                Repaint();
+                return false;
+            }
+
+            // Release any scene that lives inside a folder we are about to delete so the asset
+            // deletion is not blocked by an open scene. Modified scenes were already offered for
+            // saving earlier in CreateAvatarStructures.
+            EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
+
+            foreach (string root in existingRoots)
+            {
+                if (!AssetDatabase.DeleteAsset(root))
+                {
+                    statusMessage = $"Could not delete the existing folder '{root}'. Close anything open from it and try again.";
+                    Repaint();
+                    return false;
+                }
+            }
+
+            AssetDatabase.Refresh();
+            return true;
+        }
+
         private bool CreateSeparateAvatarStructure(AvatarEntry entry, string sanitizedMainFolderName, bool openAfterCreate)
         {
             string avatarFolderName = entry.avatarFolderName.Trim();
@@ -690,12 +774,6 @@ namespace Pawlygon.UnityTools.Editor
             entry.copiedPrefabPath = PawlygonEditorUtils.CombineAssetPath(prefabFolderPath, copiedPrefabFileName);
             entry.createdScenePath = PawlygonEditorUtils.CombineAssetPath(scenesFolderPath, sceneFileName);
             entry.diffGeneratorAssetPath = PawlygonEditorUtils.CombineAssetPath(internalFolderPath, diffGeneratorFileName);
-
-            if (AssetDatabase.IsValidFolder(entry.avatarRootPath))
-            {
-                EditorUtility.DisplayDialog("Avatar Already Exists", $"The folder '{entry.avatarRootPath}' already exists. Choose a new avatar name or remove the existing folder first.", "OK");
-                return false;
-            }
 
             PawlygonEditorUtils.EnsureFolderExists(entry.avatarRootPath);
             PawlygonEditorUtils.EnsureFolderExists(fbxFolderPath);
@@ -735,12 +813,6 @@ namespace Pawlygon.UnityTools.Editor
             string internalFolderPath = PawlygonEditorUtils.CombineAssetPath(avatarRootPath, "Internal");
             string scenesFolderPath = PawlygonEditorUtils.CombineAssetPath(internalFolderPath, "Scenes");
             string sharedScenePath = PawlygonEditorUtils.CombineAssetPath(scenesFolderPath, $"{effectiveSharedAvatarFolderName} - Pawlygon VRCFT.unity");
-
-            if (AssetDatabase.IsValidFolder(avatarRootPath))
-            {
-                EditorUtility.DisplayDialog("Avatar Already Exists", $"The folder '{avatarRootPath}' already exists. Choose a new avatar name or remove the existing folder first.", "OK");
-                return false;
-            }
 
             PawlygonEditorUtils.EnsureFolderExists(avatarRootPath);
             PawlygonEditorUtils.EnsureFolderExists(fbxFolderPath);
@@ -809,7 +881,22 @@ namespace Pawlygon.UnityTools.Editor
 
         private static bool CreateSceneAsset(string sceneAssetPath, IReadOnlyList<string> prefabAssetPaths)
         {
-            Scene newScene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Additive);
+            // Unity refuses to create a scene additively while any loaded scene is an unsaved
+            // untitled scene. That situation is common (a fresh untitled scene, or a working
+            // scene whose asset was just deleted during an overwrite), so fall back to creating
+            // the working scene in Single mode and leave the saved result open instead of closing it.
+            bool hasUntitledLoadedScene = false;
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                if (string.IsNullOrEmpty(SceneManager.GetSceneAt(i).path))
+                {
+                    hasUntitledLoadedScene = true;
+                    break;
+                }
+            }
+
+            NewSceneMode sceneMode = hasUntitledLoadedScene ? NewSceneMode.Single : NewSceneMode.Additive;
+            Scene newScene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, sceneMode);
 
             try
             {
@@ -833,7 +920,10 @@ namespace Pawlygon.UnityTools.Editor
             }
             finally
             {
-                if (newScene.IsValid())
+                // Only close the temporary scene when it was created additively alongside the
+                // user's existing scene. In Single mode it is now the only (saved) scene, so
+                // closing it would leave the editor with no valid scene loaded.
+                if (sceneMode == NewSceneMode.Additive && newScene.IsValid())
                 {
                     EditorSceneManager.CloseScene(newScene, true);
                 }

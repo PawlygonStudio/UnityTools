@@ -122,6 +122,10 @@ namespace Pawlygon.UnityTools.Editor
                     if (PawlygonEditorUI.DrawPrimaryButton("Check Blendshapes", 32f))
                     {
                         AnalyzeBlendshapes();
+
+                        // The results section below changes shape after analysis; abort this
+                        // event so IMGUI re-lays out instead of drawing against stale layout.
+                        GUIUtility.ExitGUI();
                     }
                 }
             }

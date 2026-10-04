@@ -111,7 +111,19 @@ namespace Pawlygon.UnityTools.Editor
             public int LayerIndex;
             public List<TransitionAnalysis> GestureTransitions = new List<TransitionAnalysis>();
             public bool SelectedForLayerDisable;
+
+            /// <summary>
+            /// True when the layer already has an up-to-date layer-level guard (nothing to apply).
+            /// </summary>
             public bool AlreadyHasLayerGuard;
+
+            /// <summary>
+            /// True when the layer has a layer-level guard written by an older version (no way back
+            /// out of the guard state, self-retriggering, or wrong Write Defaults). In that case
+            /// <see cref="AlreadyHasLayerGuard"/> is false and applying the layer guard repairs the
+            /// existing guard in place instead of adding a second one.
+            /// </summary>
+            public bool LayerGuardNeedsRepair;
         }
 
         /// <summary>
@@ -166,9 +178,88 @@ namespace Pawlygon.UnityTools.Editor
             public int ConfidenceScore;
             public BlinkConfidence Confidence;
             public bool SelectedForGuard;
+
+            /// <summary>
+            /// True when the layer already has an up-to-date blink guard (nothing to apply).
+            /// </summary>
             public bool AlreadyHasBlinkGuard;
+
+            /// <summary>
+            /// True when the layer has a blink guard written by an older version (blinking never
+            /// resumes after eye tracking turns off). In that case <see cref="AlreadyHasBlinkGuard"/>
+            /// is false and applying the blink guard repairs the existing guard in place.
+            /// </summary>
+            public bool BlinkGuardNeedsRepair;
+
             public List<string> DetectionReasons = new List<string>();
         }
+
+        // =====================================================================
+        // Guard model
+        // =====================================================================
+
+        /// <summary>
+        /// State of a guard (layer-level or blink) on a layer.
+        /// </summary>
+        private enum GuardStatus
+        {
+            /// <summary>No guard on the layer.</summary>
+            None,
+            /// <summary>A guard exists but was written by an older version and needs repair.</summary>
+            Outdated,
+            /// <summary>A complete, up-to-date guard exists.</summary>
+            Current
+        }
+
+        /// <summary>
+        /// Describes one kind of guard: an empty state entered from AnyState while
+        /// <see cref="ParamName"/> satisfies the "active" condition, and left again (back to the
+        /// layer's default state) once it satisfies the "clear" condition.
+        /// </summary>
+        private sealed class GuardSpec
+        {
+            public string StateName;
+            public string ParamName;
+            public AnimatorConditionMode ActiveMode;
+            public float ActiveThreshold;
+            public AnimatorConditionMode ClearMode;
+            public float ClearThreshold;
+            public Vector3 StatePosition;
+            public string UndoName;
+
+            /// <summary>
+            /// AnyState transitions into this state are never gated by this guard's parameter.
+            /// Used so the blink guard does not gate the layer guard: if both gated each other,
+            /// neither could fire while both parameters are active.
+            /// </summary>
+            public string ExemptSiblingStateName;
+        }
+
+        private static readonly GuardSpec LayerGuardSpec = new GuardSpec
+        {
+            StateName = EmptyStateName,
+            ParamName = DisabledParamName,
+            ActiveMode = AnimatorConditionMode.If,
+            ActiveThreshold = 0f,
+            ClearMode = AnimatorConditionMode.IfNot,
+            ClearThreshold = 0f,
+            StatePosition = new Vector3(30f, -80f, 0f),
+            UndoName = "Add layer-level FacialExpressionsDisabled guard",
+            ExemptSiblingStateName = null
+        };
+
+        private static readonly GuardSpec BlinkGuardSpec = new GuardSpec
+        {
+            StateName = BlinkGuardStateName,
+            ParamName = EyeTrackingActiveParam,
+            ActiveMode = AnimatorConditionMode.Greater,
+            ActiveThreshold = EyeTrackingActiveThreshold,
+            ClearMode = AnimatorConditionMode.Less,
+            ClearThreshold = EyeTrackingActiveThreshold,
+            StatePosition = new Vector3(30f, -140f, 0f),
+            UndoName = "Add blink layer EyeTrackingActive guard",
+            ExemptSiblingStateName = EmptyStateName
+        };
 
         // =====================================================================
         // Cached reflection types
@@ -351,6 +442,14 @@ namespace Pawlygon.UnityTools.Editor
                 result.StatusMessageType = MessageType.Info;
             }
 
+            int outdatedGuards = analysisResults.Count(l => l.LayerGuardNeedsRepair) +
+                                 result.BlinkLayers.Count(b => b.BlinkGuardNeedsRepair);
+            if (outdatedGuards > 0)
+            {
+                result.StatusMessage += $" {outdatedGuards} guard(s) from an older version need repair and are pre-selected.";
+                result.StatusMessageType = MessageType.Warning;
+            }
+
             return result;
         }
 
@@ -359,11 +458,16 @@ namespace Pawlygon.UnityTools.Editor
         /// </summary>
         private static LayerAnalysis AnalyzeLayer(AnimatorControllerLayer layer, int layerIndex)
         {
+            GuardStatus guardStatus = GetGuardStatus(layer.stateMachine, LayerGuardSpec);
+
             LayerAnalysis analysis = new LayerAnalysis
             {
                 LayerName = layer.name,
                 LayerIndex = layerIndex,
-                AlreadyHasLayerGuard = HasLayerLevelGuard(layer)
+                AlreadyHasLayerGuard = guardStatus == GuardStatus.Current,
+                LayerGuardNeedsRepair = guardStatus == GuardStatus.Outdated,
+                // The user opted into this guard in the past; pre-select the repair.
+                SelectedForLayerDisable = guardStatus == GuardStatus.Outdated
             };
 
             AnimatorStateMachine stateMachine = layer.stateMachine;
@@ -442,33 +546,128 @@ namespace Pawlygon.UnityTools.Editor
             return false;
         }
 
-        /// <summary>
-        /// Checks whether a layer has a layer-level FacialExpressionsDisabled guard,
-        /// i.e. an AnyState transition to the empty guard state with the disabled condition.
-        /// </summary>
-        private static bool HasLayerLevelGuard(AnimatorControllerLayer layer)
-        {
-            AnimatorStateMachine stateMachine = layer.stateMachine;
-            if (stateMachine == null) return false;
+        // =====================================================================
+        // Guard detection (shared by the layer guard and the blink guard)
+        // =====================================================================
 
-            // Check if there is an AnyState transition to a state named EmptyStateName
-            // with a FacialExpressionsDisabled condition
+        /// <summary>
+        /// Finds an existing guard: an AnyState transition into a state named
+        /// <see cref="GuardSpec.StateName"/> that has a condition on <see cref="GuardSpec.ParamName"/>.
+        /// </summary>
+        /// <returns>The guard state, or null when the layer has no guard.</returns>
+        private static AnimatorState FindGuard(AnimatorStateMachine stateMachine, GuardSpec spec,
+            out AnimatorStateTransition guardTransition)
+        {
+            guardTransition = null;
+            if (stateMachine == null) return null;
+
             foreach (AnimatorStateTransition transition in stateMachine.anyStateTransitions)
             {
-                if (transition.destinationState != null &&
-                    transition.destinationState.name == EmptyStateName)
+                if (transition == null || transition.destinationState == null ||
+                    transition.destinationState.name != spec.StateName)
                 {
-                    foreach (AnimatorCondition condition in transition.conditions)
+                    continue;
+                }
+
+                if (HasConditionOn(transition, spec.ParamName))
+                {
+                    guardTransition = transition;
+                    return transition.destinationState;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Classifies the guard described by <paramref name="spec"/> on a layer. A guard is
+        /// <see cref="GuardStatus.Outdated"/> when it was written by an older version of this tool:
+        /// its AnyState transition can re-enter itself, the guard state has no exit transition back
+        /// once the parameter clears, its Write Defaults differs from the layer's dominant setting,
+        /// or another AnyState transition could still pull the layer out of the guard state.
+        /// </summary>
+        private static GuardStatus GetGuardStatus(AnimatorStateMachine stateMachine, GuardSpec spec)
+        {
+            AnimatorState guardState = FindGuard(stateMachine, spec, out AnimatorStateTransition guardTransition);
+            if (guardState == null) return GuardStatus.None;
+
+            bool upToDate =
+                !guardTransition.canTransitionToSelf &&
+                HasClearExit(guardState, spec) &&
+                guardState.writeDefaultValues == GetDominantWriteDefaultValues(stateMachine) &&
+                !HasUngatedSiblingTransitions(stateMachine, guardTransition, spec);
+
+            return upToDate ? GuardStatus.Current : GuardStatus.Outdated;
+        }
+
+        /// <summary>
+        /// Checks whether the guard state has a transition out of it that fires once the guard
+        /// parameter clears (e.g. <c>FacialExpressionsDisabled == false</c>).
+        /// </summary>
+        private static bool HasClearExit(AnimatorState guardState, GuardSpec spec)
+        {
+            foreach (AnimatorStateTransition transition in guardState.transitions)
+            {
+                if (transition == null) continue;
+
+                bool hasDestination = transition.destinationState != null ||
+                                      transition.destinationStateMachine != null ||
+                                      transition.isExit;
+                if (!hasDestination) continue;
+
+                foreach (AnimatorCondition condition in transition.conditions)
+                {
+                    if (condition.parameter == spec.ParamName && condition.mode == spec.ClearMode)
                     {
-                        if (condition.parameter == DisabledParamName)
-                        {
-                            return true;
-                        }
+                        return true;
                     }
                 }
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Checks whether any other AnyState transition in the layer could fire while the guard is
+        /// active (i.e. it has no condition on the guard parameter). Because the guard transition
+        /// cannot re-enter its own state, such a transition would pull the layer out of the guard
+        /// state and the guard would then pull it back, flickering every frame.
+        /// </summary>
+        private static bool HasUngatedSiblingTransitions(AnimatorStateMachine stateMachine,
+            AnimatorStateTransition guardTransition, GuardSpec spec)
+        {
+            foreach (AnimatorStateTransition transition in stateMachine.anyStateTransitions)
+            {
+                if (IsExemptSibling(transition, guardTransition, spec)) continue;
+                if (!HasConditionOn(transition, spec.ParamName)) return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsExemptSibling(AnimatorStateTransition transition,
+            AnimatorStateTransition guardTransition, GuardSpec spec)
+        {
+            if (transition == null || transition == guardTransition) return true;
+
+            return spec.ExemptSiblingStateName != null &&
+                   transition.destinationState != null &&
+                   transition.destinationState.name == spec.ExemptSiblingStateName;
+        }
+
+        private static bool HasConditionOn(AnimatorStateTransition transition, string parameter)
+        {
+            foreach (AnimatorCondition condition in transition.conditions)
+            {
+                if (condition.parameter == parameter) return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsGuardStateName(string stateName)
+        {
+            return stateName == EmptyStateName || stateName == BlinkGuardStateName;
         }
 
         // =====================================================================
@@ -502,6 +701,10 @@ namespace Pawlygon.UnityTools.Editor
             AnimatorStateTransition t = transition.TransitionRef;
             if (t == null) return;
 
+            // Never add the condition twice (stale analysis, or an AnyState transition that a
+            // layer guard already gated).
+            if (HasDisabledGuard(t)) return;
+
             // Record undo on the transition asset itself
             Undo.RecordObject(t, "Add FacialExpressionsDisabled condition");
 
@@ -519,53 +722,203 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Applies a layer-level guard by creating an empty state and an AnyState transition
-        /// that activates when FacialExpressionsDisabled is true, preventing all other
-        /// transitions in the layer from firing.
+        /// Applies (or repairs) a layer-level guard: an empty state entered from AnyState while
+        /// FacialExpressionsDisabled is true, which returns to the layer's default state once it is
+        /// false again. The guard state uses the layer's dominant Write Defaults setting. If the
+        /// layer already has a guard from an older version, it is repaired in place.
         /// </summary>
         internal static void ApplyLayerGuard(AnimatorController controller, LayerAnalysis layer)
         {
+            EnsureGuard(controller, layer.LayerIndex, LayerGuardSpec);
+        }
+
+        /// <summary>
+        /// Creates or repairs the guard described by <paramref name="spec"/> on one layer:
+        /// <list type="bullet">
+        /// <item>an empty guard state using the layer's dominant Write Defaults setting;</item>
+        /// <item>an AnyState transition into it (highest priority, no exit time, duration 0,
+        /// <c>canTransitionToSelf = false</c> so it does not restart the state every frame);</item>
+        /// <item>an exit transition from the guard state back to the layer's default state once
+        /// the parameter clears (no exit time, duration 0);</item>
+        /// <item>the "clear" condition on every other AnyState transition in the layer, so nothing
+        /// can pull the layer out of the guard state while the guard is active.</item>
+        /// </list>
+        /// An existing guard (e.g. from an older version) is reused and fixed instead of duplicated.
+        /// </summary>
+        private static void EnsureGuard(AnimatorController controller, int layerIndex, GuardSpec spec)
+        {
             AnimatorControllerLayer[] controllerLayers = controller.layers;
-            if (layer.LayerIndex < 0 || layer.LayerIndex >= controllerLayers.Length) return;
+            if (layerIndex < 0 || layerIndex >= controllerLayers.Length) return;
 
-            AnimatorControllerLayer targetLayer = controllerLayers[layer.LayerIndex];
-            AnimatorStateMachine stateMachine = targetLayer.stateMachine;
+            AnimatorStateMachine stateMachine = controllerLayers[layerIndex].stateMachine;
             if (stateMachine == null) return;
+            if (GetGuardStatus(stateMachine, spec) == GuardStatus.Current) return;
 
-            Undo.RecordObject(stateMachine, "Add layer-level FacialExpressionsDisabled guard");
+            Undo.RecordObject(stateMachine, spec.UndoName);
 
-            // Create the empty state
-            AnimatorState emptyState = stateMachine.AddState(EmptyStateName, new Vector3(30f, -80f, 0f));
-            emptyState.writeDefaultValues = false;
+            // Determine WD from the layer's own states (guard states excluded) before adding ours
+            bool writeDefaults = GetDominantWriteDefaultValues(stateMachine);
 
-            // Create AnyState -> Empty State transition with FacialExpressionsDisabled == true
-            AnimatorStateTransition anyTransition = stateMachine.AddAnyStateTransition(emptyState);
-            anyTransition.hasExitTime = false;
-            anyTransition.duration = 0f;
-            anyTransition.canTransitionToSelf = true;
-            anyTransition.AddCondition(AnimatorConditionMode.If, 0f, DisabledParamName);
-
-            // Move the new transition to the top of the AnyState transitions list so it
-            // has highest priority. Unity evaluates AnyState transitions in order — if
-            // existing gesture transitions come first, they will match before our guard
-            // and the layer won't be disabled.
-            AnimatorStateTransition[] anyTransitions = stateMachine.anyStateTransitions;
-            if (anyTransitions.Length > 1)
+            AnimatorState guardState = FindGuard(stateMachine, spec, out AnimatorStateTransition guardTransition);
+            if (guardState == null)
             {
-                // The newly added transition is at the end; rotate it to index 0
-                List<AnimatorStateTransition> reordered = new List<AnimatorStateTransition>(anyTransitions.Length);
-                reordered.Add(anyTransitions[anyTransitions.Length - 1]); // our new guard
-                for (int i = 0; i < anyTransitions.Length - 1; i++)
-                {
-                    reordered.Add(anyTransitions[i]);
-                }
-                stateMachine.anyStateTransitions = reordered.ToArray();
+                // Reuse a leftover guard state whose AnyState transition was removed by hand,
+                // otherwise create the empty guard state (no motion attached).
+                guardState = FindTopLevelState(stateMachine, spec.StateName) ??
+                             stateMachine.AddState(spec.StateName, spec.StatePosition);
+
+                guardTransition = stateMachine.AddAnyStateTransition(guardState);
+                guardTransition.AddCondition(spec.ActiveMode, spec.ActiveThreshold, spec.ParamName);
             }
+            else
+            {
+                Undo.RecordObject(guardState, spec.UndoName);
+                Undo.RecordObject(guardTransition, spec.UndoName);
+            }
+
+            guardState.writeDefaultValues = writeDefaults;
+
+            guardTransition.hasExitTime = false;
+            guardTransition.duration = 0f;
+            guardTransition.canTransitionToSelf = false;
+
+            // Unity evaluates AnyState transitions in order; keep the guard first so it wins.
+            MoveAnyStateTransitionToTop(stateMachine, guardTransition);
+
+            EnsureClearExit(stateMachine, guardState, spec);
+            GateSiblingTransitions(stateMachine, guardTransition, spec);
+            GateForOtherGuards(stateMachine, guardTransition, spec);
 
             // Reassign layer array since Unity uses copy-on-read for layers
             controller.layers = controllerLayers;
 
+            EditorUtility.SetDirty(guardState);
+            EditorUtility.SetDirty(guardTransition);
             EditorUtility.SetDirty(stateMachine);
+        }
+
+        /// <summary>
+        /// Adds the transition that leaves the guard state once the guard parameter clears, unless
+        /// one already exists. It targets the layer's default state; if the default state is
+        /// missing or is a guard state itself, the first other top-level state is used, and if
+        /// there is none the transition goes to the Exit node (which re-enters via Entry).
+        /// </summary>
+        private static void EnsureClearExit(AnimatorStateMachine stateMachine, AnimatorState guardState, GuardSpec spec)
+        {
+            if (HasClearExit(guardState, spec)) return;
+
+            Undo.RecordObject(guardState, spec.UndoName);
+
+            AnimatorState returnState = FindReturnState(stateMachine, guardState);
+            AnimatorStateTransition exitTransition = returnState != null
+                ? guardState.AddTransition(returnState)
+                : guardState.AddExitTransition();
+
+            exitTransition.hasExitTime = false;
+            exitTransition.exitTime = 0f;
+            exitTransition.hasFixedDuration = true;
+            exitTransition.duration = 0f;
+            exitTransition.offset = 0f;
+            exitTransition.AddCondition(spec.ClearMode, spec.ClearThreshold, spec.ParamName);
+
+            EditorUtility.SetDirty(exitTransition);
+        }
+
+        /// <summary>
+        /// Adds the guard's "clear" condition to every other AnyState transition in the layer that
+        /// has no condition on the guard parameter yet. Without this, such a transition could fire
+        /// from inside the guard state (the guard transition cannot re-enter its own state), and the
+        /// layer would flicker between the guard and that transition's destination.
+        /// </summary>
+        private static void GateSiblingTransitions(AnimatorStateMachine stateMachine,
+            AnimatorStateTransition guardTransition, GuardSpec spec)
+        {
+            foreach (AnimatorStateTransition transition in stateMachine.anyStateTransitions)
+            {
+                if (IsExemptSibling(transition, guardTransition, spec)) continue;
+                if (HasConditionOn(transition, spec.ParamName)) continue;
+
+                Undo.RecordObject(transition, spec.UndoName);
+                transition.AddCondition(spec.ClearMode, spec.ClearThreshold, spec.ParamName);
+                EditorUtility.SetDirty(transition);
+            }
+        }
+
+        /// <summary>
+        /// When the layer also carries the other kind of guard (layer guard + blink guard on the
+        /// same layer), gates this guard's AnyState transition by that guard's "clear" condition
+        /// as well, honouring its exemptions. This keeps the other guard complete (otherwise it
+        /// would be reported as outdated) and makes the layer guard take precedence over the
+        /// blink guard when both parameters are active.
+        /// </summary>
+        private static void GateForOtherGuards(AnimatorStateMachine stateMachine,
+            AnimatorStateTransition guardTransition, GuardSpec spec)
+        {
+            foreach (GuardSpec other in new[] { LayerGuardSpec, BlinkGuardSpec })
+            {
+                if (other == spec) continue;
+                if (FindGuard(stateMachine, other, out AnimatorStateTransition otherTransition) == null) continue;
+                if (IsExemptSibling(guardTransition, otherTransition, other)) continue;
+                if (HasConditionOn(guardTransition, other.ParamName)) continue;
+
+                guardTransition.AddCondition(other.ClearMode, other.ClearThreshold, other.ParamName);
+            }
+        }
+
+        /// <summary>
+        /// Picks the state the guard returns to: the layer's default state, or the first other
+        /// top-level state when the default is missing or is a guard state. Null if none exists.
+        /// </summary>
+        private static AnimatorState FindReturnState(AnimatorStateMachine stateMachine, AnimatorState guardState)
+        {
+            AnimatorState defaultState = stateMachine.defaultState;
+            if (defaultState != null && defaultState != guardState && !IsGuardStateName(defaultState.name))
+            {
+                return defaultState;
+            }
+
+            foreach (ChildAnimatorState childState in stateMachine.states)
+            {
+                AnimatorState state = childState.state;
+                if (state != null && state != guardState && !IsGuardStateName(state.name))
+                {
+                    return state;
+                }
+            }
+
+            return null;
+        }
+
+        private static AnimatorState FindTopLevelState(AnimatorStateMachine stateMachine, string stateName)
+        {
+            foreach (ChildAnimatorState childState in stateMachine.states)
+            {
+                if (childState.state != null && childState.state.name == stateName)
+                {
+                    return childState.state;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Moves <paramref name="transition"/> to index 0 of the AnyState transitions so it has the
+        /// highest priority.
+        /// </summary>
+        private static void MoveAnyStateTransitionToTop(AnimatorStateMachine stateMachine, AnimatorStateTransition transition)
+        {
+            AnimatorStateTransition[] anyTransitions = stateMachine.anyStateTransitions;
+            int index = Array.IndexOf(anyTransitions, transition);
+            if (index <= 0) return;
+
+            List<AnimatorStateTransition> reordered = new List<AnimatorStateTransition>(anyTransitions.Length) { transition };
+            for (int i = 0; i < anyTransitions.Length; i++)
+            {
+                if (i != index) reordered.Add(anyTransitions[i]);
+            }
+
+            stateMachine.anyStateTransitions = reordered.ToArray();
         }
 
         /// <summary>
@@ -573,15 +926,19 @@ namespace Pawlygon.UnityTools.Editor
         /// to the given controller. Registers Undo, ensures the parameter exists,
         /// iterates layers, marks dirty, saves assets, and logs a summary.
         /// </summary>
-        /// <returns>A tuple of (transitionFixes, layerFixes) counts.</returns>
+        /// <returns>A tuple of (transitionFixes, layerFixes) counts. Layer fixes include outdated
+        /// layer guards that were repaired in place.</returns>
         internal static (int transitionFixes, int layerFixes) ApplySelectedFixes(AnimatorController controller, List<LayerAnalysis> layers)
         {
+            if (controller == null || layers == null) return (0, 0);
+
             Undo.RegisterCompleteObjectUndo(controller, "Apply FacialExpressionsDisabled Guards");
 
             EnsureParameterExists(controller);
 
             int transitionFixCount = 0;
             int layerFixCount = 0;
+            int layerRepairCount = 0;
 
             foreach (LayerAnalysis layer in layers)
             {
@@ -595,16 +952,22 @@ namespace Pawlygon.UnityTools.Editor
                     }
                 }
 
-                // Layer-level fix
+                // Layer-level fix (creates a new guard or repairs an outdated one)
                 if (layer.SelectedForLayerDisable && !layer.AlreadyHasLayerGuard)
                 {
                     ApplyLayerGuard(controller, layer);
                     layerFixCount++;
+                    if (layer.LayerGuardNeedsRepair) layerRepairCount++;
                 }
             }
 
             EditorUtility.SetDirty(controller);
             AssetDatabase.SaveAssets();
+
+            if (layerRepairCount > 0)
+            {
+                Debug.Log($"{LogPrefix} Repaired {layerRepairCount} outdated layer guard(s).");
+            }
 
             Debug.Log($"{LogPrefix} Applied {transitionFixCount} transition guard(s) and {layerFixCount} layer guard(s).");
 
@@ -658,6 +1021,26 @@ namespace Pawlygon.UnityTools.Editor
 
             Debug.Log($"{LogPrefix} Created FX controller copy at '{destinationPath}'.");
             return copy;
+        }
+
+        /// <summary>
+        /// Checks whether a controller asset cannot be edited in place because it lives inside an
+        /// immutable package (registry, git, built-in, ...) under <c>Packages/</c>. Embedded and
+        /// local packages are regular files on disk and are treated as editable.
+        /// </summary>
+        internal static bool IsControllerReadOnly(AnimatorController controller)
+        {
+            if (controller == null) return false;
+
+            string path = AssetDatabase.GetAssetPath(controller);
+            if (string.IsNullOrEmpty(path) || !path.StartsWith("Packages/", StringComparison.Ordinal)) return false;
+
+            UnityEditor.PackageManager.PackageInfo packageInfo =
+                UnityEditor.PackageManager.PackageInfo.FindForAssetPath(path);
+            if (packageInfo == null) return true;
+
+            return packageInfo.source != UnityEditor.PackageManager.PackageSource.Embedded &&
+                   packageInfo.source != UnityEditor.PackageManager.PackageSource.Local;
         }
 
         /// <summary>
@@ -801,11 +1184,14 @@ namespace Pawlygon.UnityTools.Editor
         /// </summary>
         private static BlinkLayerAnalysis AnalyzeBlinkLayer(AnimatorControllerLayer layer, int layerIndex)
         {
+            GuardStatus guardStatus = GetGuardStatus(layer.stateMachine, BlinkGuardSpec);
+
             BlinkLayerAnalysis analysis = new BlinkLayerAnalysis
             {
                 LayerName = layer.name,
                 LayerIndex = layerIndex,
-                AlreadyHasBlinkGuard = HasBlinkLayerGuard(layer)
+                AlreadyHasBlinkGuard = guardStatus == GuardStatus.Current,
+                BlinkGuardNeedsRepair = guardStatus == GuardStatus.Outdated
             };
 
             string layerNameLower = layer.name.ToLowerInvariant();
@@ -847,7 +1233,8 @@ namespace Pawlygon.UnityTools.Editor
             AnimatorStateMachine stateMachine = layer.stateMachine;
             if (stateMachine != null)
             {
-                int stateCount = stateMachine.states.Length;
+                // Our own guard states are not part of the layer's blink logic
+                int stateCount = stateMachine.states.Count(s => s.state != null && !IsGuardStateName(s.state.name));
                 if (stateCount >= 1 && stateCount <= 4)
                 {
                     analysis.ConfidenceScore += 1;
@@ -868,6 +1255,12 @@ namespace Pawlygon.UnityTools.Editor
             else
             {
                 analysis.Confidence = BlinkConfidence.Low;
+            }
+
+            // The user opted into this guard in the past; pre-select the repair at any confidence.
+            if (analysis.BlinkGuardNeedsRepair)
+            {
+                analysis.SelectedForGuard = true;
             }
 
             return analysis;
@@ -937,33 +1330,6 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
-        /// <summary>
-        /// Checks whether a layer already has a blink guard (AnyState transition to
-        /// BlinkGuardStateName with an EyeTrackingActive condition).
-        /// </summary>
-        private static bool HasBlinkLayerGuard(AnimatorControllerLayer layer)
-        {
-            AnimatorStateMachine stateMachine = layer.stateMachine;
-            if (stateMachine == null) return false;
-
-            foreach (AnimatorStateTransition transition in stateMachine.anyStateTransitions)
-            {
-                if (transition.destinationState != null &&
-                    transition.destinationState.name == BlinkGuardStateName)
-                {
-                    foreach (AnimatorCondition condition in transition.conditions)
-                    {
-                        if (condition.parameter == EyeTrackingActiveParam)
-                        {
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            return false;
-        }
-
         // =====================================================================
         // Blink guard application
         // =====================================================================
@@ -988,69 +1354,40 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Applies a blink guard to a layer by creating an empty state and an AnyState
-        /// transition that activates when EyeTrackingActive > 0.5, preventing the
-        /// blink layer from triggering.
-        /// The empty state's writeDefaultValues is set to match the dominant WD setting
-        /// of the existing states in the layer.
+        /// Applies (or repairs) a blink guard: an empty state entered from AnyState while
+        /// EyeTrackingActive &gt; 0.5, which returns to the layer's default state once
+        /// EyeTrackingActive &lt; 0.5 so blinking resumes when eye tracking turns off.
+        /// The guard state's writeDefaultValues matches the layer's dominant WD setting.
+        /// If the layer already has a guard from an older version, it is repaired in place.
         /// </summary>
         internal static void ApplyBlinkGuard(AnimatorController controller, BlinkLayerAnalysis blinkLayer)
         {
-            AnimatorControllerLayer[] controllerLayers = controller.layers;
-            if (blinkLayer.LayerIndex < 0 || blinkLayer.LayerIndex >= controllerLayers.Length) return;
-
-            AnimatorControllerLayer targetLayer = controllerLayers[blinkLayer.LayerIndex];
-            AnimatorStateMachine stateMachine = targetLayer.stateMachine;
-            if (stateMachine == null) return;
-
-            Undo.RecordObject(stateMachine, "Add blink layer EyeTrackingActive guard");
-
-            // Determine WD setting from existing states in the layer
-            bool writeDefaults = GetDominantWriteDefaultValues(stateMachine);
-
-            // Create the empty guard state (no motion/animation clip attached)
-            AnimatorState guardState = stateMachine.AddState(BlinkGuardStateName, new Vector3(30f, -80f, 0f));
-            guardState.writeDefaultValues = writeDefaults;
-
-            // Create AnyState -> Guard State transition with EyeTrackingActive > 0.5
-            AnimatorStateTransition guardTransition = stateMachine.AddAnyStateTransition(guardState);
-            guardTransition.hasExitTime = false;
-            guardTransition.duration = 0f;
-            guardTransition.canTransitionToSelf = true;
-            guardTransition.AddCondition(AnimatorConditionMode.Greater, EyeTrackingActiveThreshold, EyeTrackingActiveParam);
-
-            // Move the guard transition to index 0 for highest priority
-            AnimatorStateTransition[] anyTransitions = stateMachine.anyStateTransitions;
-            if (anyTransitions.Length > 1)
-            {
-                List<AnimatorStateTransition> reordered = new List<AnimatorStateTransition>(anyTransitions.Length);
-                reordered.Add(anyTransitions[anyTransitions.Length - 1]); // our new guard
-                for (int i = 0; i < anyTransitions.Length - 1; i++)
-                {
-                    reordered.Add(anyTransitions[i]);
-                }
-                stateMachine.anyStateTransitions = reordered.ToArray();
-            }
-
-            // Reassign layer array since Unity uses copy-on-read for layers
-            controller.layers = controllerLayers;
-
-            EditorUtility.SetDirty(stateMachine);
+            EnsureGuard(controller, blinkLayer.LayerIndex, BlinkGuardSpec);
         }
 
         /// <summary>
-        /// Determines the dominant writeDefaultValues setting among existing states
-        /// in a state machine. Returns the value used by the majority of states,
-        /// defaulting to true if there are no states or an even split.
+        /// Determines the dominant writeDefaultValues setting among the states of a state machine
+        /// (including nested sub-state machines, excluding this tool's own guard states).
+        /// Returns the value used by the majority of states, defaulting to true if there are no
+        /// states or an even split.
         /// </summary>
         private static bool GetDominantWriteDefaultValues(AnimatorStateMachine stateMachine)
         {
             int wdTrue = 0;
             int wdFalse = 0;
+            CountWriteDefaults(stateMachine, ref wdTrue, ref wdFalse);
+
+            // Default to true if no states or even split
+            return wdFalse <= wdTrue;
+        }
+
+        private static void CountWriteDefaults(AnimatorStateMachine stateMachine, ref int wdTrue, ref int wdFalse)
+        {
+            if (stateMachine == null) return;
 
             foreach (ChildAnimatorState childState in stateMachine.states)
             {
-                if (childState.state == null) continue;
+                if (childState.state == null || IsGuardStateName(childState.state.name)) continue;
 
                 if (childState.state.writeDefaultValues)
                     wdTrue++;
@@ -1058,8 +1395,10 @@ namespace Pawlygon.UnityTools.Editor
                     wdFalse++;
             }
 
-            // Default to true if no states or even split
-            return wdFalse <= wdTrue;
+            foreach (ChildAnimatorStateMachine child in stateMachine.stateMachines)
+            {
+                CountWriteDefaults(child.stateMachine, ref wdTrue, ref wdFalse);
+            }
         }
 
         /// <summary>
@@ -1067,16 +1406,18 @@ namespace Pawlygon.UnityTools.Editor
         /// Ensures the EyeTrackingActive parameter exists and applies guards to each
         /// selected layer.
         /// </summary>
-        /// <returns>The number of blink guards applied.</returns>
+        /// <returns>The number of blink guards applied, including outdated blink guards that
+        /// were repaired in place.</returns>
         internal static int ApplySelectedBlinkGuards(AnimatorController controller, List<BlinkLayerAnalysis> blinkLayers)
         {
-            if (blinkLayers == null || blinkLayers.Count == 0) return 0;
+            if (controller == null || blinkLayers == null || blinkLayers.Count == 0) return 0;
 
             Undo.RegisterCompleteObjectUndo(controller, "Apply EyeTrackingActive Blink Guards");
 
             EnsureEyeTrackingParameterExists(controller);
 
             int guardCount = 0;
+            int repairCount = 0;
 
             foreach (BlinkLayerAnalysis blinkLayer in blinkLayers)
             {
@@ -1084,11 +1425,17 @@ namespace Pawlygon.UnityTools.Editor
                 {
                     ApplyBlinkGuard(controller, blinkLayer);
                     guardCount++;
+                    if (blinkLayer.BlinkGuardNeedsRepair) repairCount++;
                 }
             }
 
             EditorUtility.SetDirty(controller);
             AssetDatabase.SaveAssets();
+
+            if (repairCount > 0)
+            {
+                Debug.Log($"{LogPrefix} Repaired {repairCount} outdated blink guard(s).");
+            }
 
             Debug.Log($"{LogPrefix} Applied {guardCount} blink layer guard(s).");
 

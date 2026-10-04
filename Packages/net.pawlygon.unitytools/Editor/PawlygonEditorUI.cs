@@ -153,9 +153,9 @@ namespace Pawlygon.UnityTools.Editor
 
             using (new EditorGUILayout.VerticalScope(headerBoxStyle))
             {
-                Rect headerRect = EditorGUILayout.GetControlRect(false, 84f);
+                Rect headerRect = EditorGUILayout.GetControlRect(false, 96f);
 
-                float logoSize = 70f;
+                float logoSize = 84f;
                 float spacing = 16f;
                 float textBlockWidth = Mathf.Min(520f, Mathf.Max(300f, headerRect.width - 140f));
                 float totalWidth = logoSize + spacing + textBlockWidth;
@@ -169,8 +169,8 @@ namespace Pawlygon.UnityTools.Editor
                     GUI.DrawTexture(new Rect(startX, logoY, logoSize, logoSize), logoTexture, ScaleMode.ScaleToFit, true);
                 }
 
-                EditorGUI.LabelField(new Rect(textX, headerRect.y + 18f, textWidth, 22f), title, headerTitleStyle);
-                EditorGUI.LabelField(new Rect(textX, headerRect.y + 40f, textWidth, 36f), subtitle, headerSubtitleStyle);
+                EditorGUI.LabelField(new Rect(textX, headerRect.y + 24f, textWidth, 22f), title, headerTitleStyle);
+                EditorGUI.LabelField(new Rect(textX, headerRect.y + 46f, textWidth, 36f), subtitle, headerSubtitleStyle);
             }
 
             EditorGUILayout.Space(6f);

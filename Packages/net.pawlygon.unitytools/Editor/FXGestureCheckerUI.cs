@@ -16,7 +16,18 @@ namespace Pawlygon.UnityTools.Editor
     {
         private static GUIStyle layerHeaderStyle;
         private static GUIStyle guardedLabelStyle;
+        private static GUIStyle outdatedLabelStyle;
         private static GUIStyle confidenceHighStyle;
+
+        private const string OutdatedLayerGuardTooltip =
+            "This layer has a guard from an older version of this tool. Once FacialExpressionsDisabled " +
+            "turns on, the layer can stay stuck in the empty guard state. Applying repairs the existing " +
+            "guard in place (adds the way back, fixes Write Defaults) instead of adding a second one.";
+
+        private const string OutdatedBlinkGuardTooltip =
+            "This layer has a blink guard from an older version of this tool. Once EyeTrackingActive " +
+            "goes above 0.5, blinking never resumes after eye tracking turns off. Applying repairs the " +
+            "existing guard in place instead of adding a second one.";
         private static GUIStyle confidenceMediumStyle;
         private static GUIStyle confidenceLowStyle;
 
@@ -28,6 +39,9 @@ namespace Pawlygon.UnityTools.Editor
 
             guardedLabelStyle = new GUIStyle(EditorStyles.miniLabel) { fontStyle = FontStyle.Italic };
             guardedLabelStyle.normal.textColor = new Color(0.3f, 0.75f, 0.3f);
+
+            outdatedLabelStyle = new GUIStyle(EditorStyles.miniLabel) { fontStyle = FontStyle.Italic };
+            outdatedLabelStyle.normal.textColor = new Color(0.9f, 0.6f, 0.2f);
 
             confidenceHighStyle = new GUIStyle(EditorStyles.miniLabel) { fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleRight };
             confidenceHighStyle.normal.textColor = new Color(0.3f, 0.85f, 0.3f);
@@ -98,6 +112,17 @@ namespace Pawlygon.UnityTools.Editor
                             EditorGUILayout.ToggleLeft("Disable entire layer when FacialExpressionsDisabled", true);
                         }
                         EditorGUILayout.LabelField("[Applied]", guardedLabelStyle, GUILayout.Width(60f));
+                    }
+                }
+                else if (layer.LayerGuardNeedsRepair)
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        layer.SelectedForLayerDisable = EditorGUILayout.ToggleLeft(
+                            new GUIContent("Repair layer guard (FacialExpressionsDisabled)", OutdatedLayerGuardTooltip),
+                            layer.SelectedForLayerDisable);
+                        EditorGUILayout.LabelField(new GUIContent("[Outdated]", OutdatedLayerGuardTooltip),
+                            outdatedLabelStyle, GUILayout.Width(70f));
                     }
                 }
                 else
@@ -220,6 +245,17 @@ namespace Pawlygon.UnityTools.Editor
                             EditorGUILayout.ToggleLeft("Disable blink when EyeTrackingActive > 0.5", true);
                         }
                         EditorGUILayout.LabelField("[Applied]", guardedLabelStyle, GUILayout.Width(60f));
+                    }
+                }
+                else if (blinkLayer.BlinkGuardNeedsRepair)
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        blinkLayer.SelectedForGuard = EditorGUILayout.ToggleLeft(
+                            new GUIContent("Repair blink guard (EyeTrackingActive > 0.5)", OutdatedBlinkGuardTooltip),
+                            blinkLayer.SelectedForGuard);
+                        EditorGUILayout.LabelField(new GUIContent("[Outdated]", OutdatedBlinkGuardTooltip),
+                            outdatedLabelStyle, GUILayout.Width(70f));
                     }
                 }
                 else

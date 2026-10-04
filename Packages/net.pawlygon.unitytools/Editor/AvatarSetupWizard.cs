@@ -24,6 +24,8 @@ namespace Pawlygon.UnityTools.Editor
         private const string VrcftPrefabGuid = "ca618adb2c3333545a1f36d72a73a3ef";
         private const string VrcftPackageListingUrl = "https://vcc.pawlygon.net/";
         private const string PatcherHubLatestReleaseApiUrl = "https://api.github.com/repos/PawlygonStudio/PatcherHub/releases/latest";
+        private const int PatcherHubReleaseInfoTimeoutSeconds = 30;
+        private const int PatcherHubDownloadTimeoutSeconds = 300;
 
         private const int SourceFbxPickerControlId = 9001;
         private const int SourcePrefabPickerControlId = 9002;
@@ -77,6 +79,8 @@ namespace Pawlygon.UnityTools.Editor
             public string createdScenePath;
             public string avatarRootPath;
             public string diffGeneratorAssetPath;
+            public bool diffGenerationFailed;
+            public string diffGenerationError;
             public long watchedFbxWriteTimeUtcTicks;
             public bool hasImportedModifiedFbx;
             public bool isMeshReviewComplete;
@@ -181,30 +185,9 @@ namespace Pawlygon.UnityTools.Editor
                 if (!reimport) return;
             }
 
-            try
+            if (!DownloadAndImportLatestPatcherHub(out string resultMessage, out bool cancelled) && !cancelled)
             {
-                GitHubReleaseInfo releaseInfo = FetchLatestPatcherHubReleaseInfo();
-                GitHubReleaseAsset unityPackageAsset = releaseInfo?.assets?.FirstOrDefault(asset =>
-                    !string.IsNullOrEmpty(asset.name) &&
-                    asset.name.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase) &&
-                    !string.IsNullOrEmpty(asset.browser_download_url));
-
-                if (unityPackageAsset == null)
-                {
-                    EditorUtility.DisplayDialog("Import Failed",
-                        "Could not find a .unitypackage asset in the latest PatcherHub release.", "OK");
-                    return;
-                }
-
-                string downloadPath = Path.Combine(Path.GetTempPath(), unityPackageAsset.name);
-                DownloadFile(unityPackageAsset.browser_download_url, downloadPath);
-                AssetDatabase.ImportPackage(downloadPath, false);
-                Debug.Log($"[AvatarSetupWizard] Imported {unityPackageAsset.name} from {releaseInfo.tag_name}.");
-            }
-            catch (Exception ex)
-            {
-                EditorUtility.DisplayDialog("Import Failed",
-                    $"Failed to import PatcherHub: {ex.Message}", "OK");
+                EditorUtility.DisplayDialog("Import Failed", resultMessage, "OK");
             }
         }
 
@@ -236,6 +219,8 @@ namespace Pawlygon.UnityTools.Editor
             using (new EditorGUILayout.VerticalScope(GUILayout.ExpandHeight(true)))
             {
                 mainContentScrollPosition = EditorGUILayout.BeginScrollView(mainContentScrollPosition, GUILayout.ExpandHeight(true));
+
+                DrawDiffFailureWarning();
 
                 switch (currentStep)
                 {
@@ -310,6 +295,8 @@ namespace Pawlygon.UnityTools.Editor
                         if (GUILayout.Button("Add Avatar", GUILayout.Height(28f)))
                         {
                             avatarEntries.Add(new AvatarEntry());
+                            // The new entry adds controls mid-event; restart the layout pass.
+                            GUIUtility.ExitGUI();
                         }
 
                         GUILayout.FlexibleSpace();
@@ -398,26 +385,30 @@ namespace Pawlygon.UnityTools.Editor
                         {
                             if (AreAllEntriesImportedAndLoadable())
                             {
-                                int generatedDiffCount = GenerateDiffFilesForEntries(importedOnly: true);
-                                MoveToMeshSelection(generatedDiffCount, skippedImportWait: false);
+                                GenerateDiffsAndMoveToMeshSelection(importedOnly: true, skippedImportWait: false);
                             }
                             else
                             {
                                 statusMessage = "Not every modified FBX is ready yet. Finish importing all copied FBXs, then continue.";
                             }
+
+                            // Diff generation refreshes the AssetDatabase, may show a dialog and
+                            // changes the step, all of which invalidate the current layout pass.
+                            GUIUtility.ExitGUI();
                         }
 
                         if (GUILayout.Button("Skip Waiting", GUILayout.Height(34f)))
                         {
                             if (CanLoadImportedAssets())
                             {
-                                int generatedDiffCount = GenerateDiffFilesForEntries(importedOnly: false);
-                                MoveToMeshSelection(generatedDiffCount, skippedImportWait: true);
+                                GenerateDiffsAndMoveToMeshSelection(importedOnly: false, skippedImportWait: true);
                             }
                             else
                             {
                                 statusMessage = "The copied FBX and prefab assets are not loadable yet. Wait for Unity to finish importing before skipping.";
                             }
+
+                            GUIUtility.ExitGUI();
                         }
                     }
                 });
@@ -470,6 +461,8 @@ namespace Pawlygon.UnityTools.Editor
                         if (GUILayout.Button("Skip This Avatar", GUILayout.Height(34f)))
                         {
                             SkipEntryReview(selectedEntry);
+                            // Shows a modal dialog and may change the step.
+                            GUIUtility.ExitGUI();
                         }
 
                         using (new EditorGUI.DisabledScope(!HasAnySelectedReplacement(selectedEntry)))
@@ -477,6 +470,8 @@ namespace Pawlygon.UnityTools.Editor
                             if (PawlygonEditorUI.DrawPrimaryButton("Apply Selected Replacements", 34f))
                             {
                                 ApplySelectedReplacementsToPrefab(selectedEntry);
+                                // Saves the prefab, may show a dialog and may change the step.
+                                GUIUtility.ExitGUI();
                             }
                         }
                     }
@@ -507,11 +502,14 @@ namespace Pawlygon.UnityTools.Editor
                         }
                     }
 
+                    DrawMissingPatchConfigsNotice();
+
                     EditorGUILayout.Space(SectionSpacing);
 
                     if (PawlygonEditorUI.DrawPrimaryButton("Start Over", 34f))
                     {
                         ResetWizard();
+                        GUIUtility.ExitGUI();
                     }
                 });
         }
@@ -534,6 +532,7 @@ namespace Pawlygon.UnityTools.Editor
                     {
                         currentStep = WizardStep.FXCheck;
                         statusMessage = string.Empty;
+                        GUIUtility.ExitGUI();
                     }
                 });
         }
@@ -553,6 +552,8 @@ namespace Pawlygon.UnityTools.Editor
                     if (PawlygonEditorUI.DrawPrimaryButton("Add VRCFT To Prefabs", 32f))
                     {
                         AddVrcftSetupToPrefabs(vrcftPrefabPath);
+                        // Saves prefabs and refreshes the AssetDatabase.
+                        GUIUtility.ExitGUI();
                     }
                 }
                 else
@@ -567,6 +568,7 @@ namespace Pawlygon.UnityTools.Editor
                             vrcftSetupStatusMessage = refreshedAvailability
                                 ? "Pawlygon VRCFT package detected. You can now add the setup to the generated prefabs."
                                 : "Pawlygon VRCFT package is still not available in this project.";
+                            GUIUtility.ExitGUI();
                         }
                     }
                 }
@@ -602,6 +604,8 @@ namespace Pawlygon.UnityTools.Editor
                 if (PawlygonEditorUI.DrawPrimaryButton(isPatcherHubInstalled ? "Re-import Latest PatcherHub" : "Import Latest PatcherHub", 32f))
                 {
                     ImportLatestPatcherHub();
+                    // Shows progress bars and dialogs, then imports a package.
+                    GUIUtility.ExitGUI();
                 }
 
                 if (patcherHubImportedThisSession || !string.IsNullOrEmpty(patcherHubImportStatusMessage))
@@ -609,7 +613,120 @@ namespace Pawlygon.UnityTools.Editor
                     EditorGUILayout.Space(6f);
                     EditorGUILayout.HelpBox(patcherHubImportStatusMessage, MessageType.None);
                 }
+
+                if (isPatcherHubInstalled)
+                {
+                    DrawMissingPatchConfigsNotice();
+                }
             }
+        }
+
+        /// <summary>
+        /// Patch configs are normally written during diff generation, which only happens if
+        /// PatcherHub was already installed at that point. When it was imported later (step 4 or
+        /// via the menu), offer to build the missing configs from the existing diff files.
+        /// </summary>
+        private void DrawMissingPatchConfigsNotice()
+        {
+            if (!FTPatchConfigGenerator.IsPatcherHubAvailable())
+            {
+                return;
+            }
+
+            int missingCount = GetEntriesMissingPatchConfig().Count;
+            if (missingCount == 0)
+            {
+                return;
+            }
+
+            EditorGUILayout.Space(6f);
+            EditorGUILayout.HelpBox(
+                $"{missingCount} avatar entr{(missingCount == 1 ? "y has" : "ies have")} diff files but no PatcherHub patch config yet.",
+                MessageType.Warning);
+
+            if (PawlygonEditorUI.DrawPrimaryButton("Generate Patch Configs", 30f))
+            {
+                GenerateMissingPatchConfigs();
+                // Creates assets and saves the AssetDatabase, which invalidates the current layout pass.
+                GUIUtility.ExitGUI();
+            }
+        }
+
+        /// <summary>
+        /// Returns the entries whose diff files were generated successfully and exist on disk but
+        /// whose PatcherHub config asset does not exist yet.
+        /// </summary>
+        private List<AvatarEntry> GetEntriesMissingPatchConfig()
+        {
+            var result = new List<AvatarEntry>();
+
+            foreach (AvatarEntry entry in avatarEntries)
+            {
+                if (entry.diffGenerationFailed ||
+                    string.IsNullOrEmpty(entry.avatarRootPath) ||
+                    string.IsNullOrEmpty(entry.diffGeneratorAssetPath))
+                {
+                    continue;
+                }
+
+                FTDiffGenerator diffGenerator = AssetDatabase.LoadAssetAtPath<FTDiffGenerator>(entry.diffGeneratorAssetPath);
+                string baseName = diffGenerator != null ? diffGenerator.GetBaseName() : null;
+                if (string.IsNullOrEmpty(baseName))
+                {
+                    continue;
+                }
+
+                string fbxDiffPath = GetFbxDiffAssetPath(entry.avatarRootPath, baseName);
+                string metaDiffPath = PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderPath(entry.avatarRootPath), FTDiffGenerator.GetMetaDiffFileName(baseName));
+                if (!File.Exists(ToAbsolutePath(fbxDiffPath)) || !File.Exists(ToAbsolutePath(metaDiffPath)))
+                {
+                    continue;
+                }
+
+                if (!File.Exists(ToAbsolutePath(GetPatchConfigAssetPath(entry, entry.avatarRootPath))))
+                {
+                    result.Add(entry);
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Builds the PatcherHub configs for every entry returned by
+        /// <see cref="GetEntriesMissingPatchConfig"/>, using the same context as diff generation.
+        /// </summary>
+        private void GenerateMissingPatchConfigs()
+        {
+            int createdCount = 0;
+            var failedNames = new List<string>();
+
+            foreach (AvatarEntry entry in GetEntriesMissingPatchConfig())
+            {
+                FTDiffGenerator diffGenerator = AssetDatabase.LoadAssetAtPath<FTDiffGenerator>(entry.diffGeneratorAssetPath);
+                FTPatchConfigGenerator.ConfigContext configContext = BuildPatchConfigContext(entry, diffGenerator);
+                string configPath = configContext != null ? FTPatchConfigGenerator.GenerateConfig(configContext) : null;
+
+                if (string.IsNullOrEmpty(configPath))
+                {
+                    failedNames.Add(GetEntryDisplayName(entry));
+                }
+                else
+                {
+                    createdCount++;
+                }
+            }
+
+            statusMessage = $"Generated {createdCount} PatcherHub patch config{(createdCount == 1 ? string.Empty : "s")}.";
+
+            if (failedNames.Count > 0)
+            {
+                statusMessage += $" Could not generate a config for: {string.Join(", ", failedNames)}. See the Console for details.";
+                EditorUtility.DisplayDialog("Patch Config Generation Failed",
+                    $"Could not generate a PatcherHub patch config for:\n\n{string.Join("\n", failedNames)}\n\nSee the Console for details.", "OK");
+            }
+
+            Repaint();
         }
 
         private void CreateAvatarStructures()
@@ -631,7 +748,7 @@ namespace Pawlygon.UnityTools.Editor
             string sanitizedMainFolderName = mainFolderName.Trim();
             string effectiveSharedAvatarFolderName = useSeparateFolderPerAvatar ? string.Empty : sharedAvatarFolderName.Trim();
 
-            if (!ConfirmAndClearExistingTargets(sanitizedMainFolderName, effectiveSharedAvatarFolderName))
+            if (!ConfirmAndClearExistingTargets())
             {
                 return;
             }
@@ -673,6 +790,8 @@ namespace Pawlygon.UnityTools.Editor
             {
                 entry.watchedFbxWriteTimeUtcTicks = GetAssetWriteTimeUtcTicks(entry.copiedFbxPath);
                 entry.hasImportedModifiedFbx = false;
+                entry.diffGenerationFailed = false;
+                entry.diffGenerationError = string.Empty;
                 entry.isMeshReviewComplete = false;
                 entry.reviewResultLabel = string.Empty;
                 entry.animatorReplacement = new AnimatorReplacementState();
@@ -696,29 +815,13 @@ namespace Pawlygon.UnityTools.Editor
         /// inline status message) when the user cancels or a folder could not be removed, so the
         /// caller never aborts silently.
         /// </summary>
-        private bool ConfirmAndClearExistingTargets(string sanitizedMainFolderName, string effectiveSharedAvatarFolderName)
+        private bool ConfirmAndClearExistingTargets()
         {
-            var existingRoots = new List<string>();
-
-            if (useSeparateFolderPerAvatar)
-            {
-                foreach (AvatarEntry entry in avatarEntries)
-                {
-                    string root = PawlygonEditorUtils.CombineAssetPath("Assets", sanitizedMainFolderName, entry.avatarFolderName.Trim());
-                    if (AssetDatabase.IsValidFolder(root) && !existingRoots.Contains(root))
-                    {
-                        existingRoots.Add(root);
-                    }
-                }
-            }
-            else
-            {
-                string root = PawlygonEditorUtils.CombineAssetPath("Assets", sanitizedMainFolderName, effectiveSharedAvatarFolderName);
-                if (AssetDatabase.IsValidFolder(root))
-                {
-                    existingRoots.Add(root);
-                }
-            }
+            // Use the same root list as validation, which rejects any source asset inside these
+            // folders, so the deletion below can never remove the assets being copied.
+            List<string> existingRoots = GetPlannedAvatarRootPaths()
+                .Where(AssetDatabase.IsValidFolder)
+                .ToList();
 
             if (existingRoots.Count == 0)
             {
@@ -1035,31 +1138,64 @@ namespace Pawlygon.UnityTools.Editor
 
         private void ImportLatestPatcherHub()
         {
-            patcherHubImportStatusMessage = "Downloading latest PatcherHub release...";
+            bool imported = DownloadAndImportLatestPatcherHub(out string resultMessage, out bool cancelled);
+            patcherHubImportStatusMessage = resultMessage;
+
+            if (imported)
+            {
+                patcherHubImportedThisSession = true;
+            }
+            else if (!cancelled)
+            {
+                EditorUtility.DisplayDialog("Import Failed", resultMessage, "OK");
+            }
+
+            Repaint();
+        }
+
+        /// <summary>
+        /// Downloads the latest PatcherHub .unitypackage from GitHub and imports it. Every network
+        /// request has a timeout and shows a cancelable progress bar, so a stalled connection can
+        /// never hang the editor. Returns false with a user-facing message on failure or cancel.
+        /// </summary>
+        private static bool DownloadAndImportLatestPatcherHub(out string resultMessage, out bool cancelled)
+        {
+            cancelled = false;
 
             try
             {
                 GitHubReleaseInfo releaseInfo = FetchLatestPatcherHubReleaseInfo();
-                GitHubReleaseAsset unityPackageAsset = releaseInfo?.assets?.FirstOrDefault(asset =>
+                GitHubReleaseAsset unityPackageAsset = releaseInfo.assets?.FirstOrDefault(asset =>
                     !string.IsNullOrEmpty(asset.name) &&
                     asset.name.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase) &&
                     !string.IsNullOrEmpty(asset.browser_download_url));
 
                 if (unityPackageAsset == null)
                 {
-                    patcherHubImportStatusMessage = "Could not find a .unitypackage asset in the latest PatcherHub release.";
-                    return;
+                    resultMessage = "Could not find a .unitypackage asset in the latest PatcherHub release.";
+                    Debug.LogError($"[AvatarSetupWizard] {resultMessage}");
+                    return false;
                 }
 
-                string downloadPath = Path.Combine(Path.GetTempPath(), unityPackageAsset.name);
-                DownloadFile(unityPackageAsset.browser_download_url, downloadPath);
+                string downloadPath = Path.Combine(Path.GetTempPath(), Path.GetFileName(unityPackageAsset.name));
+                DownloadFile(unityPackageAsset.browser_download_url, downloadPath, unityPackageAsset.name);
                 AssetDatabase.ImportPackage(downloadPath, false);
-                patcherHubImportedThisSession = true;
-                patcherHubImportStatusMessage = $"Imported {unityPackageAsset.name} from {releaseInfo.tag_name}.";
+
+                resultMessage = $"Imported {unityPackageAsset.name} from {releaseInfo.tag_name}.";
+                Debug.Log($"[AvatarSetupWizard] {resultMessage}");
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                cancelled = true;
+                resultMessage = "PatcherHub import was cancelled.";
+                return false;
             }
             catch (Exception ex)
             {
-                patcherHubImportStatusMessage = $"Failed to import PatcherHub: {ex.Message}";
+                resultMessage = $"Failed to import PatcherHub: {ex.Message}";
+                Debug.LogError($"[AvatarSetupWizard] {resultMessage}");
+                return false;
             }
         }
 
@@ -1067,16 +1203,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             using var request = UnityWebRequest.Get(PatcherHubLatestReleaseApiUrl);
             request.SetRequestHeader("User-Agent", "PawlygonUnityTools");
-            var operation = request.SendWebRequest();
-            while (!operation.isDone)
-            {
-                System.Threading.Thread.Sleep(10);
-            }
-
-            if (request.result != UnityWebRequest.Result.Success)
-            {
-                throw new InvalidOperationException(request.error);
-            }
+            SendWebRequestWithProgress(request, "Checking the latest PatcherHub release", PatcherHubReleaseInfoTimeoutSeconds);
 
             GitHubReleaseInfo releaseInfo = JsonUtility.FromJson<GitHubReleaseInfo>(request.downloadHandler.text);
             if (releaseInfo == null)
@@ -1087,20 +1214,83 @@ namespace Pawlygon.UnityTools.Editor
             return releaseInfo;
         }
 
-        private static void DownloadFile(string url, string destinationPath)
+        private static void DownloadFile(string url, string destinationPath, string displayName)
         {
-            using var request = UnityWebRequest.Get(url);
-            request.SetRequestHeader("User-Agent", "PawlygonUnityTools");
-            request.downloadHandler = new DownloadHandlerFile(destinationPath);
-            var operation = request.SendWebRequest();
-            while (!operation.isDone)
+            bool succeeded = false;
+
+            try
             {
-                System.Threading.Thread.Sleep(10);
+                // Dispose the request (and with it the file handle) before any cleanup below.
+                using (var request = UnityWebRequest.Get(url))
+                {
+                    request.SetRequestHeader("User-Agent", "PawlygonUnityTools");
+                    request.downloadHandler = new DownloadHandlerFile(destinationPath) { removeFileOnAbort = true };
+                    SendWebRequestWithProgress(request, $"Downloading {displayName}", PatcherHubDownloadTimeoutSeconds);
+                }
+
+                succeeded = true;
+            }
+            finally
+            {
+                if (!succeeded)
+                {
+                    TryDeleteFile(destinationPath);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Sends a request and polls it while showing a cancelable progress bar. The transfer runs
+        /// on Unity's background transport; <see cref="UnityWebRequest.timeout"/> bounds the total
+        /// time so a stalled connection fails instead of hanging. Throws
+        /// <see cref="OperationCanceledException"/> when the user cancels and
+        /// <see cref="InvalidOperationException"/> when the request fails.
+        /// </summary>
+        private static void SendWebRequestWithProgress(UnityWebRequest request, string description, int timeoutSeconds)
+        {
+            request.timeout = timeoutSeconds;
+            UnityWebRequestAsyncOperation operation = request.SendWebRequest();
+
+            try
+            {
+                while (!operation.isDone)
+                {
+                    float progress = Mathf.Clamp01(request.downloadProgress);
+                    string info = $"{description}... {request.downloadedBytes / 1024} KB";
+
+                    if (EditorUtility.DisplayCancelableProgressBar("PatcherHub", info, progress))
+                    {
+                        request.Abort();
+                        throw new OperationCanceledException($"{description} was cancelled.");
+                    }
+
+                    System.Threading.Thread.Sleep(50);
+                }
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
             }
 
             if (request.result != UnityWebRequest.Result.Success)
             {
-                throw new InvalidOperationException(request.error);
+                string httpStatus = request.responseCode > 0 ? $" (HTTP {request.responseCode})" : string.Empty;
+                throw new InvalidOperationException($"{description} failed: {request.error}{httpStatus}");
+            }
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[AvatarSetupWizard] Could not delete incomplete download '{path}': {ex.Message}");
             }
         }
 
@@ -1181,7 +1371,98 @@ namespace Pawlygon.UnityTools.Editor
                 }
             }
 
+            string patchTargetConflict = GetPatchTargetConflictMessage();
+            if (!string.IsNullOrEmpty(patchTargetConflict))
+            {
+                return patchTargetConflict;
+            }
+
             return string.Empty;
+        }
+
+        /// <summary>
+        /// Checks that no two entries would write the same PatcherHub config asset or the same
+        /// .hdiff files. Diff file names replace spaces with underscores, so e.g. "My Avatar.fbx"
+        /// and "My_Avatar.fbx" collide even though their copied FBX names differ. Expects every
+        /// entry to have passed <see cref="GetEntryValidationMessage"/>.
+        /// </summary>
+        private string GetPatchTargetConflictMessage()
+        {
+            var configOwners = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var diffOwners = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            for (int i = 0; i < avatarEntries.Count; i++)
+            {
+                AvatarEntry entry = avatarEntries[i];
+                string avatarRootPath = GetPlannedAvatarRootPath(entry);
+                if (string.IsNullOrEmpty(avatarRootPath))
+                {
+                    continue;
+                }
+
+                string configPath = GetPatchConfigAssetPath(entry, avatarRootPath);
+                if (configOwners.TryGetValue(configPath, out int configOwner))
+                {
+                    return $"Avatars {configOwner + 1} and {i + 1} would both write the PatcherHub config '{configPath}'. Rename one of the source FBXs or use separate folders.";
+                }
+
+                configOwners[configPath] = i;
+
+                string diffBaseName = FTDiffGenerator.GetDiffBaseName(AssetDatabase.GetAssetPath(entry.sourceFbx));
+                if (string.IsNullOrEmpty(diffBaseName))
+                {
+                    continue;
+                }
+
+                string diffPath = GetFbxDiffAssetPath(avatarRootPath, diffBaseName);
+                if (diffOwners.TryGetValue(diffPath, out int diffOwner))
+                {
+                    return $"Avatars {diffOwner + 1} and {i + 1} would both write the diff file '{diffPath}' (spaces in FBX names become underscores in diff file names). Rename one of the source FBXs or use separate folders.";
+                }
+
+                diffOwners[diffPath] = i;
+            }
+
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Returns the avatar root folder the setup will create for an entry with the current
+        /// settings. This is also the folder that "Overwrite" deletes when it already exists.
+        /// Returns null while the main or avatar folder name is still blank.
+        /// </summary>
+        private string GetPlannedAvatarRootPath(AvatarEntry entry)
+        {
+            string avatarFolderName = useSeparateFolderPerAvatar ? entry.avatarFolderName : sharedAvatarFolderName;
+            if (string.IsNullOrWhiteSpace(mainFolderName) || string.IsNullOrWhiteSpace(avatarFolderName))
+            {
+                return null;
+            }
+
+            return PawlygonEditorUtils.CombineAssetPath("Assets", mainFolderName.Trim(), avatarFolderName.Trim());
+        }
+
+        /// <summary>
+        /// Returns the distinct avatar root folders the setup will create (and delete on overwrite).
+        /// </summary>
+        private List<string> GetPlannedAvatarRootPaths()
+        {
+            return avatarEntries
+                .Select(GetPlannedAvatarRootPath)
+                .Where(path => !string.IsNullOrEmpty(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static bool IsAssetPathInsideFolder(string assetPath, string folderPath)
+        {
+            if (string.IsNullOrEmpty(assetPath) || string.IsNullOrEmpty(folderPath))
+            {
+                return false;
+            }
+
+            string normalizedFolder = PawlygonEditorUtils.NormalizeAssetPath(folderPath).TrimEnd('/') + "/";
+            return PawlygonEditorUtils.NormalizeAssetPath(assetPath).StartsWith(normalizedFolder, StringComparison.OrdinalIgnoreCase);
         }
 
         private string GetEntryValidationMessage(int index, AvatarEntry entry)
@@ -1216,6 +1497,21 @@ namespace Pawlygon.UnityTools.Editor
             if (useSeparateFolderPerAvatar && entry.avatarFolderName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
             {
                 return $"Avatar {index + 1}: the avatar folder name contains invalid characters.";
+            }
+
+            // "Overwrite" deletes existing target folders, so a source living inside one of them
+            // would be destroyed before it could be copied.
+            foreach (string targetRoot in GetPlannedAvatarRootPaths())
+            {
+                if (IsAssetPathInsideFolder(fbxPath, targetRoot))
+                {
+                    return $"Avatar {index + 1}: the source FBX is inside '{targetRoot}', which the setup deletes and recreates. Move the source assets out of that folder or choose a different folder name.";
+                }
+
+                if (IsAssetPathInsideFolder(prefabPath, targetRoot))
+                {
+                    return $"Avatar {index + 1}: the source prefab is inside '{targetRoot}', which the setup deletes and recreates. Move the source assets out of that folder or choose a different folder name.";
+                }
             }
 
             return string.Empty;
@@ -1388,6 +1684,13 @@ namespace Pawlygon.UnityTools.Editor
         {
             pendingImportTransition = false;
 
+            // A retry queued before the user continued manually (or started over) must not
+            // regenerate diffs and reset the mesh selections of a later step.
+            if (currentStep != WizardStep.WaitForImport)
+            {
+                return;
+            }
+
             if (!avatarEntries.All(entry => entry.hasImportedModifiedFbx))
             {
                 statusMessage = $"Waiting for {avatarEntries.Count(entry => !entry.hasImportedModifiedFbx)} more modified FBX import(s).";
@@ -1399,8 +1702,7 @@ namespace Pawlygon.UnityTools.Editor
 
             if (CanLoadImportedAssets())
             {
-                int generatedDiffCount = GenerateDiffFilesForEntries(importedOnly: true);
-                MoveToMeshSelection(generatedDiffCount, skippedImportWait: false);
+                GenerateDiffsAndMoveToMeshSelection(importedOnly: true, skippedImportWait: false);
                 return;
             }
 
@@ -1430,56 +1732,58 @@ namespace Pawlygon.UnityTools.Editor
             return avatarEntries.All(entry => entry.hasImportedModifiedFbx) && CanLoadImportedAssets();
         }
 
-        private int GenerateDiffFilesForEntries(bool importedOnly)
+        /// <summary>
+        /// Regenerates the .hdiff files for the wizard's entries and, when PatcherHub is installed,
+        /// writes a patch config for every entry whose diffs were generated successfully. Each
+        /// entry's <c>diffGenerationFailed</c> flag is updated; returns the number of entries whose
+        /// diffs were generated and reports failures through <paramref name="failedCount"/>.
+        /// </summary>
+        private int GenerateDiffFilesForEntries(Func<AvatarEntry, bool> shouldGenerate, out int failedCount)
         {
             int generatedCount = 0;
+            failedCount = 0;
 
             foreach (AvatarEntry entry in avatarEntries)
             {
-                if (importedOnly && !entry.hasImportedModifiedFbx)
+                if (!shouldGenerate(entry))
                 {
                     continue;
                 }
 
+                entry.diffGenerationFailed = false;
+                entry.diffGenerationError = string.Empty;
+
                 if (string.IsNullOrEmpty(entry.diffGeneratorAssetPath))
                 {
+                    MarkDiffGenerationFailed(entry, "No diff generator asset was created for this avatar.");
+                    failedCount++;
                     continue;
                 }
 
                 FTDiffGenerator diffGenerator = AssetDatabase.LoadAssetAtPath<FTDiffGenerator>(entry.diffGeneratorAssetPath);
                 if (diffGenerator == null)
                 {
-                    Debug.LogWarning($"[AvatarSetupWizard] Could not load diff generator asset at '{entry.diffGeneratorAssetPath}'.");
+                    MarkDiffGenerationFailed(entry, $"Could not load the diff generator asset at '{entry.diffGeneratorAssetPath}'.");
+                    failedCount++;
                     continue;
                 }
 
-                diffGenerator.GenerateDiffFiles();
+                if (!diffGenerator.GenerateDiffFiles(out string diffError))
+                {
+                    // Never write a patch config that would point at missing or stale diff files.
+                    MarkDiffGenerationFailed(entry, diffError);
+                    failedCount++;
+                    continue;
+                }
+
                 generatedCount++;
 
                 // Generate FTPatchConfig with wizard context if PatcherHub is installed
                 if (FTPatchConfigGenerator.IsPatcherHubAvailable())
                 {
-                    string baseName = diffGenerator.GetBaseName();
-                    if (!string.IsNullOrEmpty(baseName))
+                    FTPatchConfigGenerator.ConfigContext configContext = BuildPatchConfigContext(entry, diffGenerator);
+                    if (configContext != null)
                     {
-                        string patcherFolder = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "patcher");
-                        string diffFilesFolder = PawlygonEditorUtils.CombineAssetPath(patcherFolder, "data", "DiffFiles");
-                        string fbxFolder = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "FBX");
-
-                        GameObject copiedPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedPrefabPath);
-
-                        var configContext = new FTPatchConfigGenerator.ConfigContext
-                        {
-                            OriginalFbx = diffGenerator.originalModelFbx,
-                            AvatarDisplayName = entry.avatarFolderName?.Trim(),
-                            FbxDiffAssetPath = PawlygonEditorUtils.CombineAssetPath(diffFilesFolder, baseName + ".hdiff"),
-                            MetaDiffAssetPath = PawlygonEditorUtils.CombineAssetPath(diffFilesFolder, baseName + "Meta.hdiff"),
-                            ConfigOutputFolder = patcherFolder,
-                            FbxOutputPath = fbxFolder,
-                            PatchedPrefabs = copiedPrefab != null ? new List<GameObject> { copiedPrefab } : null,
-                            ConfigAssetName = (entry.avatarFolderName?.Trim() ?? baseName) + " FTPatchConfig"
-                        };
-
                         FTPatchConfigGenerator.GenerateConfig(configContext);
                     }
                 }
@@ -1488,8 +1792,203 @@ namespace Pawlygon.UnityTools.Editor
             return generatedCount;
         }
 
-        private void MoveToMeshSelection(int generatedDiffCount, bool skippedImportWait)
+        /// <summary>
+        /// Builds the PatcherHub config context for an entry whose structure has been created.
+        /// Used by every path that writes a config so they all produce the same asset name,
+        /// display name and diff references. Returns null when the diff base name or the
+        /// avatar root is unknown.
+        /// </summary>
+        private FTPatchConfigGenerator.ConfigContext BuildPatchConfigContext(AvatarEntry entry, FTDiffGenerator diffGenerator)
         {
+            string baseName = diffGenerator != null ? diffGenerator.GetBaseName() : null;
+            if (string.IsNullOrEmpty(baseName) || string.IsNullOrEmpty(entry.avatarRootPath))
+            {
+                return null;
+            }
+
+            string patcherFolder = GetPatcherFolderPath(entry.avatarRootPath);
+            string fbxFolder = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "FBX");
+            string avatarName = GetPatchConfigAvatarName(entry);
+            GameObject copiedPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedPrefabPath);
+
+            return new FTPatchConfigGenerator.ConfigContext
+            {
+                OriginalFbx = diffGenerator.originalModelFbx,
+                AvatarDisplayName = avatarName,
+                FbxDiffAssetPath = GetFbxDiffAssetPath(entry.avatarRootPath, baseName),
+                MetaDiffAssetPath = PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderPath(entry.avatarRootPath), FTDiffGenerator.GetMetaDiffFileName(baseName)),
+                ConfigOutputFolder = patcherFolder,
+                FbxOutputPath = fbxFolder,
+                PatchedPrefabs = copiedPrefab != null ? new List<GameObject> { copiedPrefab } : null,
+                ConfigAssetName = GetPatchConfigAssetName(avatarName)
+            };
+        }
+
+        /// <summary>
+        /// Returns the avatar name used for an entry's PatcherHub config file name and display
+        /// name. Separate-folder mode uses the entry's own folder name. Shared-folder mode uses the
+        /// shared folder name for a single entry, and the source FBX file name when several entries
+        /// share the folder (the per-entry folder name is not editable there, so it would be the
+        /// same default for every entry and their configs would overwrite each other).
+        /// </summary>
+        private string GetPatchConfigAvatarName(AvatarEntry entry)
+        {
+            string name;
+
+            if (useSeparateFolderPerAvatar)
+            {
+                name = entry.avatarFolderName;
+            }
+            else if (avatarEntries.Count == 1)
+            {
+                name = sharedAvatarFolderName;
+            }
+            else
+            {
+                string sourceFbxPath = entry.sourceFbx != null ? AssetDatabase.GetAssetPath(entry.sourceFbx) : null;
+                name = string.IsNullOrEmpty(sourceFbxPath) ? null : Path.GetFileNameWithoutExtension(sourceFbxPath);
+            }
+
+            name = name?.Trim();
+            return string.IsNullOrEmpty(name) ? GetEntryDisplayName(entry) : name;
+        }
+
+        private static string GetPatchConfigAssetName(string avatarName)
+        {
+            return avatarName + " FTPatchConfig";
+        }
+
+        private static string GetPatcherFolderPath(string avatarRootPath)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(avatarRootPath, "patcher");
+        }
+
+        private static string GetDiffFilesFolderPath(string avatarRootPath)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(GetPatcherFolderPath(avatarRootPath), "data", "DiffFiles");
+        }
+
+        private static string GetFbxDiffAssetPath(string avatarRootPath, string diffBaseName)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderPath(avatarRootPath), FTDiffGenerator.GetFbxDiffFileName(diffBaseName));
+        }
+
+        private string GetPatchConfigAssetPath(AvatarEntry entry, string avatarRootPath)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(GetPatcherFolderPath(avatarRootPath), GetPatchConfigAssetName(GetPatchConfigAvatarName(entry)) + ".asset");
+        }
+
+        private static void MarkDiffGenerationFailed(AvatarEntry entry, string errorMessage)
+        {
+            entry.diffGenerationFailed = true;
+            entry.diffGenerationError = string.IsNullOrEmpty(errorMessage) ? "Unknown error." : errorMessage;
+            Debug.LogError($"[AvatarSetupWizard] Diff generation failed for '{GetEntryDisplayName(entry)}': {entry.diffGenerationError}");
+        }
+
+        /// <summary>
+        /// Generates the diff files for the wizard's entries, then advances to mesh selection.
+        /// Diff failures do not block mesh review (it does not depend on the diffs), but they are
+        /// always reported with a dialog and a persistent warning instead of a success message.
+        /// </summary>
+        private void GenerateDiffsAndMoveToMeshSelection(bool importedOnly, bool skippedImportWait)
+        {
+            int generatedDiffCount = GenerateDiffFilesForEntries(
+                entry => !importedOnly || entry.hasImportedModifiedFbx,
+                out int failedDiffCount);
+            MoveToMeshSelection(generatedDiffCount, failedDiffCount, skippedImportWait);
+
+            if (failedDiffCount > 0)
+            {
+                EditorUtility.DisplayDialog(
+                    "Diff Generation Failed",
+                    $"The face tracking diff files could not be generated for:\n\n{BuildDiffFailureList()}\n\n" +
+                    "No patch config was written for these avatars. Fix the problem shown in the Console, then use " +
+                    "\"Retry Diff Generation\" at the top of the wizard.",
+                    "OK");
+            }
+        }
+
+        private string BuildDiffFailureList()
+        {
+            return string.Join("\n", avatarEntries
+                .Where(entry => entry.diffGenerationFailed)
+                .Select(entry => $"• {GetEntryDisplayName(entry)}: {FirstLine(entry.diffGenerationError)}"));
+        }
+
+        private static string FirstLine(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return string.Empty;
+            }
+
+            int newLineIndex = text.IndexOf('\n');
+            return newLineIndex >= 0 ? text.Substring(0, newLineIndex).TrimEnd() : text;
+        }
+
+        /// <summary>
+        /// Draws a persistent error box listing the entries whose diff generation failed, so the
+        /// problem stays visible after the status message has been replaced.
+        /// </summary>
+        private void DrawDiffFailureWarning()
+        {
+            if (currentStep == WizardStep.Setup || currentStep == WizardStep.WaitForImport)
+            {
+                return;
+            }
+
+            if (!avatarEntries.Any(entry => entry.diffGenerationFailed))
+            {
+                return;
+            }
+
+            EditorGUILayout.HelpBox(
+                $"Diff generation failed, so these avatars have no up-to-date patch files:\n{BuildDiffFailureList()}\n\n" +
+                "Fix the problem shown in the Console, then retry.",
+                MessageType.Error);
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("Retry Diff Generation", GUILayout.Width(170f), GUILayout.Height(24f)))
+                {
+                    RetryFailedDiffGeneration();
+                    // Runs hdiffz, refreshes the AssetDatabase and may show a dialog.
+                    GUIUtility.ExitGUI();
+                }
+            }
+
+            EditorGUILayout.Space(EditorGUIUtility.standardVerticalSpacing);
+        }
+
+        /// <summary>
+        /// Regenerates diffs (and patch configs, if PatcherHub is installed) for the entries whose
+        /// previous diff generation failed, reporting the outcome in the status message.
+        /// </summary>
+        private void RetryFailedDiffGeneration()
+        {
+            int generatedCount = GenerateDiffFilesForEntries(entry => entry.diffGenerationFailed, out int failedCount);
+
+            if (failedCount > 0)
+            {
+                statusMessage = $"Diff generation still fails for {failedCount} avatar entr{(failedCount == 1 ? "y" : "ies")}. See the Console for hdiffz's output.";
+                EditorUtility.DisplayDialog("Diff Generation Failed",
+                    $"The face tracking diff files could not be generated for:\n\n{BuildDiffFailureList()}\n\nSee the Console for details.", "OK");
+            }
+            else
+            {
+                statusMessage = $"Regenerated diff files for {generatedCount} avatar entr{(generatedCount == 1 ? "y" : "ies")}.";
+            }
+
+            Repaint();
+        }
+
+        private void MoveToMeshSelection(int generatedDiffCount, int failedDiffCount, bool skippedImportWait)
+        {
+            // A delayed import retry may still be queued; it must not run again after we moved on.
+            EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
+            pendingImportTransition = false;
+
             foreach (AvatarEntry entry in avatarEntries)
             {
                 LoadMeshSelections(entry);
@@ -1499,18 +1998,16 @@ namespace Pawlygon.UnityTools.Editor
 
             selectedEntryIndex = Mathf.Clamp(FindNextIncompleteEntryIndex(0), 0, avatarEntries.Count - 1);
             currentStep = WizardStep.SelectMeshes;
-            if (skippedImportWait)
-            {
-                statusMessage = generatedDiffCount > 0
-                    ? $"Skipped the import wait and regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}. Review each avatar entry and apply the mesh and rig replacements you want."
-                    : "Skipped the import wait. Review each avatar entry and apply the mesh and rig replacements you want.";
-            }
-            else
-            {
-                statusMessage = generatedDiffCount > 0
-                    ? $"All modified FBXs imported. Regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}. Review each avatar entry and apply the mesh and rig replacements you want."
-                    : "All modified FBXs imported. Review each avatar entry and apply the mesh and rig replacements you want.";
-            }
+
+            string prefix = skippedImportWait ? "Skipped the import wait." : "All modified FBXs imported.";
+            string diffSummary = generatedDiffCount > 0
+                ? $" Regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}."
+                : string.Empty;
+            string failureSummary = failedDiffCount > 0
+                ? $" Diff generation FAILED for {failedDiffCount} avatar entr{(failedDiffCount == 1 ? "y" : "ies")} — see the error above and the Console."
+                : string.Empty;
+
+            statusMessage = $"{prefix}{diffSummary}{failureSummary} Review each avatar entry and apply the mesh and rig replacements you want.";
 
             Repaint();
         }
@@ -1588,19 +2085,8 @@ namespace Pawlygon.UnityTools.Editor
 
             try
             {
-                Dictionary<string, SkinnedMeshRenderer> prefabRendererLookup = prefabRoot
-                    .GetComponentsInChildren<SkinnedMeshRenderer>(true)
-                    .ToDictionary(
-                        renderer => GetRelativeTransformPath(renderer.transform),
-                        renderer => renderer,
-                        StringComparer.OrdinalIgnoreCase);
-
-                Dictionary<string, Animator> prefabAnimatorLookup = prefabRoot
-                    .GetComponentsInChildren<Animator>(true)
-                    .ToDictionary(
-                        animator => GetRelativeTransformPath(animator.transform),
-                        animator => animator,
-                        StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, SkinnedMeshRenderer> prefabRendererLookup = BuildFirstComponentByPathLookup<SkinnedMeshRenderer>(prefabRoot);
+                Dictionary<string, Animator> prefabAnimatorLookup = BuildFirstComponentByPathLookup<Animator>(prefabRoot);
 
                 int replacedCount = 0;
                 bool replacedAnimator = false;
@@ -1618,7 +2104,7 @@ namespace Pawlygon.UnityTools.Editor
                         continue;
                     }
 
-                    if (!prefabRendererLookup.TryGetValue(mapping.prefabRelativePath, out SkinnedMeshRenderer prefabRenderer))
+                    if (!prefabRendererLookup.TryGetValue(mapping.prefabRelativePath ?? string.Empty, out SkinnedMeshRenderer prefabRenderer))
                     {
                         Debug.LogWarning($"[AvatarSetupWizard] No SkinnedMeshRenderer at relative path '{mapping.prefabRelativePath}' in prefab.");
                         continue;
@@ -1630,7 +2116,7 @@ namespace Pawlygon.UnityTools.Editor
 
                 if (shouldReplaceAnimator)
                 {
-                    if (!prefabAnimatorLookup.TryGetValue(entry.animatorReplacement.prefabAnimatorRelativePath, out Animator prefabAnimator))
+                    if (!prefabAnimatorLookup.TryGetValue(entry.animatorReplacement.prefabAnimatorRelativePath ?? string.Empty, out Animator prefabAnimator))
                     {
                         Debug.LogWarning($"[AvatarSetupWizard] No Animator at relative path '{entry.animatorReplacement.prefabAnimatorRelativePath}' in prefab.");
                     }
@@ -1649,6 +2135,31 @@ namespace Pawlygon.UnityTools.Editor
             {
                 PrefabUtility.UnloadPrefabContents(prefabRoot);
             }
+        }
+
+        /// <summary>
+        /// Maps each component's sibling-name path (case-insensitive) to the first component found
+        /// at that path in hierarchy order. Objects can share a name, so several components may
+        /// resolve to the same path; the first one is kept, matching how mesh selections are paired
+        /// (<see cref="FindBestRendererMatch"/> also takes the first renderer per path).
+        /// </summary>
+        private static Dictionary<string, T> BuildFirstComponentByPathLookup<T>(GameObject root) where T : Component
+        {
+            var lookup = new Dictionary<string, T>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (T component in root.GetComponentsInChildren<T>(true))
+            {
+                string relativePath = GetRelativeTransformPath(component.transform);
+                if (lookup.ContainsKey(relativePath))
+                {
+                    Debug.LogWarning($"[AvatarSetupWizard] Several objects with a {typeof(T).Name} share the path '{relativePath}' in prefab '{root.name}'. Only the first one can be updated.");
+                    continue;
+                }
+
+                lookup.Add(relativePath, component);
+            }
+
+            return lookup;
         }
 
         private void SkipEntryReview(AvatarEntry entry)
@@ -1753,6 +2264,8 @@ namespace Pawlygon.UnityTools.Editor
                         if (GUILayout.Button("Choose FBX...", GUILayout.Width(100f), GUILayout.Height(24f)))
                         {
                             PromptForModifiedFbx(entry);
+                            // Opens a modal file panel and imports the chosen FBX.
+                            GUIUtility.ExitGUI();
                         }
                     }
 
@@ -2685,6 +3198,7 @@ namespace Pawlygon.UnityTools.Editor
                         {
                             currentStep = WizardStep.Complete;
                             statusMessage = "Avatar setup completed.";
+                            GUIUtility.ExitGUI();
                         }
                         return;
                     }
@@ -2754,6 +3268,7 @@ namespace Pawlygon.UnityTools.Editor
                             foreach (AvatarEntry e in avatarEntries) e.fxCheckComplete = true;
                             currentStep = WizardStep.Complete;
                             statusMessage = "Avatar setup completed.";
+                            GUIUtility.ExitGUI();
                         }
                     }
 
@@ -2763,6 +3278,7 @@ namespace Pawlygon.UnityTools.Editor
                         {
                             currentStep = WizardStep.Complete;
                             statusMessage = "Avatar setup completed.";
+                            GUIUtility.ExitGUI();
                         }
                     }
                 });
@@ -2915,6 +3431,8 @@ namespace Pawlygon.UnityTools.Editor
                 if (PawlygonEditorUI.DrawPrimaryButton("Apply Fixes"))
                 {
                     ApplyFXFixesForEntry(entry);
+                    // Copies the FX controller and saves prefabs.
+                    GUIUtility.ExitGUI();
                 }
             }
 

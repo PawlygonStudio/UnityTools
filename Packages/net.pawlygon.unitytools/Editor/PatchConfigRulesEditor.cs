@@ -63,6 +63,12 @@ namespace Pawlygon.UnityTools.Editor
         private string statusMessage;
         private MessageType statusMessageType = MessageType.Info;
 
+        // The FTPatchConfig type, resolved once per window lifetime. Resolving it scans every loaded
+        // ScriptableObject type, which is far too slow to repeat on every OnGUI event. Installing
+        // PatcherHub triggers a domain reload, which re-runs OnEnable and resets this cache.
+        private Type cachedConfigType;
+        private bool configTypeResolved;
+
         [MenuItem(MenuPath)]
         public static void ShowWindow()
         {
@@ -73,6 +79,8 @@ namespace Pawlygon.UnityTools.Editor
 
         private void OnEnable()
         {
+            configTypeResolved = false;
+            cachedConfigType = null;
             RefreshConfigs();
             RefreshInstalledPackages();
         }
@@ -90,7 +98,7 @@ namespace Pawlygon.UnityTools.Editor
                 "Require packages (and versions) per avatar by adding rules to FTPatchConfig assets.");
             EditorGUILayout.Space(SectionSpacing);
 
-            Type configType = FTPatchConfigGenerator.GetFTPatchConfigType();
+            Type configType = GetConfigType();
             if (configType == null)
             {
                 EditorGUILayout.HelpBox(
@@ -231,6 +239,21 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
+        /// <summary>
+        /// Returns the PatcherHub FTPatchConfig type, resolving it via reflection only on the first
+        /// call for this window instance (null when PatcherHub is not installed).
+        /// </summary>
+        private Type GetConfigType()
+        {
+            if (!configTypeResolved)
+            {
+                cachedConfigType = FTPatchConfigGenerator.GetFTPatchConfigType();
+                configTypeResolved = true;
+            }
+
+            return cachedConfigType;
+        }
+
         private void RefreshConfigs()
         {
             // Preserve current selection by asset path across refreshes.
@@ -239,7 +262,7 @@ namespace Pawlygon.UnityTools.Editor
 
             configItems.Clear();
 
-            Type configType = FTPatchConfigGenerator.GetFTPatchConfigType();
+            Type configType = GetConfigType();
             if (configType == null) return;
 
             string[] guids = AssetDatabase.FindAssets("t:" + configType.Name);

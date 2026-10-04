@@ -58,22 +58,34 @@ namespace Pawlygon.UnityTools.Editor
             public string ConfigAssetName;
         }
 
+        // Static fields are reset by every domain reload, which Unity performs after scripts are
+        // compiled (e.g. after importing PatcherHub), so the cached lookup never goes stale.
+        private static Type cachedConfigType;
+        private static bool configTypeLookedUp;
+
         /// <summary>
-        /// Attempts to find the FTPatchConfig type using Unity's TypeCache.
+        /// Attempts to find the FTPatchConfig type using Unity's TypeCache, caching the result
+        /// for the current domain because callers run on every GUI event and menu validation.
         /// Returns null if PatcherHub is not installed.
         /// </summary>
         private static Type FindFTPatchConfigType()
         {
+            if (configTypeLookedUp) return cachedConfigType;
+
+            configTypeLookedUp = true;
+            cachedConfigType = null;
+
             var types = TypeCache.GetTypesDerivedFrom<ScriptableObject>();
             foreach (Type type in types)
             {
                 if (type.Name == FTPatchConfigTypeName)
                 {
-                    return type;
+                    cachedConfigType = type;
+                    break;
                 }
             }
 
-            return null;
+            return cachedConfigType;
         }
 
         /// <summary>

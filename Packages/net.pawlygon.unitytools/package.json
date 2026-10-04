@@ -1,13 +1,13 @@
 {
     "name": "net.pawlygon.unitytools",
-    "version": "1.5.0",
+    "version": "1.6.0",
     "displayName": "Pawlygon - Unity Tools",
     "description": "Pawlygon tools for Unity. A collection of tools and utilities for VRChat avatar creation and development.",
     "unity": "2022.3",
     "unityRelease": "6f1",
     "documentationUrl": "https://github.com/PawlygonStudio/UnityTools",
     "changelogUrl": "https://github.com/PawlygonStudio/UnityTools/releases",
-    "licensesUrl": "https://github.com/PawlygonStudio/UnityTools/blob/main/LICENSE",
+    "licensesUrl": "https://github.com/PawlygonStudio/UnityTools/blob/main/LICENSE.md",
     "keywords": [
       "vrchat",
       "Pawlygon",

@@ -19,10 +19,11 @@ This package helps you duplicate source avatar assets, prepare a working folder 
 - Automatic creation of `FTDiffGenerator` assets for patch generation
 - `.hdiff` generation for both FBX and `.meta` changes using bundled `hdiffz` binaries
 - Optional prefab helpers for [Pawlygon VRCFT](https://github.com/PawlygonStudio/VRC-Facetracking) setup and importing the latest [PatcherHub](https://github.com/PawlygonStudio/PatcherHub) package
-- Built-in `FX Check` wizard step that runs the gesture and eye-blink analysis on each generated avatar and applies guards in place
-- `FX Gesture Checker` available from `!Pawlygon/Tools/FX Gesture Checker` — scans an avatar's FX AnimatorController for gesture-driven facial expression transitions (`GestureLeft`/`GestureRight`) and applies a `FacialExpressionsDisabled` guard so they do not fire when face tracking is active, and detects eye-blink layers to apply an `EyeTrackingActive` guard so blinking stops while eye tracking is active. Supports per-transition and per-layer guards, blink-layer confidence detection, work-on-copy mode, and full undo
+- Built-in `FX Check` wizard step that runs the gesture and eye-blink analysis on each generated avatar, copies its FX controller into the avatar's `VRChat/` folder, applies the guards to that copy and assigns it to the avatar
+- `FX Gesture Checker` available from `!Pawlygon/Tools/FX Gesture Checker` — scans an avatar's FX AnimatorController for gesture-driven facial expression transitions (`GestureLeft`/`GestureRight`) and applies a `FacialExpressionsDisabled` guard so they do not fire when face tracking is active, and detects eye-blink layers to apply an `EyeTrackingActive` guard so blinking stops while eye tracking is active. Supports per-transition and per-layer guards, blink-layer confidence detection and work-on-copy mode. Guarded layers return to their default state once face or eye tracking stops
 - `Patch Config Package Rules` available from `!Pawlygon/Tools/Patch Config Package Rules` — adds per-config package requirements to existing [PatcherHub](https://github.com/PawlygonStudio/PatcherHub) `FTPatchConfig` assets. Auto-lists every config in the project for multi-select, auto-fills a rule from your installed packages (common avatar packages listed first) with pre-written missing/outdated messages, and supports full add/edit/reorder/remove plus batch-applying a rule to many configs at once
 - `Eye Muscle Settings` available from `!Pawlygon/Tools/Eye Muscle Settings` — reads and adjusts the humanoid eye muscle limit settings (In, Out, Up, Down) on an avatar's ModelImporter for face tracking compatibility. Provides synced or split left/right sliders, live scene preview with bone rotation and blendshape activation, and writes changes back to the ModelImporter with a single click
+- `Face Tracking Extras` available from `!Pawlygon/Tools/Face Tracking Extras` — generates extra face tracking driven animations (ears, tail and pupils) from a handful of poses. Detects the ear and tail bone chains (skipping constraint helper bones), lets you pose Look Right/Up/Down, Sad, Happy, Happy Flick, Tail Right and Tail Happy on the avatar in the scene with live ear mirroring (Look Left and Tail Left are mirrored automatically), and previews how they blend, including the happy ear flick and tail wag loops. Generates baked clips, a 4-layer FX controller (each ear follows its own eye, mood from the average smile, a "Tail follows Jaw" toggle, and an improved fake pupil dilation that steps aside when real dilation is available), and a `!Pawlygon - Face Tracking Extras` VRCFury prefab in `Prefabs/FaceTrackingExtras`
 
 ## Wizard workflow
 
@@ -79,7 +80,7 @@ The wizard creates these generator assets for you automatically as part of the a
 
 This project is licensed under [CC BY-NC-SA 4.0](LICENSE.md).
 
-HDiffPatch (`hdiff/hpatchz/`) is distributed under the [MIT License](hdiff/hpatchz/License.txt).
+HDiffPatch (`Packages/net.pawlygon.unitytools/hdiff/hdiffz/`) is distributed under the [MIT License](Packages/net.pawlygon.unitytools/hdiff/hdiffz/License.txt).
 
 ## Links
 

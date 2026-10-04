@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
@@ -64,17 +65,49 @@ namespace Pawlygon.UnityTools.Editor
             {
                 if (PawlygonEditorUI.DrawPrimaryButton("Generate Diff Files", 36f))
                 {
-                    foreach (Object targetObject in targets)
-                    {
-                        if (targetObject is FTDiffGenerator generator)
-                        {
-                            generator.GenerateDiffFiles();
-                            GeneratePatchConfig(generator);
-                        }
-                    }
+                    GenerateForTargets();
+                    // Diff generation refreshes the AssetDatabase, writes assets and may show modal
+                    // dialogs, which invalidates the current IMGUI layout pass.
+                    GUIUtility.ExitGUI();
                 }
             }
             EditorGUILayout.Space(5);
+        }
+
+        /// <summary>
+        /// Generates diff files for every selected generator. A patch config is only (re)written
+        /// for generators whose diff generation succeeded; failures are collected and shown in a
+        /// single error dialog so they can never pass silently.
+        /// </summary>
+        private void GenerateForTargets()
+        {
+            var failures = new List<string>();
+
+            foreach (Object targetObject in targets)
+            {
+                if (targetObject is not FTDiffGenerator generator)
+                {
+                    continue;
+                }
+
+                if (!generator.GenerateDiffFiles(out string errorMessage))
+                {
+                    failures.Add($"{generator.name}: {errorMessage}");
+                    continue;
+                }
+
+                GeneratePatchConfig(generator);
+            }
+
+            if (failures.Count > 0)
+            {
+                EditorUtility.DisplayDialog(
+                    "Diff Generation Failed",
+                    "The diff files could not be generated, so no patch config was written for:\n\n" +
+                    string.Join("\n\n", failures) +
+                    "\n\nSee the Console for the full hdiffz output.",
+                    "OK");
+            }
         }
 
         private string GetValidationMessage()
@@ -143,8 +176,8 @@ namespace Pawlygon.UnityTools.Editor
             var context = new FTPatchConfigGenerator.ConfigContext
             {
                 OriginalFbx = generator.originalModelFbx,
-                FbxDiffAssetPath = diffFilesFolder + "/" + baseName + ".hdiff",
-                MetaDiffAssetPath = diffFilesFolder + "/" + baseName + "Meta.hdiff",
+                FbxDiffAssetPath = diffFilesFolder + "/" + FTDiffGenerator.GetFbxDiffFileName(baseName),
+                MetaDiffAssetPath = diffFilesFolder + "/" + FTDiffGenerator.GetMetaDiffFileName(baseName),
                 ConfigOutputFolder = patcherFolder,
                 FbxOutputPath = fbxFolder
             };

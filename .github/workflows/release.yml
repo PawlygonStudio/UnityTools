@@ -1,6 +1,6 @@
 name: Build Release
 
-on: 
+on:
   workflow_dispatch:
   push:
     branches: main
@@ -16,39 +16,57 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    
+
       - name: Checkout
-        uses: actions/checkout@v3
-    
+        uses: actions/checkout@v4
+
       - name: get version
         id: version
         uses: notiz-dev/github-action-json-property@7c8cf5cc36eb85d8d287a8086a39dac59628eb31
-        with: 
+        with:
             path: "Packages/${{env.packageName}}/package.json"
             prop_path: "version"
-    
+
+      # package.json also changes for descriptions or URLs. Only build a release for a version that
+      # has no tag yet, so an existing release is never rebuilt or overwritten.
+      - name: Check for existing release
+        id: existing
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.prop }}" > /dev/null; then
+            echo "Release ${{ steps.version.outputs.prop }} already exists, skipping."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set Environment Variables
+        if: steps.existing.outputs.exists == 'false'
         run: |
           echo "zipFile=${{ env.packageName }}-${{ steps.version.outputs.prop }}".zip >> $GITHUB_ENV
           echo "unityPackage=${{ env.packageName }}-${{ steps.version.outputs.prop }}.unitypackage" >> $GITHUB_ENV
-        
+
       - name: Create Zip
+        if: steps.existing.outputs.exists == 'false'
         uses: thedoctor0/zip-release@09336613be18a8208dfa66bd57efafd9e2685657
         with:
           type: "zip"
           directory: "Packages/${{env.packageName}}/"
           filename: "../../${{env.zipFile}}" # make the zip file two directories up, since we start two directories in above
-          
-      - run: find "Packages/${{env.packageName}}/" -name \*.meta >> metaList
-          
+
+      - name: List meta files
+        if: steps.existing.outputs.exists == 'false'
+        run: find "Packages/${{env.packageName}}/" -name \*.meta >> metaList
+
       - name: Create UnityPackage
+        if: steps.existing.outputs.exists == 'false'
         uses: pCYSl5EDgo/create-unitypackage@cfcd3cf0391a5ef1306342794866a9897c32af0b
         with:
           package-path: ${{ env.unityPackage }}
           include-files: metaList
-        
-        
+
+
       - name: Make Release
+        if: steps.existing.outputs.exists == 'false'
         uses: softprops/action-gh-release@1e07f4398721186383de40550babbdf2b84acfc5
         with:
           tag_name: ${{ steps.version.outputs.prop }}

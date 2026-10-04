@@ -633,7 +633,7 @@ namespace Pawlygon.UnityTools.Editor
             string sanitizedMainFolderName = mainFolderName.Trim();
             string effectiveSharedAvatarFolderName = useSeparateFolderPerAvatar ? string.Empty : sharedAvatarFolderName.Trim();
 
-            if (!ConfirmAndClearExistingTargets(sanitizedMainFolderName, effectiveSharedAvatarFolderName))
+            if (!ConfirmAndClearExistingTargets())
             {
                 return;
             }
@@ -700,29 +700,13 @@ namespace Pawlygon.UnityTools.Editor
         /// inline status message) when the user cancels or a folder could not be removed, so the
         /// caller never aborts silently.
         /// </summary>
-        private bool ConfirmAndClearExistingTargets(string sanitizedMainFolderName, string effectiveSharedAvatarFolderName)
+        private bool ConfirmAndClearExistingTargets()
         {
-            var existingRoots = new List<string>();
-
-            if (useSeparateFolderPerAvatar)
-            {
-                foreach (AvatarEntry entry in avatarEntries)
-                {
-                    string root = PawlygonEditorUtils.CombineAssetPath("Assets", sanitizedMainFolderName, entry.avatarFolderName.Trim());
-                    if (AssetDatabase.IsValidFolder(root) && !existingRoots.Contains(root))
-                    {
-                        existingRoots.Add(root);
-                    }
-                }
-            }
-            else
-            {
-                string root = PawlygonEditorUtils.CombineAssetPath("Assets", sanitizedMainFolderName, effectiveSharedAvatarFolderName);
-                if (AssetDatabase.IsValidFolder(root))
-                {
-                    existingRoots.Add(root);
-                }
-            }
+            // Use the same root list as validation, which rejects any source asset inside these
+            // folders, so the deletion below can never remove the assets being copied.
+            List<string> existingRoots = GetPlannedAvatarRootPaths()
+                .Where(AssetDatabase.IsValidFolder)
+                .ToList();
 
             if (existingRoots.Count == 0)
             {
@@ -1185,7 +1169,98 @@ namespace Pawlygon.UnityTools.Editor
                 }
             }
 
+            string patchTargetConflict = GetPatchTargetConflictMessage();
+            if (!string.IsNullOrEmpty(patchTargetConflict))
+            {
+                return patchTargetConflict;
+            }
+
             return string.Empty;
+        }
+
+        /// <summary>
+        /// Checks that no two entries would write the same PatcherHub config asset or the same
+        /// .hdiff files. Diff file names replace spaces with underscores, so e.g. "My Avatar.fbx"
+        /// and "My_Avatar.fbx" collide even though their copied FBX names differ. Expects every
+        /// entry to have passed <see cref="GetEntryValidationMessage"/>.
+        /// </summary>
+        private string GetPatchTargetConflictMessage()
+        {
+            var configOwners = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var diffOwners = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            for (int i = 0; i < avatarEntries.Count; i++)
+            {
+                AvatarEntry entry = avatarEntries[i];
+                string avatarRootPath = GetPlannedAvatarRootPath(entry);
+                if (string.IsNullOrEmpty(avatarRootPath))
+                {
+                    continue;
+                }
+
+                string configPath = GetPatchConfigAssetPath(entry, avatarRootPath);
+                if (configOwners.TryGetValue(configPath, out int configOwner))
+                {
+                    return $"Avatars {configOwner + 1} and {i + 1} would both write the PatcherHub config '{configPath}'. Rename one of the source FBXs or use separate folders.";
+                }
+
+                configOwners[configPath] = i;
+
+                string diffBaseName = FTDiffGenerator.GetDiffBaseName(AssetDatabase.GetAssetPath(entry.sourceFbx));
+                if (string.IsNullOrEmpty(diffBaseName))
+                {
+                    continue;
+                }
+
+                string diffPath = GetFbxDiffAssetPath(avatarRootPath, diffBaseName);
+                if (diffOwners.TryGetValue(diffPath, out int diffOwner))
+                {
+                    return $"Avatars {diffOwner + 1} and {i + 1} would both write the diff file '{diffPath}' (spaces in FBX names become underscores in diff file names). Rename one of the source FBXs or use separate folders.";
+                }
+
+                diffOwners[diffPath] = i;
+            }
+
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Returns the avatar root folder the setup will create for an entry with the current
+        /// settings. This is also the folder that "Overwrite" deletes when it already exists.
+        /// Returns null while the main or avatar folder name is still blank.
+        /// </summary>
+        private string GetPlannedAvatarRootPath(AvatarEntry entry)
+        {
+            string avatarFolderName = useSeparateFolderPerAvatar ? entry.avatarFolderName : sharedAvatarFolderName;
+            if (string.IsNullOrWhiteSpace(mainFolderName) || string.IsNullOrWhiteSpace(avatarFolderName))
+            {
+                return null;
+            }
+
+            return PawlygonEditorUtils.CombineAssetPath("Assets", mainFolderName.Trim(), avatarFolderName.Trim());
+        }
+
+        /// <summary>
+        /// Returns the distinct avatar root folders the setup will create (and delete on overwrite).
+        /// </summary>
+        private List<string> GetPlannedAvatarRootPaths()
+        {
+            return avatarEntries
+                .Select(GetPlannedAvatarRootPath)
+                .Where(path => !string.IsNullOrEmpty(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static bool IsAssetPathInsideFolder(string assetPath, string folderPath)
+        {
+            if (string.IsNullOrEmpty(assetPath) || string.IsNullOrEmpty(folderPath))
+            {
+                return false;
+            }
+
+            string normalizedFolder = PawlygonEditorUtils.NormalizeAssetPath(folderPath).TrimEnd('/') + "/";
+            return PawlygonEditorUtils.NormalizeAssetPath(assetPath).StartsWith(normalizedFolder, StringComparison.OrdinalIgnoreCase);
         }
 
         private string GetEntryValidationMessage(int index, AvatarEntry entry)
@@ -1220,6 +1295,21 @@ namespace Pawlygon.UnityTools.Editor
             if (useSeparateFolderPerAvatar && entry.avatarFolderName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
             {
                 return $"Avatar {index + 1}: the avatar folder name contains invalid characters.";
+            }
+
+            // "Overwrite" deletes existing target folders, so a source living inside one of them
+            // would be destroyed before it could be copied.
+            foreach (string targetRoot in GetPlannedAvatarRootPaths())
+            {
+                if (IsAssetPathInsideFolder(fbxPath, targetRoot))
+                {
+                    return $"Avatar {index + 1}: the source FBX is inside '{targetRoot}', which the setup deletes and recreates. Move the source assets out of that folder or choose a different folder name.";
+                }
+
+                if (IsAssetPathInsideFolder(prefabPath, targetRoot))
+                {
+                    return $"Avatar {index + 1}: the source prefab is inside '{targetRoot}', which the setup deletes and recreates. Move the source assets out of that folder or choose a different folder name.";
+                }
             }
 
             return string.Empty;
@@ -1482,33 +1572,101 @@ namespace Pawlygon.UnityTools.Editor
                 // Generate FTPatchConfig with wizard context if PatcherHub is installed
                 if (FTPatchConfigGenerator.IsPatcherHubAvailable())
                 {
-                    string baseName = diffGenerator.GetBaseName();
-                    if (!string.IsNullOrEmpty(baseName))
+                    FTPatchConfigGenerator.ConfigContext configContext = BuildPatchConfigContext(entry, diffGenerator);
+                    if (configContext != null)
                     {
-                        string patcherFolder = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "patcher");
-                        string diffFilesFolder = PawlygonEditorUtils.CombineAssetPath(patcherFolder, "data", "DiffFiles");
-                        string fbxFolder = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "FBX");
-
-                        GameObject copiedPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedPrefabPath);
-
-                        var configContext = new FTPatchConfigGenerator.ConfigContext
-                        {
-                            OriginalFbx = diffGenerator.originalModelFbx,
-                            AvatarDisplayName = entry.avatarFolderName?.Trim(),
-                            FbxDiffAssetPath = PawlygonEditorUtils.CombineAssetPath(diffFilesFolder, baseName + ".hdiff"),
-                            MetaDiffAssetPath = PawlygonEditorUtils.CombineAssetPath(diffFilesFolder, baseName + "Meta.hdiff"),
-                            ConfigOutputFolder = patcherFolder,
-                            FbxOutputPath = fbxFolder,
-                            PatchedPrefabs = copiedPrefab != null ? new List<GameObject> { copiedPrefab } : null,
-                            ConfigAssetName = (entry.avatarFolderName?.Trim() ?? baseName) + " FTPatchConfig"
-                        };
-
                         FTPatchConfigGenerator.GenerateConfig(configContext);
                     }
                 }
             }
 
             return generatedCount;
+        }
+
+        /// <summary>
+        /// Builds the PatcherHub config context for an entry whose structure has been created.
+        /// Used by every path that writes a config so they all produce the same asset name,
+        /// display name and diff references. Returns null when the diff base name or the
+        /// avatar root is unknown.
+        /// </summary>
+        private FTPatchConfigGenerator.ConfigContext BuildPatchConfigContext(AvatarEntry entry, FTDiffGenerator diffGenerator)
+        {
+            string baseName = diffGenerator != null ? diffGenerator.GetBaseName() : null;
+            if (string.IsNullOrEmpty(baseName) || string.IsNullOrEmpty(entry.avatarRootPath))
+            {
+                return null;
+            }
+
+            string patcherFolder = GetPatcherFolderPath(entry.avatarRootPath);
+            string fbxFolder = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "FBX");
+            string avatarName = GetPatchConfigAvatarName(entry);
+            GameObject copiedPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedPrefabPath);
+
+            return new FTPatchConfigGenerator.ConfigContext
+            {
+                OriginalFbx = diffGenerator.originalModelFbx,
+                AvatarDisplayName = avatarName,
+                FbxDiffAssetPath = GetFbxDiffAssetPath(entry.avatarRootPath, baseName),
+                MetaDiffAssetPath = PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderPath(entry.avatarRootPath), FTDiffGenerator.GetMetaDiffFileName(baseName)),
+                ConfigOutputFolder = patcherFolder,
+                FbxOutputPath = fbxFolder,
+                PatchedPrefabs = copiedPrefab != null ? new List<GameObject> { copiedPrefab } : null,
+                ConfigAssetName = GetPatchConfigAssetName(avatarName)
+            };
+        }
+
+        /// <summary>
+        /// Returns the avatar name used for an entry's PatcherHub config file name and display
+        /// name. Separate-folder mode uses the entry's own folder name. Shared-folder mode uses the
+        /// shared folder name for a single entry, and the source FBX file name when several entries
+        /// share the folder (the per-entry folder name is not editable there, so it would be the
+        /// same default for every entry and their configs would overwrite each other).
+        /// </summary>
+        private string GetPatchConfigAvatarName(AvatarEntry entry)
+        {
+            string name;
+
+            if (useSeparateFolderPerAvatar)
+            {
+                name = entry.avatarFolderName;
+            }
+            else if (avatarEntries.Count == 1)
+            {
+                name = sharedAvatarFolderName;
+            }
+            else
+            {
+                string sourceFbxPath = entry.sourceFbx != null ? AssetDatabase.GetAssetPath(entry.sourceFbx) : null;
+                name = string.IsNullOrEmpty(sourceFbxPath) ? null : Path.GetFileNameWithoutExtension(sourceFbxPath);
+            }
+
+            name = name?.Trim();
+            return string.IsNullOrEmpty(name) ? GetEntryDisplayName(entry) : name;
+        }
+
+        private static string GetPatchConfigAssetName(string avatarName)
+        {
+            return avatarName + " FTPatchConfig";
+        }
+
+        private static string GetPatcherFolderPath(string avatarRootPath)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(avatarRootPath, "patcher");
+        }
+
+        private static string GetDiffFilesFolderPath(string avatarRootPath)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(GetPatcherFolderPath(avatarRootPath), "data", "DiffFiles");
+        }
+
+        private static string GetFbxDiffAssetPath(string avatarRootPath, string diffBaseName)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderPath(avatarRootPath), FTDiffGenerator.GetFbxDiffFileName(diffBaseName));
+        }
+
+        private string GetPatchConfigAssetPath(AvatarEntry entry, string avatarRootPath)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(GetPatcherFolderPath(avatarRootPath), GetPatchConfigAssetName(GetPatchConfigAvatarName(entry)) + ".asset");
         }
 
         private static void MarkDiffGenerationFailed(AvatarEntry entry, string errorMessage)

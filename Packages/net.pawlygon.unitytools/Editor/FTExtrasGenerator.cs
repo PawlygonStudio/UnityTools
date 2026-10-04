@@ -46,7 +46,6 @@ namespace Pawlygon.UnityTools.Editor
 
         private const float SampleRate = 30f;
         private const float StaticClipLength = 1f / 60f;
-        private const float IdleDilationLength = 12f;
         private const float MovedThresholdDegrees = 0.01f;
 
         internal class Result
@@ -415,30 +414,20 @@ namespace Pawlygon.UnityTools.Editor
         // Fake pupil dilation
         // =====================================================================
 
-        private const string DilationShape = "EyeDilation";
-        private const string ConstrictShape = "EyeConstrict";
-
         /// <summary>
         /// Off → Idle → Closed (blink) → Reflex → Idle. Off sets the layer weight to 0 so nothing is written
-        /// while eye tracking is off or real dilation is on. Returns a warning, or null.
+        /// while eye tracking is off or real dilation is on. The curves come from <see cref="FTExtrasPupils"/>,
+        /// which the window's preview also uses. Returns a warning, or null.
         /// </summary>
         private static string BuildFakeDilationLayer(ControllerBuilder builder, ClipStore clips, GameObject avatar, FTExtrasGenerationSettings settings)
         {
-            var dilationPaths = new List<string>();
-            var constrictPaths = new List<string>();
-            foreach (SkinnedMeshRenderer renderer in avatar.GetComponentsInChildren<SkinnedMeshRenderer>(true))
-            {
-                Mesh mesh = renderer.sharedMesh;
-                if (mesh == null) continue;
-
-                string path = FaceTrackingExtrasCore.GetRelativePath(renderer.transform, avatar.transform);
-                if (mesh.GetBlendShapeIndex(DilationShape) >= 0) dilationPaths.Add(path);
-                if (mesh.GetBlendShapeIndex(ConstrictShape) >= 0) constrictPaths.Add(path);
-            }
+            var (dilationMeshes, constrictMeshes) = FTExtrasPupils.FindMeshes(avatar);
+            List<string> dilationPaths = dilationMeshes.Select(r => FaceTrackingExtrasCore.GetRelativePath(r.transform, avatar.transform)).ToList();
+            List<string> constrictPaths = constrictMeshes.Select(r => FaceTrackingExtrasCore.GetRelativePath(r.transform, avatar.transform)).ToList();
 
             if (dilationPaths.Count == 0)
             {
-                return $"No mesh has an '{DilationShape}' blendshape, so the fake pupil dilation was skipped.";
+                return $"No mesh has an '{FTExtrasPupils.DilationShape}' blendshape, so the fake pupil dilation was skipped.";
             }
 
             Type layerControlType = FindType("VRCAnimatorLayerControl", typeof(StateMachineBehaviour));
@@ -447,31 +436,19 @@ namespace Pawlygon.UnityTools.Editor
                 return "VRCAnimatorLayerControl was not found (VRChat Avatars SDK missing?), so the fake pupil dilation was skipped.";
             }
 
-            float min = settings.idleDilationMin;
-            float max = Mathf.Max(min, settings.idleDilationMax);
-            float IdleAt(float t)
-            {
-                // Three waves with periods that only line up every 12 s, so the drift never looks like a pulse.
-                float wave = 0.5f * Mathf.Sin(2f * Mathf.PI * t / 3f)
-                    + 0.3f * Mathf.Sin(2f * Mathf.PI * t / 4f + 1.3f)
-                    + 0.2f * Mathf.Sin(2f * Mathf.PI * t / 6f + 2.1f);
-                return Mathf.Lerp(min, max, Mathf.Clamp01(0.5f + 0.5f * wave));
-            }
+            float length = FTExtrasPupils.IdleLength;
+            int idleSamples = Mathf.RoundToInt(length * 10f);
+            float[] idleTimes = Enumerable.Range(0, idleSamples + 1).Select(i => i * length / idleSamples).ToArray();
+            AnimationCurve idleDilation = FTExtrasPupils.SmoothCurve(idleTimes, idleTimes.Select(t => FTExtrasPupils.IdleDilation(settings, t)).ToArray());
+            AnimationCurve idleConstrict = FTExtrasPupils.SmoothCurve(new[] { 0f, length }, new[] { 0f, 0f });
+            AnimationClip idle = clips.BlendShapes("Pupil - Idle", loop: true,
+                (dilationPaths, FTExtrasPupils.DilationShape, idleDilation),
+                (constrictPaths, FTExtrasPupils.ConstrictShape, idleConstrict));
 
-            int idleSamples = Mathf.RoundToInt(IdleDilationLength * 10f);
-            float[] idleTimes = Enumerable.Range(0, idleSamples + 1).Select(i => i * IdleDilationLength / idleSamples).ToArray();
-            AnimationClip idle = clips.BlendShapes("Pupil - Idle", IdleDilationLength, loop: true,
-                (dilationPaths, DilationShape, idleTimes, idleTimes.Select(IdleAt).ToArray()),
-                (constrictPaths, ConstrictShape, new[] { 0f, IdleDilationLength }, new[] { 0f, 0f }));
-
-            // Eyes reopen wide (they were in the dark), tighten quickly, then relax back into the idle drift.
-            float d = Mathf.Max(0.3f, settings.reflexDuration);
-            float peak = settings.reflexPeakDilation;
-            float constrict = settings.reflexConstrict;
-            float relaxed = Mathf.Lerp(min, max, 0.8f);
-            AnimationClip reflex = clips.BlendShapes("Pupil - Blink Reflex", d, loop: false,
-                (dilationPaths, DilationShape, new[] { 0f, 0.18f * d, 0.4f * d, 0.7f * d, d }, new[] { peak, 0f, 0f, relaxed, IdleAt(0f) }),
-                (constrictPaths, ConstrictShape, new[] { 0f, 0.18f * d, 0.4f * d, 0.7f * d, d }, new[] { 0f, constrict, constrict * 0.35f, 0f, 0f }));
+            var (reflexDilation, reflexConstrict) = FTExtrasPupils.ReflexCurves(settings);
+            AnimationClip reflex = clips.BlendShapes("Pupil - Blink Reflex", loop: false,
+                (dilationPaths, FTExtrasPupils.DilationShape, reflexDilation),
+                (constrictPaths, FTExtrasPupils.ConstrictShape, reflexConstrict));
 
             AnimationClip empty = clips.Empty("Pupil - Off");
 
@@ -872,15 +849,11 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             /// <summary>Clip with blendshape curves on several meshes.</summary>
-            public AnimationClip BlendShapes(string name, float length, bool loop, params (List<string> Paths, string Shape, float[] Times, float[] Values)[] curves)
+            public AnimationClip BlendShapes(string name, bool loop, params (List<string> Paths, string Shape, AnimationCurve Curve)[] curves)
             {
                 var clip = new AnimationClip();
-                foreach (var (paths, shape, times, values) in curves)
+                foreach (var (paths, shape, curve) in curves)
                 {
-                    var keys = times.Select((t, i) => new Keyframe(t, values[i])).ToArray();
-                    var curve = new AnimationCurve(keys);
-                    for (int k = 0; k < curve.length; k++) curve.SmoothTangents(k, 0f);
-
                     foreach (string path in paths)
                     {
                         AnimationUtility.SetEditorCurve(clip,

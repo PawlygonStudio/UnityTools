@@ -125,7 +125,15 @@ namespace Pawlygon.UnityTools.Editor
                 EditorGUILayout.LabelField("Avatar Selection", EditorStyles.boldLabel);
                 EditorGUILayout.Space(4f);
 
+                EditorGUI.BeginChangeCheck();
                 selectedAvatar = (GameObject)EditorGUILayout.ObjectField("Selected Avatar", selectedAvatar, typeof(GameObject), true);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    // The results (and cached descriptor) belong to the previously analyzed avatar.
+                    // Drop them so an apply can never write into another avatar's controller.
+                    ClearAnalysis();
+                    GUIUtility.ExitGUI();
+                }
 
                 if (fxController != null)
                 {
@@ -146,6 +154,10 @@ namespace Pawlygon.UnityTools.Editor
                 if (PawlygonEditorUI.DrawPrimaryButton("Analyze FX Controller"))
                 {
                     AnalyzeFXController();
+
+                    // The results sections below change shape; restart the event so IMGUI
+                    // re-lays out instead of reporting control position errors.
+                    GUIUtility.ExitGUI();
                 }
             }
         }
@@ -156,9 +168,15 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawCopyOptions()
         {
+            EditorGUI.BeginChangeCheck();
             workOnCopy = EditorGUILayout.ToggleLeft(
                 "Work on a copy (keeps the original FX controller unchanged)",
                 workOnCopy);
+            if (EditorGUI.EndChangeCheck())
+            {
+                // Toggling adds/removes the output folder row and the apply sections' help boxes
+                GUIUtility.ExitGUI();
+            }
 
             if (workOnCopy)
             {
@@ -174,13 +192,17 @@ namespace Pawlygon.UnityTools.Editor
                         string selected = EditorUtility.OpenFolderPanel("Select Output Folder for FX Copy", copyOutputFolder, "");
                         if (!string.IsNullOrEmpty(selected))
                         {
-                            string projectPath = Path.GetFullPath(Application.dataPath).Replace('\\', '/');
-                            selected = selected.Replace('\\', '/');
+                            string projectPath = Path.GetFullPath(Application.dataPath).Replace('\\', '/').TrimEnd('/');
+                            selected = selected.Replace('\\', '/').TrimEnd('/');
 
-                            if (selected.StartsWith(projectPath))
+                            // Must be Assets itself or a folder inside it (not a sibling such as
+                            // ".../AssetsBackup", which a plain prefix check would accept).
+                            bool isAssetsFolder = string.Equals(selected, projectPath, StringComparison.OrdinalIgnoreCase);
+                            bool isInsideAssets = selected.StartsWith(projectPath + "/", StringComparison.OrdinalIgnoreCase);
+
+                            if (isAssetsFolder || isInsideAssets)
                             {
                                 copyOutputFolder = "Assets" + selected.Substring(projectPath.Length);
-                                if (string.IsNullOrEmpty(copyOutputFolder)) copyOutputFolder = "Assets";
                             }
                             else
                             {
@@ -188,6 +210,9 @@ namespace Pawlygon.UnityTools.Editor
                                     "The selected folder must be inside the project's Assets folder.", "OK");
                             }
                         }
+
+                        // The modal folder panel invalidates the current layout group
+                        GUIUtility.ExitGUI();
                     }
                 }
             }
@@ -232,17 +257,21 @@ namespace Pawlygon.UnityTools.Editor
                 if (GUILayout.Button("Select All Unguarded", GUILayout.Height(26f), GUILayout.Width(160f)))
                 {
                     FXGestureCheckerCore.SelectAllUnguarded(layers);
+                    GUIUtility.ExitGUI();
                 }
 
                 if (GUILayout.Button("Deselect All", GUILayout.Height(26f), GUILayout.Width(120f)))
                 {
                     FXGestureCheckerCore.DeselectAll(layers);
+                    GUIUtility.ExitGUI();
                 }
             }
 
             EditorGUILayout.Space(4f);
 
-            using (new EditorGUI.DisabledScope(!anySelected))
+            string readOnlyReason = GetReadOnlyBlockReason();
+
+            using (new EditorGUI.DisabledScope(!anySelected || readOnlyReason != null))
             {
                 string buttonLabel = workOnCopy
                     ? "Copy FX Controller & Apply Selected Fixes"
@@ -251,7 +280,13 @@ namespace Pawlygon.UnityTools.Editor
                 if (PawlygonEditorUI.DrawPrimaryButton(buttonLabel))
                 {
                     ApplySelectedFixes();
+                    GUIUtility.ExitGUI();
                 }
+            }
+
+            if (readOnlyReason != null)
+            {
+                EditorGUILayout.HelpBox(readOnlyReason, MessageType.Error);
             }
 
             if (workOnCopy && anySelected)
@@ -297,17 +332,21 @@ namespace Pawlygon.UnityTools.Editor
                 if (GUILayout.Button("Select All Unguarded", GUILayout.Height(26f), GUILayout.Width(160f)))
                 {
                     FXGestureCheckerCore.SelectAllUnguardedBlink(blinkLayers);
+                    GUIUtility.ExitGUI();
                 }
 
                 if (GUILayout.Button("Deselect All", GUILayout.Height(26f), GUILayout.Width(120f)))
                 {
                     FXGestureCheckerCore.DeselectAllBlink(blinkLayers);
+                    GUIUtility.ExitGUI();
                 }
             }
 
             EditorGUILayout.Space(4f);
 
-            using (new EditorGUI.DisabledScope(!anySelected))
+            string readOnlyReason = GetReadOnlyBlockReason();
+
+            using (new EditorGUI.DisabledScope(!anySelected || readOnlyReason != null))
             {
                 string buttonLabel = workOnCopy
                     ? "Copy FX Controller & Apply Blink Guards"
@@ -316,7 +355,13 @@ namespace Pawlygon.UnityTools.Editor
                 if (PawlygonEditorUI.DrawPrimaryButton(buttonLabel))
                 {
                     ApplySelectedBlinkGuards();
+                    GUIUtility.ExitGUI();
                 }
+            }
+
+            if (readOnlyReason != null)
+            {
+                EditorGUILayout.HelpBox(readOnlyReason, MessageType.Error);
             }
 
             if (workOnCopy && anySelected)
@@ -335,37 +380,46 @@ namespace Pawlygon.UnityTools.Editor
         // Analysis
         // =====================================================================
 
+        /// <summary>
+        /// Analyzes the FX controller of the avatar currently in the "Selected Avatar" field and
+        /// caches its VRCAvatarDescriptor for later copy assignment.
+        /// </summary>
         private void AnalyzeFXController()
         {
-            layers = null;
-            blinkLayers = null;
-            showAllBlinkLayers = false;
-            fxController = null;
-            statusMessage = null;
-            expandedLayers.Clear();
-            expandedBlinkLayers.Clear();
+            ClearAnalysis();
 
             FXGestureCheckerCore.AnalysisResult result = FXGestureCheckerCore.Analyze(selectedAvatar);
+            cachedDescriptor = result.Descriptor;
+            cachedDescriptorTypeInstance = result.DescriptorType;
+            ShowAnalysisResult(result);
+        }
+
+        /// <summary>
+        /// Re-analyzes the controller that was just modified, directly (not through the avatar
+        /// field, which may no longer point at the avatar that owns it). Keeps the cached descriptor.
+        /// </summary>
+        private void RefreshAnalysis()
+        {
+            if (fxController == null) return;
+
+            ShowAnalysisResult(FXGestureCheckerCore.Analyze(fxController));
+        }
+
+        /// <summary>
+        /// Stores an analysis result in the window state: controller, gesture and blink layers
+        /// (blink layers sorted by confidence), status message, and default foldout expansion.
+        /// </summary>
+        private void ShowAnalysisResult(FXGestureCheckerCore.AnalysisResult result)
+        {
             fxController = result.FXController;
             layers = result.Layers;
             blinkLayers = result.BlinkLayers;
-            cachedDescriptor = result.Descriptor;
-            cachedDescriptorTypeInstance = result.DescriptorType;
             statusMessage = result.StatusMessage;
             statusMessageType = result.StatusMessageType;
+            expandedLayers.Clear();
+            expandedBlinkLayers.Clear();
 
             if (!result.Success) return;
-
-            // Check if controller asset is editable (skip when working on a copy)
-            if (fxController != null)
-            {
-                string controllerPath = AssetDatabase.GetAssetPath(fxController);
-                if (!workOnCopy && !string.IsNullOrEmpty(controllerPath) && controllerPath.StartsWith("Packages/"))
-                {
-                    SetStatus($"FX controller '{fxController.name}' is inside a read-only Packages folder. Enable 'Work on a copy' or copy it to Assets manually.", MessageType.Error);
-                    return;
-                }
-            }
 
             if (layers != null)
             {
@@ -387,25 +441,135 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
+        /// <summary>
+        /// Forgets all analysis results and the cached descriptor (e.g. when the avatar changes).
+        /// </summary>
+        private void ClearAnalysis()
+        {
+            layers = null;
+            blinkLayers = null;
+            showAllBlinkLayers = false;
+            fxController = null;
+            cachedDescriptor = null;
+            cachedDescriptorTypeInstance = null;
+            statusMessage = null;
+            expandedLayers.Clear();
+            expandedBlinkLayers.Clear();
+        }
+
+        /// <summary>
+        /// Returns why the analyzed controller cannot be modified right now, or null if it can.
+        /// The controller is blocked when it lives in an immutable package and "Work on a copy" is off.
+        /// Evaluated on every draw and again at apply time, so toggling the copy option after the
+        /// analysis is always respected.
+        /// </summary>
+        private string GetReadOnlyBlockReason()
+        {
+            if (workOnCopy || fxController == null) return null;
+            if (!FXGestureCheckerCore.IsControllerReadOnly(fxController)) return null;
+
+            return $"FX controller '{fxController.name}' is inside a read-only package and cannot be modified in place. " +
+                   "Enable 'Work on a copy' to apply the fixes to an editable copy.";
+        }
+
         // =====================================================================
         // Applying fixes
         // =====================================================================
 
-        private void ApplySelectedFixes()
+        /// <summary>
+        /// Validates that an analyzed, editable controller is available before applying.
+        /// </summary>
+        private bool CanApply()
         {
             if (fxController == null)
             {
                 SetStatus("No FX controller loaded. Run analysis first.", MessageType.Error);
+                return false;
+            }
+
+            string readOnlyReason = GetReadOnlyBlockReason();
+            if (readOnlyReason != null)
+            {
+                SetStatus(readOnlyReason, MessageType.Error);
+                return false;
+            }
+
+            return true;
+        }
+
+        private void ApplySelectedFixes()
+        {
+            if (!CanApply()) return;
+
+            // --- Copy mode: duplicate the controller and switch to the copy ---
+            if (workOnCopy && !SwitchToCopy()) return;
+
+            if (layers == null)
+            {
+                SetStatus("No gesture analysis is available for the FX controller. Run analysis again.", MessageType.Error);
                 return;
             }
 
-            // --- Copy mode: duplicate the controller and switch to the copy ---
-            if (workOnCopy)
-            {
-                // Capture user selections before re-analysis resets them
-                var selectedTransitionKeys = new HashSet<string>();
-                var selectedLayerIndices = new HashSet<int>();
+            AnimatorController target = fxController;
+            var (transitionFixes, layerFixes) = FXGestureCheckerCore.ApplySelectedFixes(target, layers);
 
+            // Re-analyze the modified controller to refresh state
+            RefreshAnalysis();
+            SetStatus($"Applied {transitionFixes} transition guard(s) and {layerFixes} layer guard(s) to '{target.name}'.", MessageType.Info);
+        }
+
+        // =====================================================================
+        // Applying blink guards
+        // =====================================================================
+
+        private void ApplySelectedBlinkGuards()
+        {
+            if (!CanApply()) return;
+
+            // --- Copy mode: duplicate the controller and switch to the copy ---
+            if (workOnCopy && !SwitchToCopy()) return;
+
+            if (blinkLayers == null)
+            {
+                SetStatus("No blink layer analysis is available for the FX controller. Run analysis again.", MessageType.Error);
+                return;
+            }
+
+            AnimatorController target = fxController;
+            int guardCount = FXGestureCheckerCore.ApplySelectedBlinkGuards(target, blinkLayers);
+
+            // Re-analyze the modified controller to refresh state
+            RefreshAnalysis();
+            SetStatus($"Applied {guardCount} blink guard(s) to '{target.name}'.", MessageType.Info);
+        }
+
+        // =====================================================================
+        // Copy mode
+        // =====================================================================
+
+        /// <summary>
+        /// Copies the analyzed FX controller, assigns the copy to the analyzed avatar's descriptor,
+        /// and analyzes the copy directly so later fixes target the copy's sub-assets. The user's
+        /// gesture and blink selections are carried over exactly. Never re-reads the avatar field,
+        /// so a different avatar selected in the meantime cannot be modified.
+        /// </summary>
+        /// <returns>True when the window now points at an analyzed copy; false (with a status
+        /// message) on failure.</returns>
+        private bool SwitchToCopy()
+        {
+            if (cachedDescriptor == null)
+            {
+                SetStatus("The analyzed avatar's VRCAvatarDescriptor is no longer available. Run analysis again.", MessageType.Error);
+                return false;
+            }
+
+            // Capture user selections before re-analysis resets them
+            var selectedTransitionKeys = new HashSet<string>();
+            var selectedLayerIndices = new HashSet<int>();
+            var selectedBlinkIndices = new HashSet<int>();
+
+            if (layers != null)
+            {
                 foreach (FXGestureCheckerCore.LayerAnalysis layer in layers)
                 {
                     if (layer.SelectedForLayerDisable)
@@ -417,77 +581,14 @@ namespace Pawlygon.UnityTools.Editor
                     {
                         if (t.SelectedForFix)
                         {
-                            selectedTransitionKeys.Add($"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}");
-                        }
-                    }
-                }
-
-                AnimatorController copy = FXGestureCheckerCore.CopyFXController(fxController, copyOutputFolder, out string errorMessage);
-                if (copy == null)
-                {
-                    SetStatus(errorMessage ?? "Failed to copy FX controller.", MessageType.Error);
-                    return;
-                }
-
-                // Assign the copy to the VRCAvatarDescriptor
-                if (!FXGestureCheckerCore.AssignFXControllerToDescriptor(cachedDescriptor, cachedDescriptorTypeInstance, copy))
-                {
-                    SetStatus("Failed to assign the copied FX controller to the VRCAvatarDescriptor.", MessageType.Error);
-                    return;
-                }
-
-                fxController = copy;
-
-                // Re-analyze on the copy so transition references point to the new asset
-                AnalyzeFXController();
-
-                // Restore user selections on the re-analyzed layers
-                if (layers != null)
-                {
-                    foreach (FXGestureCheckerCore.LayerAnalysis layer in layers)
-                    {
-                        if (selectedLayerIndices.Contains(layer.LayerIndex))
-                        {
-                            layer.SelectedForLayerDisable = true;
-                        }
-
-                        foreach (FXGestureCheckerCore.TransitionAnalysis t in layer.GestureTransitions)
-                        {
-                            string key = $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}";
-                            if (selectedTransitionKeys.Contains(key))
-                            {
-                                t.SelectedForFix = true;
-                            }
+                            selectedTransitionKeys.Add(GetTransitionKey(layer, t));
                         }
                     }
                 }
             }
 
-            var (transitionFixes, layerFixes) = FXGestureCheckerCore.ApplySelectedFixes(fxController, layers);
-            SetStatus($"Applied {transitionFixes} transition guard(s) and {layerFixes} layer guard(s). Re-analyzing...", MessageType.Info);
-
-            // Re-analyze to refresh state
-            AnalyzeFXController();
-        }
-
-        // =====================================================================
-        // Applying blink guards
-        // =====================================================================
-
-        private void ApplySelectedBlinkGuards()
-        {
-            if (fxController == null)
+            if (blinkLayers != null)
             {
-                SetStatus("No FX controller loaded. Run analysis first.", MessageType.Error);
-                return;
-            }
-
-            // --- Copy mode: duplicate the controller and switch to the copy ---
-            if (workOnCopy)
-            {
-                // Capture user selections before re-analysis resets them
-                var selectedBlinkIndices = new HashSet<int>();
-
                 foreach (FXGestureCheckerCore.BlinkLayerAnalysis bl in blinkLayers)
                 {
                     if (bl.SelectedForGuard)
@@ -495,43 +596,60 @@ namespace Pawlygon.UnityTools.Editor
                         selectedBlinkIndices.Add(bl.LayerIndex);
                     }
                 }
+            }
 
-                AnimatorController copy = FXGestureCheckerCore.CopyFXController(fxController, copyOutputFolder, out string errorMessage);
-                if (copy == null)
+            AnimatorController copy = FXGestureCheckerCore.CopyFXController(fxController, copyOutputFolder, out string errorMessage);
+            if (copy == null)
+            {
+                SetStatus(errorMessage ?? "Failed to copy FX controller.", MessageType.Error);
+                return false;
+            }
+
+            // Assign the copy to the VRCAvatarDescriptor
+            if (!FXGestureCheckerCore.AssignFXControllerToDescriptor(cachedDescriptor, cachedDescriptorTypeInstance, copy))
+            {
+                SetStatus("Failed to assign the copied FX controller to the VRCAvatarDescriptor.", MessageType.Error);
+                return false;
+            }
+
+            // Analyze the copy itself so transition references point to the new asset
+            FXGestureCheckerCore.AnalysisResult copyResult = FXGestureCheckerCore.Analyze(copy);
+            ShowAnalysisResult(copyResult);
+
+            if (!copyResult.Success)
+            {
+                SetStatus("Failed to analyze the copied FX controller.", MessageType.Error);
+                return false;
+            }
+
+            // Restore user selections exactly (including deselected, auto-selected entries)
+            if (layers != null)
+            {
+                foreach (FXGestureCheckerCore.LayerAnalysis layer in layers)
                 {
-                    SetStatus(errorMessage ?? "Failed to copy FX controller.", MessageType.Error);
-                    return;
-                }
+                    layer.SelectedForLayerDisable = selectedLayerIndices.Contains(layer.LayerIndex);
 
-                if (!FXGestureCheckerCore.AssignFXControllerToDescriptor(cachedDescriptor, cachedDescriptorTypeInstance, copy))
-                {
-                    SetStatus("Failed to assign the copied FX controller to the VRCAvatarDescriptor.", MessageType.Error);
-                    return;
-                }
-
-                fxController = copy;
-
-                // Re-analyze on the copy so references point to the new asset
-                AnalyzeFXController();
-
-                // Restore user selections on the re-analyzed blink layers
-                if (blinkLayers != null)
-                {
-                    foreach (FXGestureCheckerCore.BlinkLayerAnalysis bl in blinkLayers)
+                    foreach (FXGestureCheckerCore.TransitionAnalysis t in layer.GestureTransitions)
                     {
-                        if (selectedBlinkIndices.Contains(bl.LayerIndex))
-                        {
-                            bl.SelectedForGuard = true;
-                        }
+                        t.SelectedForFix = selectedTransitionKeys.Contains(GetTransitionKey(layer, t));
                     }
                 }
             }
 
-            int guardCount = FXGestureCheckerCore.ApplySelectedBlinkGuards(fxController, blinkLayers);
-            SetStatus($"Applied {guardCount} blink guard(s). Re-analyzing...", MessageType.Info);
+            if (blinkLayers != null)
+            {
+                foreach (FXGestureCheckerCore.BlinkLayerAnalysis bl in blinkLayers)
+                {
+                    bl.SelectedForGuard = selectedBlinkIndices.Contains(bl.LayerIndex);
+                }
+            }
 
-            // Re-analyze to refresh state
-            AnalyzeFXController();
+            return true;
+        }
+
+        private static string GetTransitionKey(FXGestureCheckerCore.LayerAnalysis layer, FXGestureCheckerCore.TransitionAnalysis t)
+        {
+            return $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}";
         }
 
         // =====================================================================

@@ -1024,6 +1024,26 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
+        /// Checks whether a controller asset cannot be edited in place because it lives inside an
+        /// immutable package (registry, git, built-in, ...) under <c>Packages/</c>. Embedded and
+        /// local packages are regular files on disk and are treated as editable.
+        /// </summary>
+        internal static bool IsControllerReadOnly(AnimatorController controller)
+        {
+            if (controller == null) return false;
+
+            string path = AssetDatabase.GetAssetPath(controller);
+            if (string.IsNullOrEmpty(path) || !path.StartsWith("Packages/", StringComparison.Ordinal)) return false;
+
+            UnityEditor.PackageManager.PackageInfo packageInfo =
+                UnityEditor.PackageManager.PackageInfo.FindForAssetPath(path);
+            if (packageInfo == null) return true;
+
+            return packageInfo.source != UnityEditor.PackageManager.PackageSource.Embedded &&
+                   packageInfo.source != UnityEditor.PackageManager.PackageSource.Local;
+        }
+
+        /// <summary>
         /// Assigns a new FX AnimatorController to a VRCAvatarDescriptor component using reflection.
         /// Finds the FX entry in baseAnimationLayers and replaces the controller reference.
         /// </summary>

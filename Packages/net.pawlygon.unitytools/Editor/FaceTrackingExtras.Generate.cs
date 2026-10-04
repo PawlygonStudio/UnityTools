@@ -56,14 +56,16 @@ namespace Pawlygon.UnityTools.Editor
                 }
 
                 bool hasPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(FTExtrasGenerator.GetPrefabPath(selectedAvatar)) != null;
-                bool onAvatar = hasPrefab && FTExtrasGenerator.IsPrefabOnAvatar(selectedAvatar);
+                bool onAvatar = hasPrefab && IsPrefabOnAvatar();
                 using (new EditorGUI.DisabledScope(!hasPrefab || onAvatar))
                 {
                     string label = onAvatar ? "✓ Prefab is on the avatar" : "Add Prefab to Avatar";
                     if (GUILayout.Button(label, GUILayout.Height(24f)))
                     {
                         FTExtrasGenerator.AddPrefabToAvatar(selectedAvatar);
+                        prefabOnAvatarCache = null;
                         SetStatus($"Added {FTExtrasGenerator.PrefabName} to {selectedAvatar.name}.", MessageType.Info);
+                        GUIUtility.ExitGUI();
                     }
                 }
 
@@ -145,8 +147,13 @@ namespace Pawlygon.UnityTools.Editor
             try
             {
                 lastResult = FTExtrasGenerator.Generate(profile, selectedAvatar);
-                SetStatus(lastResult.Message, lastResult.Warnings.Count > 0 ? MessageType.Warning : MessageType.Info);
-                Debug.Log($"{FaceTrackingExtrasCore.LogPrefix} {lastResult.Message}");
+                prefabOnAvatarCache = null;
+                MessageType type = !lastResult.Success ? MessageType.Error
+                    : lastResult.Warnings.Count > 0 ? MessageType.Warning
+                    : MessageType.Info;
+                SetStatus(lastResult.Message, type);
+                if (lastResult.Success) Debug.Log($"{FaceTrackingExtrasCore.LogPrefix} {lastResult.Message}");
+                else Debug.LogError($"{FaceTrackingExtrasCore.LogPrefix} {lastResult.Message}");
                 foreach (string warning in lastResult.Warnings)
                 {
                     Debug.LogWarning($"{FaceTrackingExtrasCore.LogPrefix} {warning}");

@@ -120,6 +120,21 @@ namespace Pawlygon.UnityTools.Editor
             var result = new Result();
             FTExtrasGenerationSettings settings = profile.generation;
 
+            // Everything that can fail is checked before any asset is touched.
+            List<string> errors = Validate(settings);
+            if (errors.Count > 0)
+            {
+                result.Message = "Nothing was generated: " + string.Join(" ", errors);
+                return result;
+            }
+
+            Type layerControlType = null;
+            if (settings.fakeDilation)
+            {
+                layerControlType = FindLayerControlType(out string layerControlProblem);
+                if (layerControlType == null) result.Warnings.Add($"{layerControlProblem} The fake pupil dilation was skipped.");
+            }
+
             string moveError = MoveProfileToOutputFolder(profile, avatar);
             if (moveError != null) result.Warnings.Add($"Could not move the profile: {moveError}");
 
@@ -130,12 +145,19 @@ namespace Pawlygon.UnityTools.Editor
             var clips = new ClipStore(clipFolder);
 
             // --- Controller ---
+            // An existing controller is emptied and rebuilt in place, so its GUID (and every reference to it,
+            // such as the prefab's VRCFury component or a hand-made merge) stays valid.
             string controllerPath = PawlygonEditorUtils.CombineAssetPath(folder, ControllerName + ".controller");
-            if (AssetDatabase.LoadAssetAtPath<AnimatorController>(controllerPath) != null)
+            AnimatorController controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(controllerPath);
+            if (controller != null)
             {
-                AssetDatabase.DeleteAsset(controllerPath);
+                ClearController(controller);
             }
-            AnimatorController controller = AnimatorController.CreateAnimatorControllerAtPath(controllerPath);
+            else
+            {
+                if (AssetDatabase.LoadMainAssetAtPath(controllerPath) != null) AssetDatabase.DeleteAsset(controllerPath);
+                controller = AnimatorController.CreateAnimatorControllerAtPath(controllerPath);
+            }
             var builder = new ControllerBuilder(controller);
 
             AddParameters(builder, settings);
@@ -147,9 +169,9 @@ namespace Pawlygon.UnityTools.Editor
             if (!earLayer) result.Warnings.Add("No ear poses move any bones, so no ear layer was generated.");
             if (!tailLayer) result.Warnings.Add("No tail poses move any bones, so no tail layer was generated.");
 
-            if (settings.fakeDilation)
+            if (settings.fakeDilation && layerControlType != null)
             {
-                string dilationWarning = BuildFakeDilationLayer(builder, clips, avatar, settings);
+                string dilationWarning = BuildFakeDilationLayer(builder, clips, avatar, settings, layerControlType);
                 if (dilationWarning != null) result.Warnings.Add(dilationWarning);
             }
 
@@ -168,7 +190,7 @@ namespace Pawlygon.UnityTools.Editor
             }
             catch (Exception ex)
             {
-                result.Warnings.Add($"Could not create the expressions menu/parameters ({ex.Message}). Is the VRChat Avatars SDK installed?");
+                result.Warnings.Add($"Could not create the expressions menu/parameters, so the Tail follows Jaw toggle has no menu entry: {ex.Message}");
             }
 
             AssetDatabase.SaveAssets();
@@ -189,6 +211,95 @@ namespace Pawlygon.UnityTools.Editor
             result.Success = true;
             result.Message = $"Generated {clips.Count} clips and {controller.layers.Length} layers in {folder}.";
             return result;
+        }
+
+        // =====================================================================
+        // Validation and controller reuse
+        // =====================================================================
+
+        /// <summary>
+        /// Settings problems that would produce a broken controller. Empty when everything is usable.
+        /// </summary>
+        internal static List<string> Validate(FTExtrasGenerationSettings settings)
+        {
+            var errors = new List<string>();
+            var inputs = new (string Label, string Value)[]
+            {
+                ("Eye Left X", settings.eyeLeftX), ("Eye Right X", settings.eyeRightX), ("Eye Y", settings.eyeY),
+                ("Smile Frown Left", settings.smileFrownLeft), ("Smile Frown Right", settings.smileFrownRight), ("Jaw X", settings.jawX),
+                ("Eye Lid Left", settings.eyeLidLeft), ("Eye Lid Right", settings.eyeLidRight),
+                ("Eye Tracking Active", settings.eyeTrackingActive), ("Lip Tracking Active", settings.lipTrackingActive),
+                ("Eye Dilation Enable", settings.eyeDilationEnable),
+            };
+
+            foreach (var (label, value) in inputs)
+            {
+                if (string.IsNullOrWhiteSpace(value)) errors.Add($"The '{label}' parameter name is empty.");
+            }
+
+            string toggle = settings.tailFollowsJawParameter;
+            if (string.IsNullOrWhiteSpace(toggle))
+            {
+                errors.Add("The Tail follows Jaw parameter name is empty.");
+            }
+            else if (inputs.Any(i => i.Value == toggle))
+            {
+                errors.Add($"The Tail follows Jaw parameter '{toggle}' is also used as a face tracking input. It must be its own bool parameter.");
+            }
+            else if (toggle.StartsWith(ParamPrefix))
+            {
+                errors.Add($"The Tail follows Jaw parameter cannot start with '{ParamPrefix}', which is reserved for generated parameters.");
+            }
+
+            if (settings.gazeFullAt <= 0f || settings.moodFullAt <= 0f || settings.jawFullAt <= 0f)
+            {
+                errors.Add("The input ranges (gaze, mood, jaw full at) must be above 0.");
+            }
+
+            return errors;
+        }
+
+        /// <summary>
+        /// VRChat's Animator Layer Control behaviour, checked for the fields the generator sets.
+        /// Null (with a reason) if the SDK is missing or the fields were renamed.
+        /// </summary>
+        private static Type FindLayerControlType(out string problem)
+        {
+            Type type = FindType("VRCAnimatorLayerControl", typeof(StateMachineBehaviour));
+            if (type == null)
+            {
+                problem = "VRCAnimatorLayerControl was not found (is the VRChat Avatars SDK installed?).";
+                return null;
+            }
+
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+            string missing = new[] { "playable", "layer", "goalWeight", "blendDuration" }.FirstOrDefault(f => type.GetField(f, flags) == null);
+            if (missing != null)
+            {
+                problem = $"VRCAnimatorLayerControl has no '{missing}' field in this VRChat SDK version.";
+                return null;
+            }
+
+            problem = null;
+            return type;
+        }
+
+        /// <summary>
+        /// Removes every layer, parameter and sub-asset (state machines, states, transitions, blend trees,
+        /// behaviours) so the controller can be rebuilt in place.
+        /// </summary>
+        private static void ClearController(AnimatorController controller)
+        {
+            controller.layers = Array.Empty<AnimatorControllerLayer>();
+            controller.parameters = Array.Empty<AnimatorControllerParameter>();
+
+            string path = AssetDatabase.GetAssetPath(controller);
+            foreach (UnityEngine.Object subAsset in AssetDatabase.LoadAllAssetsAtPath(path))
+            {
+                if (subAsset == null || subAsset == controller) continue;
+                AssetDatabase.RemoveObjectFromAsset(subAsset);
+                UnityEngine.Object.DestroyImmediate(subAsset, true);
+            }
         }
 
         // =====================================================================
@@ -298,9 +409,14 @@ namespace Pawlygon.UnityTools.Editor
 
         private static readonly (string Name, float Value)[] Moods = { ("Sad", -1f), ("Neutral", 0f), ("Happy", 1f) };
 
+        /// <summary>
+        /// Gaze samples for the 2D tree. The diagonals are baked too: without them Unity blends looking
+        /// up-right as half Right plus half Up, so the ears would move about half as far as the preview shows.
+        /// </summary>
         private static readonly (string Name, Vector2 Position)[] Gazes =
         {
             ("Centre", Vector2.zero), ("Right", Vector2.right), ("Left", Vector2.left), ("Up", Vector2.up), ("Down", Vector2.down),
+            ("Up Right", new Vector2(1f, 1f)), ("Up Left", new Vector2(-1f, 1f)), ("Down Right", new Vector2(1f, -1f)), ("Down Left", new Vector2(-1f, -1f)),
         };
 
         /// <summary>
@@ -419,7 +535,7 @@ namespace Pawlygon.UnityTools.Editor
         /// while eye tracking is off or real dilation is on. The curves come from <see cref="FTExtrasPupils"/>,
         /// which the window's preview also uses. Returns a warning, or null.
         /// </summary>
-        private static string BuildFakeDilationLayer(ControllerBuilder builder, ClipStore clips, GameObject avatar, FTExtrasGenerationSettings settings)
+        private static string BuildFakeDilationLayer(ControllerBuilder builder, ClipStore clips, GameObject avatar, FTExtrasGenerationSettings settings, Type layerControlType)
         {
             var (dilationMeshes, constrictMeshes) = FTExtrasPupils.FindMeshes(avatar);
             List<string> dilationPaths = dilationMeshes.Select(r => FaceTrackingExtrasCore.GetRelativePath(r.transform, avatar.transform)).ToList();
@@ -428,12 +544,6 @@ namespace Pawlygon.UnityTools.Editor
             if (dilationPaths.Count == 0)
             {
                 return $"No mesh has an '{FTExtrasPupils.DilationShape}' blendshape, so the fake pupil dilation was skipped.";
-            }
-
-            Type layerControlType = FindType("VRCAnimatorLayerControl", typeof(StateMachineBehaviour));
-            if (layerControlType == null)
-            {
-                return "VRCAnimatorLayerControl was not found (VRChat Avatars SDK missing?), so the fake pupil dilation was skipped.";
             }
 
             float length = FTExtrasPupils.IdleLength;
@@ -569,18 +679,18 @@ namespace Pawlygon.UnityTools.Editor
             var go = new GameObject(PrefabName);
             try
             {
-                object fullController = furyComponents.GetMethod("CreateFullController").Invoke(null, new object[] { go });
+                object fullController = RequireMethod(furyComponents, "CreateFullController").Invoke(null, new object[] { go });
                 Type fcType = fullController.GetType();
 
-                MethodInfo addController = fcType.GetMethod("AddController");
+                MethodInfo addController = RequireMethod(fcType, "AddController");
                 Type layerType = addController.GetParameters()[1].ParameterType;
                 addController.Invoke(fullController, new object[] { controller, Enum.Parse(layerType, "FX") });
 
-                if (menu != null) fcType.GetMethod("AddMenu").Invoke(fullController, new object[] { menu, settings.menuName });
-                if (parameters != null) fcType.GetMethod("AddParams").Invoke(fullController, new object[] { parameters });
+                if (menu != null) RequireMethod(fcType, "AddMenu").Invoke(fullController, new object[] { menu, settings.menuName });
+                if (parameters != null) RequireMethod(fcType, "AddParams").Invoke(fullController, new object[] { parameters });
 
                 // Keep every parameter name as-is so the face tracking inputs are shared with VRCFT.
-                fcType.GetMethod("AddGlobalParam").Invoke(fullController, new object[] { "*" });
+                RequireMethod(fcType, "AddGlobalParam").Invoke(fullController, new object[] { "*" });
 
                 PrefabUtility.SaveAsPrefabAsset(go, prefabPath, out bool saved);
                 return saved ? null : $"Could not save the prefab at {prefabPath}.";
@@ -676,6 +786,12 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
+        private static MethodInfo RequireMethod(Type type, string name)
+        {
+            return type.GetMethod(name)
+                ?? throw new MissingMethodException($"VRCFury's API has no '{type.Name}.{name}' method in this version.");
+        }
+
         private static object GetFieldValue(object target, string name)
         {
             return target.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(target);
@@ -747,7 +863,7 @@ namespace Pawlygon.UnityTools.Editor
             public AnimatorStateMachine AddLayer(string name, float weight, bool isFirstLayer = false)
             {
                 AnimatorControllerLayer[] layers = Controller.layers;
-                if (isFirstLayer && layers.Length == 1 && layers[0].stateMachine.states.Length == 0)
+                if (isFirstLayer && layers.Length == 1 && layers[0].stateMachine != null && layers[0].stateMachine.states.Length == 0)
                 {
                     layers[0].name = name;
                     layers[0].defaultWeight = weight;

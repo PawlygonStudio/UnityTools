@@ -7,16 +7,16 @@ using UnityEngine;
 namespace Pawlygon.UnityTools.Editor
 {
     /// <summary>
-    /// Binds an <see cref="EarTailProfile"/> to an avatar in the scene, applies poses to its bones,
+    /// Binds an <see cref="FTExtrasProfile"/> to an avatar in the scene, applies poses to its bones,
     /// and guarantees the original rotations come back: on <see cref="Restore"/>, before entering
     /// play mode, before a script reload, and around scene saves (so a pose being edited is never
     /// saved into the scene).
     /// </summary>
-    internal class EarTailPoseSession
+    internal class FTExtrasPoseSession
     {
         private const float ChangeThresholdDegrees = 0.01f;
 
-        public EarTailProfile Profile { get; }
+        public FTExtrasProfile Profile { get; }
         public Transform AvatarRoot { get; }
         public Transform[] EarLeft { get; private set; }
         public Transform[] EarRight { get; private set; }
@@ -28,11 +28,11 @@ namespace Pawlygon.UnityTools.Editor
         private Quaternion[] lastRight;
 
         /// <summary>The session currently holding bones away from their original rotations, if any.</summary>
-        internal static EarTailPoseSession Active { get; private set; }
+        internal static FTExtrasPoseSession Active { get; private set; }
 
         public bool IsActive => snapshot != null;
 
-        private EarTailPoseSession(EarTailProfile profile, Transform avatarRoot)
+        private FTExtrasPoseSession(FTExtrasProfile profile, Transform avatarRoot)
         {
             Profile = profile;
             AvatarRoot = avatarRoot;
@@ -46,9 +46,9 @@ namespace Pawlygon.UnityTools.Editor
         /// Resolves the profile's bone paths on <paramref name="avatarRoot"/>. Returns null and sets
         /// <paramref name="error"/> if a bone is missing.
         /// </summary>
-        internal static EarTailPoseSession Bind(EarTailProfile profile, Transform avatarRoot, out string error)
+        internal static FTExtrasPoseSession Bind(FTExtrasProfile profile, Transform avatarRoot, out string error)
         {
-            var session = new EarTailPoseSession(profile, avatarRoot);
+            var session = new FTExtrasPoseSession(profile, avatarRoot);
             var missing = new List<string>();
 
             session.EarLeft = Resolve(profile.earLeft, avatarRoot, missing);
@@ -65,7 +65,7 @@ namespace Pawlygon.UnityTools.Editor
             return session;
         }
 
-        private static Transform[] Resolve(List<EarTailProfileBone> bones, Transform avatarRoot, List<string> missing)
+        private static Transform[] Resolve(List<FTExtrasProfileBone> bones, Transform avatarRoot, List<string> missing)
         {
             var result = new Transform[bones.Count];
             for (int i = 0; i < bones.Count; i++)
@@ -79,11 +79,11 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Captures a bone's current rotation as its rest pose.
         /// </summary>
-        internal static EarTailProfileBone CaptureRest(Transform bone, Transform avatarRoot)
+        internal static FTExtrasProfileBone CaptureRest(Transform bone, Transform avatarRoot)
         {
-            return new EarTailProfileBone
+            return new FTExtrasProfileBone
             {
-                path = EarTailAnimatorCore.GetRelativePath(bone, avatarRoot),
+                path = FaceTrackingExtrasCore.GetRelativePath(bone, avatarRoot),
                 restLocal = bone.localRotation,
                 restAvatar = Quaternion.Inverse(avatarRoot.rotation) * bone.rotation,
             };
@@ -110,7 +110,7 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Writes a pose to the bones. Lists that are missing or the wrong length are skipped.
         /// </summary>
-        public void Apply(EarTailPoseData pose)
+        public void Apply(FTExtrasPoseData pose)
         {
             if (pose == null) return;
 
@@ -147,10 +147,10 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Reads the current rotations of the bones in the pose's group.
         /// </summary>
-        public EarTailPoseData Capture(EarTailPoseId id)
+        public FTExtrasPoseData Capture(FTExtrasPoseId id)
         {
-            var pose = new EarTailPoseData { id = id };
-            if (EarTailPoses.Get(id).Group == EarTailPoses.PoseGroup.Tail)
+            var pose = new FTExtrasPoseData { id = id };
+            if (FTExtrasPoses.Get(id).Group == FTExtrasPoses.PoseGroup.Tail)
             {
                 pose.tail = Tail.Select(t => t.localRotation).ToList();
             }
@@ -193,12 +193,12 @@ namespace Pawlygon.UnityTools.Editor
 
                 if (leftMoved)
                 {
-                    EarRight[i].localRotation = EarTailPoses.MirrorLocal(EarLeft[i].localRotation, Profile.earLeft[i], Profile.earRight[i]);
+                    EarRight[i].localRotation = FTExtrasPoses.MirrorLocal(EarLeft[i].localRotation, Profile.earLeft[i], Profile.earRight[i]);
                     changed = true;
                 }
                 else if (rightMoved)
                 {
-                    EarLeft[i].localRotation = EarTailPoses.MirrorLocal(EarRight[i].localRotation, Profile.earRight[i], Profile.earLeft[i]);
+                    EarLeft[i].localRotation = FTExtrasPoses.MirrorLocal(EarRight[i].localRotation, Profile.earRight[i], Profile.earLeft[i]);
                     changed = true;
                 }
             }
@@ -258,17 +258,17 @@ namespace Pawlygon.UnityTools.Editor
     /// Restores posed bones before play mode and script reloads, and keeps edited poses out of saved scenes.
     /// </summary>
     [InitializeOnLoad]
-    internal static class EarTailPoseSessionSafety
+    internal static class FTExtrasPoseSessionSafety
     {
-        static EarTailPoseSessionSafety()
+        static FTExtrasPoseSessionSafety()
         {
-            AssemblyReloadEvents.beforeAssemblyReload += () => EarTailPoseSession.Active?.Restore();
+            AssemblyReloadEvents.beforeAssemblyReload += () => FTExtrasPoseSession.Active?.Restore();
             EditorApplication.playModeStateChanged += state =>
             {
-                if (state == PlayModeStateChange.ExitingEditMode) EarTailPoseSession.Active?.Restore();
+                if (state == PlayModeStateChange.ExitingEditMode) FTExtrasPoseSession.Active?.Restore();
             };
-            EditorSceneManager.sceneSaving += (scene, path) => EarTailPoseSession.Active?.SuspendForSave();
-            EditorSceneManager.sceneSaved += scene => EarTailPoseSession.Active?.ResumeAfterSave();
+            EditorSceneManager.sceneSaving += (scene, path) => FTExtrasPoseSession.Active?.SuspendForSave();
+            EditorSceneManager.sceneSaved += scene => FTExtrasPoseSession.Active?.ResumeAfterSave();
         }
     }
 }

@@ -8,25 +8,25 @@ namespace Pawlygon.UnityTools.Editor
 {
     /// <summary>
     /// Editor window for generating ear and tail animations driven by face tracking parameters.
-    /// Detects the ear and tail bone chains, saves them to a per-avatar <see cref="EarTailProfile"/>,
+    /// Detects the ear and tail bone chains, saves them to a per-avatar <see cref="FTExtrasProfile"/>,
     /// and lets the user author poses on the avatar in the scene (with live ear mirroring) and preview
-    /// how they blend. Delegates rig analysis to <see cref="EarTailAnimatorCore"/>, pose math to
-    /// <see cref="EarTailPoses"/> and scene changes to <see cref="EarTailPoseSession"/>.
+    /// how they blend. Delegates rig analysis to <see cref="FaceTrackingExtrasCore"/>, pose math to
+    /// <see cref="FTExtrasPoses"/> and scene changes to <see cref="FTExtrasPoseSession"/>.
     /// </summary>
-    public class EarTailAnimator : EditorWindow
+    public class FaceTrackingExtras : EditorWindow
     {
-        private const string MenuPath = "!Pawlygon/Tools/Ear & Tail Animator";
+        private const string MenuPath = "!Pawlygon/Tools/Face Tracking Extras";
         private const float SectionSpacing = 10f;
 
         private const string SlotEarLeft = "EarLeft";
         private const string SlotEarRight = "EarRight";
         private const string SlotTail = "Tail";
 
-        private static readonly (string Slot, string Label, EarTailAnimatorCore.ChainKind Kind)[] Slots =
+        private static readonly (string Slot, string Label, FaceTrackingExtrasCore.ChainKind Kind)[] Slots =
         {
-            (SlotEarLeft, "Left Ear", EarTailAnimatorCore.ChainKind.Ear),
-            (SlotEarRight, "Right Ear", EarTailAnimatorCore.ChainKind.Ear),
-            (SlotTail, "Tail", EarTailAnimatorCore.ChainKind.Tail),
+            (SlotEarLeft, "Left Ear", FaceTrackingExtrasCore.ChainKind.Ear),
+            (SlotEarRight, "Right Ear", FaceTrackingExtrasCore.ChainKind.Ear),
+            (SlotTail, "Tail", FaceTrackingExtrasCore.ChainKind.Tail),
         };
 
         /// <summary>What the window is currently doing to the avatar's bones.</summary>
@@ -35,26 +35,26 @@ namespace Pawlygon.UnityTools.Editor
         // --- State ---
         [SerializeField] private Vector2 scrollPosition;
         private GameObject selectedAvatar;
-        private EarTailAnimatorCore.RigAnalysis analysis;
-        private readonly Dictionary<string, EarTailAnimatorCore.BoneChain> selectedChains = new Dictionary<string, EarTailAnimatorCore.BoneChain>();
+        private FaceTrackingExtrasCore.RigAnalysis analysis;
+        private readonly Dictionary<string, FaceTrackingExtrasCore.BoneChain> selectedChains = new Dictionary<string, FaceTrackingExtrasCore.BoneChain>();
         private string statusMessage;
         private MessageType statusMessageType;
         private string lastExportPath;
 
         // --- Profile & posing ---
-        private EarTailProfile profile;
-        private EarTailPoseSession session;
+        private FTExtrasProfile profile;
+        private FTExtrasPoseSession session;
         private string sessionError;
         private Mode mode;
-        private EarTailPoseId activePose;
+        private FTExtrasPoseId activePose;
         private bool liveMirror;
-        private EarTailPoses.BlendInputs previewInputs;
+        private FTExtrasPoses.BlendInputs previewInputs;
         private double loopStartTime;
         private double lastLoopApplyTime;
         private bool showDebug;
         private bool showGenerationSettings;
         private SerializedObject profileObject;
-        private EarTailGenerator.Result lastResult;
+        private FTExtrasGenerator.Result lastResult;
 
         // --- Styles ---
         private GUIStyle boneButtonStyle;
@@ -68,8 +68,8 @@ namespace Pawlygon.UnityTools.Editor
         [MenuItem(MenuPath)]
         public static void ShowWindow()
         {
-            EarTailAnimator window = GetWindow<EarTailAnimator>();
-            window.titleContent = new GUIContent("Ear & Tail Animator");
+            FaceTrackingExtras window = GetWindow<FaceTrackingExtras>();
+            window.titleContent = new GUIContent("Face Tracking Extras");
             window.minSize = new Vector2(520f, 520f);
         }
 
@@ -131,8 +131,8 @@ namespace Pawlygon.UnityTools.Editor
             EnsureStyles();
 
             PawlygonEditorUI.DrawHeader(
-                "Ear & Tail Animator",
-                "Pose ears and tail once, and generate face tracking animations from them.");
+                "Face Tracking Extras",
+                "Ear, tail and pupil animations driven by face tracking.");
             EditorGUILayout.Space(SectionSpacing);
 
             scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition, GUILayout.ExpandHeight(true));
@@ -215,7 +215,7 @@ namespace Pawlygon.UnityTools.Editor
                     }
 
                     EditorGUI.BeginChangeCheck();
-                    EarTailProfile newProfile = (EarTailProfile)EditorGUILayout.ObjectField("Profile", profile, typeof(EarTailProfile), false);
+                    FTExtrasProfile newProfile = (FTExtrasProfile)EditorGUILayout.ObjectField("Profile", profile, typeof(FTExtrasProfile), false);
                     if (EditorGUI.EndChangeCheck())
                     {
                         profile = newProfile;
@@ -265,7 +265,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private void RunAnalysis()
         {
-            analysis = EarTailAnimatorCore.Analyze(selectedAvatar);
+            analysis = FaceTrackingExtrasCore.Analyze(selectedAvatar);
             selectedChains.Clear();
             lastExportPath = null;
 
@@ -273,8 +273,8 @@ namespace Pawlygon.UnityTools.Editor
 
             if (!analysis.Success) return;
 
-            selectedChains[SlotEarLeft] = PickBest(analysis.ChainsOfSide(EarTailAnimatorCore.ChainKind.Ear, EarTailAnimatorCore.ChainSide.Left));
-            selectedChains[SlotEarRight] = PickBest(analysis.ChainsOfSide(EarTailAnimatorCore.ChainKind.Ear, EarTailAnimatorCore.ChainSide.Right));
+            selectedChains[SlotEarLeft] = PickBest(analysis.ChainsOfSide(FaceTrackingExtrasCore.ChainKind.Ear, FaceTrackingExtrasCore.ChainSide.Left));
+            selectedChains[SlotEarRight] = PickBest(analysis.ChainsOfSide(FaceTrackingExtrasCore.ChainKind.Ear, FaceTrackingExtrasCore.ChainSide.Right));
             selectedChains[SlotTail] = PickBest(analysis.TailChains);
         }
 
@@ -282,7 +282,7 @@ namespace Pawlygon.UnityTools.Editor
         /// Prefers visible chains over helper rigs, then chains animation can actually move
         /// (fewest constraint-driven bones), then the longest.
         /// </summary>
-        private EarTailAnimatorCore.BoneChain PickBest(IEnumerable<EarTailAnimatorCore.BoneChain> chains)
+        private FaceTrackingExtrasCore.BoneChain PickBest(IEnumerable<FaceTrackingExtrasCore.BoneChain> chains)
         {
             return chains
                 .OrderBy(c => c.IsHelper)
@@ -320,10 +320,10 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
-        private void DrawSlot(string slot, string label, EarTailAnimatorCore.ChainKind kind)
+        private void DrawSlot(string slot, string label, FaceTrackingExtrasCore.ChainKind kind)
         {
             selectedChains.TryGetValue(slot, out var chain);
-            var candidates = kind == EarTailAnimatorCore.ChainKind.Ear ? analysis.EarChains : analysis.TailChains;
+            var candidates = kind == FaceTrackingExtrasCore.ChainKind.Ear ? analysis.EarChains : analysis.TailChains;
 
             EditorGUILayout.LabelField(label, EditorStyles.boldLabel);
 
@@ -364,7 +364,7 @@ namespace Pawlygon.UnityTools.Editor
                 }
                 else
                 {
-                    chain = EarTailAnimatorCore.BuildChainFromRoot(newRoot, kind, analysis);
+                    chain = FaceTrackingExtrasCore.BuildChainFromRoot(newRoot, kind, analysis);
                 }
                 selectedChains[slot] = chain;
             }
@@ -376,7 +376,7 @@ namespace Pawlygon.UnityTools.Editor
             DrawChainWarnings(chain, slot);
         }
 
-        private void DrawBoneList(EarTailAnimatorCore.BoneChain chain)
+        private void DrawBoneList(FaceTrackingExtrasCore.BoneChain chain)
         {
             if (chain.SkippedBones.Count > 0)
             {
@@ -402,7 +402,7 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
-        private void DrawChainWarnings(EarTailAnimatorCore.BoneChain chain, string slot)
+        private void DrawChainWarnings(FaceTrackingExtrasCore.BoneChain chain, string slot)
         {
             var constrained = chain.Bones.Where(b => analysis.ConstraintDrivers.ContainsKey(b)).ToList();
             if (constrained.Count > 0)
@@ -422,13 +422,13 @@ namespace Pawlygon.UnityTools.Editor
                 EditorGUILayout.HelpBox("This chain branches. The longest branch was followed.", MessageType.Info);
             }
 
-            if (slot != SlotTail && chain.Side == EarTailAnimatorCore.ChainSide.Centre)
+            if (slot != SlotTail && chain.Side == FaceTrackingExtrasCore.ChainSide.Centre)
             {
                 EditorGUILayout.HelpBox("This chain sits on the centre line, so it may not be an ear.", MessageType.Warning);
             }
 
-            bool sideMismatch = (slot == SlotEarLeft && chain.Side == EarTailAnimatorCore.ChainSide.Right)
-                || (slot == SlotEarRight && chain.Side == EarTailAnimatorCore.ChainSide.Left);
+            bool sideMismatch = (slot == SlotEarLeft && chain.Side == FaceTrackingExtrasCore.ChainSide.Right)
+                || (slot == SlotEarRight && chain.Side == FaceTrackingExtrasCore.ChainSide.Left);
             if (sideMismatch)
             {
                 EditorGUILayout.HelpBox($"This chain is on the avatar's {chain.Side.ToString().ToLowerInvariant()} side.", MessageType.Warning);
@@ -452,7 +452,7 @@ namespace Pawlygon.UnityTools.Editor
 
             EditorGUILayout.HelpBox(
                 profile == null
-                    ? "Save the chains to create this avatar's Ear & Tail profile. The bones' current rotations are stored as the rest pose."
+                    ? "Save the chains to create this avatar's Face Tracking Extras profile. The bones' current rotations are stored as the rest pose."
                     : "The chains differ from the saved profile.",
                 MessageType.Info);
 
@@ -484,17 +484,17 @@ namespace Pawlygon.UnityTools.Editor
                     return;
                 }
 
-                DrawPoseGroup("Ears", EarTailPoses.PoseGroup.Ears);
+                DrawPoseGroup("Ears", FTExtrasPoses.PoseGroup.Ears);
                 EditorGUILayout.Space(8f);
-                DrawPoseGroup("Tail", EarTailPoses.PoseGroup.Tail);
+                DrawPoseGroup("Tail", FTExtrasPoses.PoseGroup.Tail);
             }
         }
 
-        private void DrawPoseGroup(string title, EarTailPoses.PoseGroup group)
+        private void DrawPoseGroup(string title, FTExtrasPoses.PoseGroup group)
         {
             EditorGUILayout.LabelField(title, EditorStyles.boldLabel);
 
-            bool hasBones = group == EarTailPoses.PoseGroup.Tail
+            bool hasBones = group == FTExtrasPoses.PoseGroup.Tail
                 ? profile.tail.Count > 0
                 : profile.earLeft.Count + profile.earRight.Count > 0;
             if (!hasBones)
@@ -503,15 +503,15 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
-            foreach (var definition in EarTailPoses.All.Where(d => d.Group == group))
+            foreach (var definition in FTExtrasPoses.All.Where(d => d.Group == group))
             {
                 DrawPoseRow(definition);
             }
         }
 
-        private void DrawPoseRow(EarTailPoses.PoseDefinition definition)
+        private void DrawPoseRow(FTExtrasPoses.PoseDefinition definition)
         {
-            bool isSet = EarTailPoses.Resolve(profile, definition.Id) != null;
+            bool isSet = FTExtrasPoses.Resolve(profile, definition.Id) != null;
             bool isActive = activePose == definition.Id && (mode == Mode.Editing || mode == Mode.Showing);
             bool isEditing = isActive && mode == Mode.Editing;
 
@@ -522,7 +522,7 @@ namespace Pawlygon.UnityTools.Editor
                 string status;
                 if (definition.IsDerived)
                 {
-                    string source = EarTailPoses.Get(definition.DerivedFrom.Value).Label;
+                    string source = FTExtrasPoses.Get(definition.DerivedFrom.Value).Label;
                     status = isSet ? $"<color=#909090>Mirrored from {source}</color>" : $"<color=#909090>Needs {source}</color>";
                 }
                 else
@@ -585,14 +585,14 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
-        private void DrawEditingPanel(EarTailPoses.PoseDefinition definition)
+        private void DrawEditingPanel(FTExtrasPoses.PoseDefinition definition)
         {
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
                 EditorGUILayout.LabelField(definition.Hint, PawlygonEditorUI.SubLabelStyle);
                 EditorGUILayout.Space(4f);
 
-                bool isEar = definition.Group == EarTailPoses.PoseGroup.Ears;
+                bool isEar = definition.Group == FTExtrasPoses.PoseGroup.Ears;
                 if (isEar)
                 {
                     EditorGUI.BeginChangeCheck();
@@ -623,7 +623,7 @@ namespace Pawlygon.UnityTools.Editor
 
                     if (GUILayout.Button("Reset to Rest"))
                     {
-                        session.Apply(EarTailPoses.RestPose(profile));
+                        session.Apply(FTExtrasPoses.RestPose(profile));
                         session.ResetMirrorTracking();
                     }
                 }
@@ -712,7 +712,7 @@ namespace Pawlygon.UnityTools.Editor
             float wagDelay = EditorGUILayout.Slider(new GUIContent("Tail Wag Delay", "How much each bone down the tail lags the one before it, as a fraction of a wag. Higher values make the wag ripple more."), profile.tailWagDelay, 0f, 0.5f);
             if (EditorGUI.EndChangeCheck())
             {
-                Undo.RecordObject(profile, "Change Ear & Tail Loop Settings");
+                Undo.RecordObject(profile, "Change Face Tracking Extras Loop Settings");
                 profile.earFlickPeriod = flickPeriod;
                 profile.tailWagPeriod = wagPeriod;
                 profile.tailWagAmount = wagAmount;
@@ -743,7 +743,7 @@ namespace Pawlygon.UnityTools.Editor
                     return;
                 }
 
-                EditorGUILayout.LabelField($"<b>Output:</b> {EarTailGenerator.GetOutputFolder(selectedAvatar)}", PawlygonEditorUI.RichMiniLabelStyle);
+                EditorGUILayout.LabelField($"<b>Output:</b> {FTExtrasGenerator.GetOutputFolder(selectedAvatar)}", PawlygonEditorUI.RichMiniLabelStyle);
                 EditorGUILayout.Space(4f);
 
                 showGenerationSettings = EditorGUILayout.Foldout(showGenerationSettings, "Settings", true);
@@ -753,7 +753,7 @@ namespace Pawlygon.UnityTools.Editor
                     profileObject.Update();
                     using (new EditorGUI.IndentLevelScope())
                     {
-                        SerializedProperty generation = profileObject.FindProperty(nameof(EarTailProfile.generation));
+                        SerializedProperty generation = profileObject.FindProperty(nameof(FTExtrasProfile.generation));
                         SerializedProperty end = generation.GetEndProperty();
                         bool enterChildren = true;
                         while (generation.NextVisible(enterChildren) && !SerializedProperty.EqualContents(generation, end))
@@ -775,15 +775,15 @@ namespace Pawlygon.UnityTools.Editor
                     }
                 }
 
-                bool hasPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(EarTailGenerator.GetPrefabPath(selectedAvatar)) != null;
-                bool onAvatar = hasPrefab && EarTailGenerator.IsPrefabOnAvatar(selectedAvatar);
+                bool hasPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(FTExtrasGenerator.GetPrefabPath(selectedAvatar)) != null;
+                bool onAvatar = hasPrefab && FTExtrasGenerator.IsPrefabOnAvatar(selectedAvatar);
                 using (new EditorGUI.DisabledScope(!hasPrefab || onAvatar))
                 {
                     string label = onAvatar ? "\u2713 Prefab is on the avatar" : "Add Prefab to Avatar";
                     if (GUILayout.Button(label, GUILayout.Height(24f)))
                     {
-                        EarTailGenerator.AddPrefabToAvatar(selectedAvatar);
-                        SetStatus($"Added {EarTailGenerator.PrefabName} to {selectedAvatar.name}.", MessageType.Info);
+                        FTExtrasGenerator.AddPrefabToAvatar(selectedAvatar);
+                        SetStatus($"Added {FTExtrasGenerator.PrefabName} to {selectedAvatar.name}.", MessageType.Info);
                     }
                 }
 
@@ -802,12 +802,12 @@ namespace Pawlygon.UnityTools.Editor
             StopMode();
             try
             {
-                lastResult = EarTailGenerator.Generate(profile, selectedAvatar);
+                lastResult = FTExtrasGenerator.Generate(profile, selectedAvatar);
                 SetStatus(lastResult.Message, lastResult.Warnings.Count > 0 ? MessageType.Warning : MessageType.Info);
-                Debug.Log($"{EarTailAnimatorCore.LogPrefix} {lastResult.Message}");
+                Debug.Log($"{FaceTrackingExtrasCore.LogPrefix} {lastResult.Message}");
                 foreach (string warning in lastResult.Warnings)
                 {
-                    Debug.LogWarning($"{EarTailAnimatorCore.LogPrefix} {warning}");
+                    Debug.LogWarning($"{FaceTrackingExtrasCore.LogPrefix} {warning}");
                 }
             }
             catch (System.Exception ex)
@@ -830,7 +830,7 @@ namespace Pawlygon.UnityTools.Editor
                 if (!showDebug) return;
 
                 EditorGUILayout.LabelField(
-                    $"Exports bone orientations, rest poses, PhysBones and constraints to <b>{EarTailAnimatorCore.DebugFolderName}/</b> in the project folder.",
+                    $"Exports bone orientations, rest poses, PhysBones and constraints to <b>{FaceTrackingExtrasCore.DebugFolderName}/</b> in the project folder.",
                     PawlygonEditorUI.SubLabelStyle);
                 EditorGUILayout.Space(8f);
 
@@ -856,9 +856,9 @@ namespace Pawlygon.UnityTools.Editor
         {
             try
             {
-                lastExportPath = EarTailAnimatorCore.ExportJson(analysis, selectedChains);
+                lastExportPath = FaceTrackingExtrasCore.ExportJson(analysis, selectedChains);
                 SetStatus($"Rig data exported to {lastExportPath}", MessageType.Info);
-                Debug.Log($"{EarTailAnimatorCore.LogPrefix} Rig data exported to {lastExportPath}");
+                Debug.Log($"{FaceTrackingExtrasCore.LogPrefix} Rig data exported to {lastExportPath}");
             }
             catch (System.Exception ex)
             {
@@ -871,28 +871,28 @@ namespace Pawlygon.UnityTools.Editor
         // Profile
         // =====================================================================
 
-        private static EarTailProfile FindProfile(GameObject avatar)
+        private static FTExtrasProfile FindProfile(GameObject avatar)
         {
-            foreach (string guid in AssetDatabase.FindAssets($"t:{nameof(EarTailProfile)}"))
+            foreach (string guid in AssetDatabase.FindAssets($"t:{nameof(FTExtrasProfile)}"))
             {
-                var candidate = AssetDatabase.LoadAssetAtPath<EarTailProfile>(AssetDatabase.GUIDToAssetPath(guid));
+                var candidate = AssetDatabase.LoadAssetAtPath<FTExtrasProfile>(AssetDatabase.GUIDToAssetPath(guid));
                 if (candidate != null && candidate.avatarName == avatar.name) return candidate;
             }
             return null;
         }
 
         /// <summary>
-        /// Creates the profile in the avatar's output folder (Prefabs/CustomFaceTrackingAnimation).
+        /// Creates the profile in the avatar's output folder (Prefabs/FaceTrackingExtras).
         /// </summary>
-        private EarTailProfile CreateProfile()
+        private FTExtrasProfile CreateProfile()
         {
-            string folder = EarTailGenerator.GetOutputFolder(selectedAvatar);
+            string folder = FTExtrasGenerator.GetOutputFolder(selectedAvatar);
             PawlygonEditorUtils.EnsureFolderExists(folder);
 
             string path = AssetDatabase.GenerateUniqueAssetPath(
-                PawlygonEditorUtils.CombineAssetPath(folder, $"{EarTailGenerator.SafeName(selectedAvatar.name)} EarTail.asset"));
+                PawlygonEditorUtils.CombineAssetPath(folder, $"{FTExtrasGenerator.SafeName(selectedAvatar.name)} FTExtras.asset"));
 
-            var created = CreateInstance<EarTailProfile>();
+            var created = CreateInstance<FTExtrasProfile>();
             AssetDatabase.CreateAsset(created, path);
             return created;
         }
@@ -902,10 +902,10 @@ namespace Pawlygon.UnityTools.Editor
             StopMode();
 
             Transform root = selectedAvatar.transform;
-            List<EarTailProfileBone> Capture(string slot) =>
+            List<FTExtrasProfileBone> Capture(string slot) =>
                 selectedChains.TryGetValue(slot, out var chain) && chain != null
-                    ? chain.Bones.Select(b => EarTailPoseSession.CaptureRest(b, root)).ToList()
-                    : new List<EarTailProfileBone>();
+                    ? chain.Bones.Select(b => FTExtrasPoseSession.CaptureRest(b, root)).ToList()
+                    : new List<FTExtrasProfileBone>();
 
             var newLeft = Capture(SlotEarLeft);
             var newRight = Capture(SlotEarRight);
@@ -920,18 +920,18 @@ namespace Pawlygon.UnityTools.Editor
                 bool earsChanged = !SamePaths(profile.earLeft, newLeft) || !SamePaths(profile.earRight, newRight);
                 bool tailChanged = !SamePaths(profile.tail, newTail);
                 var lost = profile.poses
-                    .Where(p => EarTailPoses.Get(p.id).Group == EarTailPoses.PoseGroup.Ears ? earsChanged : tailChanged)
+                    .Where(p => FTExtrasPoses.Get(p.id).Group == FTExtrasPoses.PoseGroup.Ears ? earsChanged : tailChanged)
                     .ToList();
 
                 if (lost.Count > 0 && !EditorUtility.DisplayDialog(
                         "Update Bone Chains",
-                        $"Changing the chains clears these poses: {string.Join(", ", lost.Select(p => EarTailPoses.Get(p.id).Label))}.",
+                        $"Changing the chains clears these poses: {string.Join(", ", lost.Select(p => FTExtrasPoses.Get(p.id).Label))}.",
                         "Update", "Cancel"))
                 {
                     return;
                 }
 
-                Undo.RecordObject(profile, "Update Ear & Tail Chains");
+                Undo.RecordObject(profile, "Update Face Tracking Extras Chains");
                 foreach (var pose in lost) profile.ClearStoredPose(pose.id);
             }
 
@@ -956,16 +956,16 @@ namespace Pawlygon.UnityTools.Editor
         /// </summary>
         private void ApplyProfileChains()
         {
-            ApplyProfileChain(SlotEarLeft, profile.earLeft, EarTailAnimatorCore.ChainKind.Ear, EarTailAnimatorCore.ChainSide.Left);
-            ApplyProfileChain(SlotEarRight, profile.earRight, EarTailAnimatorCore.ChainKind.Ear, EarTailAnimatorCore.ChainSide.Right);
-            ApplyProfileChain(SlotTail, profile.tail, EarTailAnimatorCore.ChainKind.Tail, EarTailAnimatorCore.ChainSide.Centre);
+            ApplyProfileChain(SlotEarLeft, profile.earLeft, FaceTrackingExtrasCore.ChainKind.Ear, FaceTrackingExtrasCore.ChainSide.Left);
+            ApplyProfileChain(SlotEarRight, profile.earRight, FaceTrackingExtrasCore.ChainKind.Ear, FaceTrackingExtrasCore.ChainSide.Right);
+            ApplyProfileChain(SlotTail, profile.tail, FaceTrackingExtrasCore.ChainKind.Tail, FaceTrackingExtrasCore.ChainSide.Centre);
         }
 
-        private void ApplyProfileChain(string slot, List<EarTailProfileBone> bones, EarTailAnimatorCore.ChainKind kind, EarTailAnimatorCore.ChainSide side)
+        private void ApplyProfileChain(string slot, List<FTExtrasProfileBone> bones, FaceTrackingExtrasCore.ChainKind kind, FaceTrackingExtrasCore.ChainSide side)
         {
             if (bones.Count == 0) return;
 
-            var chain = new EarTailAnimatorCore.BoneChain { Kind = kind, Side = side };
+            var chain = new FaceTrackingExtrasCore.BoneChain { Kind = kind, Side = side };
             foreach (var bone in bones)
             {
                 Transform t = selectedAvatar.transform.Find(bone.path);
@@ -974,7 +974,7 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             // Reuse the detected chain object when it is the same, so the candidate picker shows it.
-            var candidates = kind == EarTailAnimatorCore.ChainKind.Ear ? analysis.EarChains : analysis.TailChains;
+            var candidates = kind == FaceTrackingExtrasCore.ChainKind.Ear ? analysis.EarChains : analysis.TailChains;
             selectedChains[slot] = candidates.FirstOrDefault(c => c.Bones.SequenceEqual(chain.Bones)) ?? chain;
         }
 
@@ -985,7 +985,7 @@ namespace Pawlygon.UnityTools.Editor
             sessionError = null;
 
             if (profile == null || selectedAvatar == null) return;
-            session = EarTailPoseSession.Bind(profile, selectedAvatar.transform, out sessionError);
+            session = FTExtrasPoseSession.Bind(profile, selectedAvatar.transform, out sessionError);
         }
 
         private bool ChainsMatchProfile()
@@ -998,16 +998,16 @@ namespace Pawlygon.UnityTools.Editor
         private List<string> ChainPaths(string slot)
         {
             return selectedChains.TryGetValue(slot, out var chain) && chain != null
-                ? chain.Bones.Select(b => EarTailAnimatorCore.GetRelativePath(b, selectedAvatar.transform)).ToList()
+                ? chain.Bones.Select(b => FaceTrackingExtrasCore.GetRelativePath(b, selectedAvatar.transform)).ToList()
                 : new List<string>();
         }
 
-        private static bool SamePaths(List<EarTailProfileBone> bones, List<EarTailProfileBone> other)
+        private static bool SamePaths(List<FTExtrasProfileBone> bones, List<FTExtrasProfileBone> other)
         {
             return SamePaths(bones, other.Select(b => b.path).ToList());
         }
 
-        private static bool SamePaths(List<EarTailProfileBone> bones, List<string> paths)
+        private static bool SamePaths(List<FTExtrasProfileBone> bones, List<string> paths)
         {
             return bones.Select(b => b.path).SequenceEqual(paths);
         }
@@ -1016,22 +1016,22 @@ namespace Pawlygon.UnityTools.Editor
         // Modes: editing, showing, previewing
         // =====================================================================
 
-        private static bool IsEarPose(EarTailPoseId id) => EarTailPoses.Get(id).Group == EarTailPoses.PoseGroup.Ears;
+        private static bool IsEarPose(FTExtrasPoseId id) => FTExtrasPoses.Get(id).Group == FTExtrasPoses.PoseGroup.Ears;
 
-        private void StartEditing(EarTailPoses.PoseDefinition definition)
+        private void StartEditing(FTExtrasPoses.PoseDefinition definition)
         {
             StopMode();
             session.Begin();
-            session.Apply(EarTailPoses.RestPose(profile));
+            session.Apply(FTExtrasPoses.RestPose(profile));
             session.Apply(profile.GetStoredPose(definition.Id));
 
             mode = Mode.Editing;
             activePose = definition.Id;
-            liveMirror = definition.Symmetry == EarTailPoses.PoseSymmetry.MirroredEars;
+            liveMirror = definition.Symmetry == FTExtrasPoses.PoseSymmetry.MirroredEars;
             session.ResetMirrorTracking();
 
             Tools.current = Tool.Rotate;
-            Transform first = definition.Group == EarTailPoses.PoseGroup.Tail
+            Transform first = definition.Group == FTExtrasPoses.PoseGroup.Tail
                 ? session.Tail.FirstOrDefault()
                 : session.EarLeft.FirstOrDefault() ?? session.EarRight.FirstOrDefault();
             if (first != null) SelectBone(first);
@@ -1041,17 +1041,17 @@ namespace Pawlygon.UnityTools.Editor
 
         private void SaveActivePose()
         {
-            EarTailPoseData pose = session.Capture(activePose);
-            Undo.RecordObject(profile, $"Save {EarTailPoses.Get(activePose).Label} Pose");
+            FTExtrasPoseData pose = session.Capture(activePose);
+            Undo.RecordObject(profile, $"Save {FTExtrasPoses.Get(activePose).Label} Pose");
             profile.SetStoredPose(pose);
             SaveProfile();
 
-            string label = EarTailPoses.Get(activePose).Label;
+            string label = FTExtrasPoses.Get(activePose).Label;
             StopMode();
             SetStatus($"Saved {label}.", MessageType.Info);
         }
 
-        private void ClearPose(EarTailPoses.PoseDefinition definition)
+        private void ClearPose(FTExtrasPoses.PoseDefinition definition)
         {
             if (!EditorUtility.DisplayDialog("Clear Pose", $"Clear the {definition.Label} pose?", "Clear", "Cancel")) return;
 
@@ -1061,12 +1061,12 @@ namespace Pawlygon.UnityTools.Editor
             SaveProfile();
         }
 
-        private void ShowPose(EarTailPoses.PoseDefinition definition)
+        private void ShowPose(FTExtrasPoses.PoseDefinition definition)
         {
             StopMode();
             session.Begin();
-            session.Apply(EarTailPoses.RestPose(profile));
-            session.Apply(EarTailPoses.Resolve(profile, definition.Id));
+            session.Apply(FTExtrasPoses.RestPose(profile));
+            session.Apply(FTExtrasPoses.Resolve(profile, definition.Id));
 
             mode = Mode.Showing;
             activePose = definition.Id;
@@ -1083,7 +1083,7 @@ namespace Pawlygon.UnityTools.Editor
         private void ApplyPreview()
         {
             if (mode != Mode.Previewing) return;
-            session.Apply(EarTailPoses.Blend(profile, previewInputs));
+            session.Apply(FTExtrasPoses.Blend(profile, previewInputs));
         }
 
         /// <summary>

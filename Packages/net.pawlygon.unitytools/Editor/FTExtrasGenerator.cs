@@ -11,7 +11,7 @@ using UnityEngine;
 namespace Pawlygon.UnityTools.Editor
 {
     /// <summary>
-    /// Generates the custom face tracking animator from an <see cref="EarTailProfile"/>: baked ear and tail
+    /// Generates the custom face tracking animator from an <see cref="FTExtrasProfile"/>: baked ear and tail
     /// clips, an FX controller, an expressions menu/parameters for the jaw toggle, fake pupil dilation, and
     /// a prefab with a VRCFury Full Controller.
     ///
@@ -21,7 +21,7 @@ namespace Pawlygon.UnityTools.Editor
     /// animator parameters (gaze per eye, average mood, jaw) by animating them. Two states switch the jaw
     /// input on or off with the "Tail follows Jaw" toggle.</item>
     /// <item>Ears: both ears in one Direct blend tree; each ear is mood (sad, neutral, happy) → its own eye's
-    /// gaze (centre, left, right, up, down). Every combination is baked from <see cref="EarTailPoses.Blend"/>,
+    /// gaze (centre, left, right, up, down). Every combination is baked from <see cref="FTExtrasPoses.Blend"/>,
     /// so the result matches the preview.</item>
     /// <item>Tail: mood (neutral, happy wag) → jaw (left, centre, right). Kept apart from the ears because a
     /// blend tree plays all its clips on one clock, so loops of different lengths cannot share it.</item>
@@ -29,14 +29,14 @@ namespace Pawlygon.UnityTools.Editor
     /// when eye tracking is off or real pupil dilation is enabled, so it never overrides VRCFT.</item>
     /// </list>
     /// </summary>
-    internal static class EarTailGenerator
+    internal static class FTExtrasGenerator
     {
-        internal const string OutputFolderName = "CustomFaceTrackingAnimation";
-        internal const string PrefabName = "Custom Face Tracking Animation";
-        private const string ControllerName = "FX - Custom Face Tracking Animation";
+        internal const string OutputFolderName = "FaceTrackingExtras";
+        internal const string PrefabName = "!Pawlygon - Face Tracking Extras";
+        private const string ControllerName = "FX - Face Tracking Extras";
         private const string AnimationsFolderName = "Animations";
 
-        private const string ParamPrefix = "Pawlygon/CFTA/";
+        private const string ParamPrefix = "Pawlygon/FTExtras/";
         private const string ParamOne = ParamPrefix + "One";
         private const string ParamGazeLeftX = ParamPrefix + "GazeLeftX";
         private const string ParamGazeRightX = ParamPrefix + "GazeRightX";
@@ -62,7 +62,7 @@ namespace Pawlygon.UnityTools.Editor
         // =====================================================================
 
         /// <summary>
-        /// Prefabs/CustomFaceTrackingAnimation next to the avatar's prefab.
+        /// Prefabs/FaceTrackingExtras next to the avatar's prefab.
         /// </summary>
         internal static string GetOutputFolder(GameObject avatar)
         {
@@ -92,7 +92,7 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Moves the profile into the output folder if it lives elsewhere. Returns an error message or null.
         /// </summary>
-        internal static string MoveProfileToOutputFolder(EarTailProfile profile, GameObject avatar)
+        internal static string MoveProfileToOutputFolder(FTExtrasProfile profile, GameObject avatar)
         {
             string current = AssetDatabase.GetAssetPath(profile);
             string folder = GetOutputFolder(avatar);
@@ -116,10 +116,10 @@ namespace Pawlygon.UnityTools.Editor
         // Generate
         // =====================================================================
 
-        internal static Result Generate(EarTailProfile profile, GameObject avatar)
+        internal static Result Generate(FTExtrasProfile profile, GameObject avatar)
         {
             var result = new Result();
-            EarTailGenerationSettings settings = profile.generation;
+            FTExtrasGenerationSettings settings = profile.generation;
 
             string moveError = MoveProfileToOutputFolder(profile, avatar);
             if (moveError != null) result.Warnings.Add($"Could not move the profile: {moveError}");
@@ -157,15 +157,15 @@ namespace Pawlygon.UnityTools.Editor
             EditorUtility.SetDirty(controller);
 
             int removed = clips.DeleteUnused();
-            if (removed > 0) Debug.Log($"{EarTailAnimatorCore.LogPrefix} Removed {removed} clip(s) no longer used by the controller.");
+            if (removed > 0) Debug.Log($"{FaceTrackingExtrasCore.LogPrefix} Removed {removed} clip(s) no longer used by the controller.");
 
             // --- Menu, parameters, prefab ---
             ScriptableObject menu = null;
             ScriptableObject parameters = null;
             try
             {
-                parameters = SaveOrReplace(CreateExpressionParameters(settings), PawlygonEditorUtils.CombineAssetPath(folder, "Parameters - Custom Face Tracking Animation.asset"));
-                menu = SaveOrReplace(CreateExpressionsMenu(settings), PawlygonEditorUtils.CombineAssetPath(folder, "Menu - Custom Face Tracking Animation.asset"));
+                parameters = SaveOrReplace(CreateExpressionParameters(settings), PawlygonEditorUtils.CombineAssetPath(folder, "Parameters - Face Tracking Extras.asset"));
+                menu = SaveOrReplace(CreateExpressionsMenu(settings), PawlygonEditorUtils.CombineAssetPath(folder, "Menu - Face Tracking Extras.asset"));
             }
             catch (Exception ex)
             {
@@ -196,7 +196,7 @@ namespace Pawlygon.UnityTools.Editor
         // Parameters
         // =====================================================================
 
-        private static void AddParameters(ControllerBuilder builder, EarTailGenerationSettings settings)
+        private static void AddParameters(ControllerBuilder builder, FTExtrasGenerationSettings settings)
         {
             foreach (string input in new[]
                      {
@@ -231,7 +231,7 @@ namespace Pawlygon.UnityTools.Editor
         /// The toggle is a bool, which cannot weight a blend tree, so it switches between two states: one whose
         /// tree includes the jaw input and one without it.
         /// </summary>
-        private static void BuildInputsLayer(ControllerBuilder builder, ClipStore clips, EarTailGenerationSettings settings)
+        private static void BuildInputsLayer(ControllerBuilder builder, ClipStore clips, FTExtrasGenerationSettings settings)
         {
             AnimatorStateMachine sm = builder.AddLayer("Inputs", 1f, isFirstLayer: true);
 
@@ -252,7 +252,7 @@ namespace Pawlygon.UnityTools.Editor
         /// A Direct blend tree adds its children's values, so a zero clip at weight 1 keeps every output written
         /// and each gated input adds on top of it.
         /// </summary>
-        private static BlendTree InputsTree(ControllerBuilder builder, ClipStore clips, EarTailGenerationSettings settings, bool includeJaw)
+        private static BlendTree InputsTree(ControllerBuilder builder, ClipStore clips, FTExtrasGenerationSettings settings, bool includeJaw)
         {
             var outputs = new[] { ParamGazeLeftX, ParamGazeRightX, ParamGazeY, ParamMood, ParamJaw };
             AnimationClip zero = clips.Parameters("Inputs - Zero", outputs.Select(p => (p, 0f)).ToArray());
@@ -308,7 +308,7 @@ namespace Pawlygon.UnityTools.Editor
         /// Both ears in one layer: a Direct blend tree plays each ear's tree at full weight. The ears animate
         /// different bones and every ear clip has the flick length, so they share a clock safely.
         /// </summary>
-        private static bool BuildEarsLayer(ControllerBuilder builder, ClipStore clips, EarTailProfile profile)
+        private static bool BuildEarsLayer(ControllerBuilder builder, ClipStore clips, FTExtrasProfile profile)
         {
             var trees = new[] { EarTree(builder, clips, profile, isLeft: true), EarTree(builder, clips, profile, isLeft: false) }
                 .Where(t => t != null)
@@ -325,17 +325,17 @@ namespace Pawlygon.UnityTools.Editor
         /// Mood (sad, neutral, happy) → gaze for one ear, driven by that ear's eye X and the shared eye Y.
         /// Null when no pose moves this ear.
         /// </summary>
-        private static BlendTree EarTree(ControllerBuilder builder, ClipStore clips, EarTailProfile profile, bool isLeft)
+        private static BlendTree EarTree(ControllerBuilder builder, ClipStore clips, FTExtrasProfile profile, bool isLeft)
         {
-            List<EarTailProfileBone> bones = isLeft ? profile.earLeft : profile.earRight;
-            Func<EarTailPoseData, List<Quaternion>> select = p => isLeft ? p.earLeft : p.earRight;
+            List<FTExtrasProfileBone> bones = isLeft ? profile.earLeft : profile.earRight;
+            Func<FTExtrasPoseData, List<Quaternion>> select = p => isLeft ? p.earLeft : p.earRight;
             List<int> moved = MovedBones(profile, bones, select);
             if (moved.Count == 0) return null;
 
             string side = isLeft ? "Left" : "Right";
             string gazeX = isLeft ? ParamGazeLeftX : ParamGazeRightX;
             float length = Mathf.Max(0.1f, profile.earFlickPeriod);
-            bool flick = EarTailPoses.Resolve(profile, EarTailPoseId.EarHappyFlick) != null;
+            bool flick = FTExtrasPoses.Resolve(profile, FTExtrasPoseId.EarHappyFlick) != null;
 
             BlendTree moodTree = builder.NewTree($"Ear {side} - Mood", BlendTreeType.Simple1D, ParamMood);
             foreach (var mood in Moods)
@@ -345,10 +345,10 @@ namespace Pawlygon.UnityTools.Editor
 
                 foreach (var gaze in Gazes)
                 {
-                    var inputs = new EarTailPoses.BlendInputs { GazeX = gaze.Position.x, GazeY = gaze.Position.y, Mood = mood.Value, PlayLoops = animated };
+                    var inputs = new FTExtrasPoses.BlendInputs { GazeX = gaze.Position.x, GazeY = gaze.Position.y, Mood = mood.Value, PlayLoops = animated };
                     AnimationClip clip = clips.Rotations(
                         $"Ear {side} - {mood.Name} - Look {gaze.Name}", bones, moved, length, animated,
-                        t => { inputs.Time = t; return select(EarTailPoses.Blend(profile, inputs)); });
+                        t => { inputs.Time = t; return select(FTExtrasPoses.Blend(profile, inputs)); });
                     gazeTree.AddChild(clip, gaze.Position);
                 }
 
@@ -358,13 +358,13 @@ namespace Pawlygon.UnityTools.Editor
             return moodTree;
         }
 
-        private static bool BuildTailLayer(ControllerBuilder builder, ClipStore clips, EarTailProfile profile)
+        private static bool BuildTailLayer(ControllerBuilder builder, ClipStore clips, FTExtrasProfile profile)
         {
             List<int> moved = MovedBones(profile, profile.tail, p => p.tail);
             if (moved.Count == 0) return false;
 
             float length = Mathf.Max(0.1f, profile.tailWagPeriod);
-            bool wag = EarTailPoses.Resolve(profile, EarTailPoseId.TailRight) != null;
+            bool wag = FTExtrasPoses.Resolve(profile, FTExtrasPoseId.TailRight) != null;
             var jaws = new[] { ("Left", -1f), ("Centre", 0f), ("Right", 1f) };
 
             BlendTree moodTree = builder.NewTree("Tail - Mood", BlendTreeType.Simple1D, ParamMood);
@@ -375,10 +375,10 @@ namespace Pawlygon.UnityTools.Editor
 
                 foreach (var jaw in jaws)
                 {
-                    var inputs = new EarTailPoses.BlendInputs { Mood = mood.Item2, JawX = jaw.Item2, PlayLoops = animated };
+                    var inputs = new FTExtrasPoses.BlendInputs { Mood = mood.Item2, JawX = jaw.Item2, PlayLoops = animated };
                     AnimationClip clip = clips.Rotations(
                         $"Tail - {mood.Item1} - Jaw {jaw.Item1}", profile.tail, moved, length, animated,
-                        t => { inputs.Time = t; return EarTailPoses.Blend(profile, inputs).tail; });
+                        t => { inputs.Time = t; return FTExtrasPoses.Blend(profile, inputs).tail; });
                     jawTree.AddChild(clip, jaw.Item2);
                 }
 
@@ -393,10 +393,10 @@ namespace Pawlygon.UnityTools.Editor
         /// Indices of bones that at least one pose rotates away from rest. Bones no pose moves are left out of
         /// the clips, so PhysBones and other animations keep full control of them.
         /// </summary>
-        private static List<int> MovedBones(EarTailProfile profile, List<EarTailProfileBone> bones, Func<EarTailPoseData, List<Quaternion>> select)
+        private static List<int> MovedBones(FTExtrasProfile profile, List<FTExtrasProfileBone> bones, Func<FTExtrasPoseData, List<Quaternion>> select)
         {
             var moved = new List<int>();
-            var poses = EarTailPoses.All.Select(d => EarTailPoses.Resolve(profile, d.Id)).Where(p => p != null).ToList();
+            var poses = FTExtrasPoses.All.Select(d => FTExtrasPoses.Resolve(profile, d.Id)).Where(p => p != null).ToList();
 
             for (int i = 0; i < bones.Count; i++)
             {
@@ -422,7 +422,7 @@ namespace Pawlygon.UnityTools.Editor
         /// Off → Idle → Closed (blink) → Reflex → Idle. Off sets the layer weight to 0 so nothing is written
         /// while eye tracking is off or real dilation is on. Returns a warning, or null.
         /// </summary>
-        private static string BuildFakeDilationLayer(ControllerBuilder builder, ClipStore clips, GameObject avatar, EarTailGenerationSettings settings)
+        private static string BuildFakeDilationLayer(ControllerBuilder builder, ClipStore clips, GameObject avatar, FTExtrasGenerationSettings settings)
         {
             var dilationPaths = new List<string>();
             var constrictPaths = new List<string>();
@@ -431,7 +431,7 @@ namespace Pawlygon.UnityTools.Editor
                 Mesh mesh = renderer.sharedMesh;
                 if (mesh == null) continue;
 
-                string path = EarTailAnimatorCore.GetRelativePath(renderer.transform, avatar.transform);
+                string path = FaceTrackingExtrasCore.GetRelativePath(renderer.transform, avatar.transform);
                 if (mesh.GetBlendShapeIndex(DilationShape) >= 0) dilationPaths.Add(path);
                 if (mesh.GetBlendShapeIndex(ConstrictShape) >= 0) constrictPaths.Add(path);
             }
@@ -530,7 +530,7 @@ namespace Pawlygon.UnityTools.Editor
         // Expressions menu / parameters (VRChat SDK, via reflection)
         // =====================================================================
 
-        private static ScriptableObject CreateExpressionParameters(EarTailGenerationSettings settings)
+        private static ScriptableObject CreateExpressionParameters(FTExtrasGenerationSettings settings)
         {
             Type paramsType = FindType("VRCExpressionParameters", typeof(ScriptableObject))
                 ?? throw new InvalidOperationException("VRCExpressionParameters type not found");
@@ -550,7 +550,7 @@ namespace Pawlygon.UnityTools.Editor
             return asset;
         }
 
-        private static ScriptableObject CreateExpressionsMenu(EarTailGenerationSettings settings)
+        private static ScriptableObject CreateExpressionsMenu(FTExtrasGenerationSettings settings)
         {
             Type menuType = FindType("VRCExpressionsMenu", typeof(ScriptableObject))
                 ?? throw new InvalidOperationException("VRCExpressionsMenu type not found");
@@ -579,7 +579,7 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Saves a prefab holding a VRCFury Full Controller for the generated assets. Returns an error or null.
         /// </summary>
-        private static string CreatePrefab(string prefabPath, AnimatorController controller, ScriptableObject menu, ScriptableObject parameters, EarTailGenerationSettings settings)
+        private static string CreatePrefab(string prefabPath, AnimatorController controller, ScriptableObject menu, ScriptableObject parameters, FTExtrasGenerationSettings settings)
         {
             Type furyComponents = AppDomain.CurrentDomain.GetAssemblies()
                 .Select(a => a.GetType("com.vrcfury.api.FuryComponents"))
@@ -629,7 +629,7 @@ namespace Pawlygon.UnityTools.Editor
             if (prefab == null || IsPrefabOnAvatar(avatar)) return false;
 
             var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab, avatar.transform);
-            Undo.RegisterCreatedObjectUndo(instance, "Add Custom Face Tracking Animation");
+            Undo.RegisterCreatedObjectUndo(instance, "Add Face Tracking Extras");
             Selection.activeGameObject = instance;
             return true;
         }
@@ -826,7 +826,7 @@ namespace Pawlygon.UnityTools.Editor
             /// Clip that rotates the given bones. Static clips hold one pose; animated clips sample
             /// <paramref name="sample"/> across the clip and loop.
             /// </summary>
-            public AnimationClip Rotations(string name, List<EarTailProfileBone> bones, List<int> indices, float length, bool animated, Func<float, List<Quaternion>> sample)
+            public AnimationClip Rotations(string name, List<FTExtrasProfileBone> bones, List<int> indices, float length, bool animated, Func<float, List<Quaternion>> sample)
             {
                 // Every clip in a blend tree has the same length, so mixing static and looping clips never
                 // stretches the loop timing.

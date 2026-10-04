@@ -8,7 +8,7 @@ namespace Pawlygon.UnityTools.Editor
     /// Identifies an ear or tail pose. Derived poses (Look Left, Tail Left) are computed by
     /// mirroring their source pose and are never stored.
     /// </summary>
-    public enum EarTailPoseId
+    public enum FTExtrasPoseId
     {
         EarLookRight = 0,
         EarLookUp = 1,
@@ -29,7 +29,7 @@ namespace Pawlygon.UnityTools.Editor
     /// A bone in one of the profile's chains, with its rest pose.
     /// </summary>
     [Serializable]
-    public class EarTailProfileBone
+    public class FTExtrasProfileBone
     {
         /// <summary>Path relative to the avatar root, as used by AnimationClip bindings.</summary>
         public string path;
@@ -46,9 +46,9 @@ namespace Pawlygon.UnityTools.Editor
     /// <see cref="earLeft"/> and <see cref="earRight"/>; tail poses fill <see cref="tail"/>.
     /// </summary>
     [Serializable]
-    public class EarTailPoseData
+    public class FTExtrasPoseData
     {
-        public EarTailPoseId id;
+        public FTExtrasPoseId id;
         public List<Quaternion> earLeft = new List<Quaternion>();
         public List<Quaternion> earRight = new List<Quaternion>();
         public List<Quaternion> tail = new List<Quaternion>();
@@ -59,7 +59,7 @@ namespace Pawlygon.UnityTools.Editor
     /// fake pupil dilation.
     /// </summary>
     [Serializable]
-    public class EarTailGenerationSettings
+    public class FTExtrasGenerationSettings
     {
         [Header("Face Tracking Parameters")]
         public string eyeLeftX = "OSCm/Proxy/FT/v2/EyeLeftX";
@@ -86,7 +86,7 @@ namespace Pawlygon.UnityTools.Editor
         [Tooltip("Synced, saved toggle that lets the jaw swing the tail.")]
         public string tailFollowsJawParameter = "Pawlygon/TailFollowsJaw";
         [Tooltip("Submenu the toggle is placed in.")]
-        public string menuName = "Custom Face Tracking";
+        public string menuName = "Face Tracking Extras";
 
         [Header("Fake Pupil Dilation")]
         [Tooltip("Animates EyeDilation/EyeConstrict while eye tracking is active and real pupil dilation is off.")]
@@ -106,18 +106,18 @@ namespace Pawlygon.UnityTools.Editor
     }
 
     /// <summary>
-    /// Per-avatar Ear &amp; Tail Animator settings: the ear and tail bone chains, their rest pose,
+    /// Per-avatar Face Tracking Extras settings: the ear and tail bone chains, their rest pose,
     /// and the poses authored for them. Clips are generated from this asset.
     /// </summary>
-    public class EarTailProfile : ScriptableObject
+    public class FTExtrasProfile : ScriptableObject
     {
         public string avatarName;
 
-        public List<EarTailProfileBone> earLeft = new List<EarTailProfileBone>();
-        public List<EarTailProfileBone> earRight = new List<EarTailProfileBone>();
-        public List<EarTailProfileBone> tail = new List<EarTailProfileBone>();
+        public List<FTExtrasProfileBone> earLeft = new List<FTExtrasProfileBone>();
+        public List<FTExtrasProfileBone> earRight = new List<FTExtrasProfileBone>();
+        public List<FTExtrasProfileBone> tail = new List<FTExtrasProfileBone>();
 
-        public List<EarTailPoseData> poses = new List<EarTailPoseData>();
+        public List<FTExtrasPoseData> poses = new List<FTExtrasPoseData>();
 
         [Tooltip("Seconds for one Happy → Happy Flick → Happy cycle.")]
         public float earFlickPeriod = 0.67f;
@@ -131,17 +131,17 @@ namespace Pawlygon.UnityTools.Editor
         [Tooltip("How much each bone down the tail lags behind the one before it, as a fraction of a wag.")]
         public float tailWagDelay = 0.1f;
 
-        public EarTailGenerationSettings generation = new EarTailGenerationSettings();
+        public FTExtrasGenerationSettings generation = new FTExtrasGenerationSettings();
 
         /// <summary>
         /// Returns the stored pose, or null if it is not set or no longer matches the chains.
         /// </summary>
-        public EarTailPoseData GetStoredPose(EarTailPoseId id)
+        public FTExtrasPoseData GetStoredPose(FTExtrasPoseId id)
         {
-            EarTailPoseData pose = poses.Find(p => p.id == id);
+            FTExtrasPoseData pose = poses.Find(p => p.id == id);
             if (pose == null) return null;
 
-            bool isTail = EarTailPoses.Get(id).Group == EarTailPoses.PoseGroup.Tail;
+            bool isTail = FTExtrasPoses.Get(id).Group == FTExtrasPoses.PoseGroup.Tail;
             bool valid = isTail
                 ? pose.tail.Count == tail.Count && tail.Count > 0
                 : pose.earLeft.Count == earLeft.Count && pose.earRight.Count == earRight.Count && earLeft.Count + earRight.Count > 0;
@@ -149,13 +149,13 @@ namespace Pawlygon.UnityTools.Editor
             return valid ? pose : null;
         }
 
-        public void SetStoredPose(EarTailPoseData pose)
+        public void SetStoredPose(FTExtrasPoseData pose)
         {
             poses.RemoveAll(p => p.id == pose.id);
             poses.Add(pose);
         }
 
-        public void ClearStoredPose(EarTailPoseId id)
+        public void ClearStoredPose(FTExtrasPoseId id)
         {
             poses.RemoveAll(p => p.id == id);
         }

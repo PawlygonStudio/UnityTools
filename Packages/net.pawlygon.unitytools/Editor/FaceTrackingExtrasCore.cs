@@ -11,14 +11,14 @@ using UnityEngine.Animations;
 namespace Pawlygon.UnityTools.Editor
 {
     /// <summary>
-    /// Core logic for the Ear &amp; Tail Animator: finds ear and tail bone chains on an avatar,
+    /// Core logic for the Face Tracking Extras: finds ear and tail bone chains on an avatar,
     /// reports which bones are driven by PhysBones or constraints, and exports the rig data
     /// to JSON for inspection.
-    /// UI lives in <see cref="EarTailAnimator"/>.
+    /// UI lives in <see cref="FaceTrackingExtras"/>.
     /// </summary>
-    internal static class EarTailAnimatorCore
+    internal static class FaceTrackingExtrasCore
     {
-        internal const string LogPrefix = "[Pawlygon Ear & Tail Animator]";
+        internal const string LogPrefix = "[Pawlygon Face Tracking Extras]";
         internal const string DebugFolderName = "PawlygonDebug";
 
         // "ear" not preceded by a letter (avoids Year/Hear/Beard) and not followed by "ring".
@@ -435,7 +435,7 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Writes the analysis to &lt;project&gt;/PawlygonDebug/EarTailRig_&lt;avatar&gt;.json and returns the full path.
+        /// Writes the analysis to &lt;project&gt;/PawlygonDebug/FTExtrasRig_&lt;avatar&gt;.json and returns the full path.
         /// <paramref name="selectedChains"/> maps slot names ("EarLeft", "EarRight", "Tail") to the chosen chains.
         /// </summary>
         internal static string ExportJson(RigAnalysis analysis, IDictionary<string, BoneChain> selectedChains)
@@ -483,7 +483,7 @@ namespace Pawlygon.UnityTools.Editor
             Directory.CreateDirectory(folder);
 
             string safeName = string.Concat(analysis.Avatar.name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
-            string filePath = Path.Combine(folder, $"EarTailRig_{safeName}.json");
+            string filePath = Path.Combine(folder, $"FTExtrasRig_{safeName}.json");
             File.WriteAllText(filePath, JsonUtility.ToJson(dump, true));
             return filePath;
         }

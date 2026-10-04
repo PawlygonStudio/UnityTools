@@ -5,13 +5,13 @@ using UnityEngine;
 namespace Pawlygon.UnityTools.Editor
 {
     /// <summary>
-    /// Pose definitions and pose math for the Ear &amp; Tail Animator.
+    /// Pose definitions and pose math for the Face Tracking Extras.
     ///
     /// Poses are stored as absolute local rotations. Mirroring works on the rotation away from rest,
     /// expressed in avatar space, and reflects it across the avatar's YZ plane. This makes mirroring
     /// independent of how each rig orients its bone axes.
     /// </summary>
-    internal static class EarTailPoses
+    internal static class FTExtrasPoses
     {
         internal enum PoseGroup { Ears, Tail }
 
@@ -27,14 +27,14 @@ namespace Pawlygon.UnityTools.Editor
 
         internal class PoseDefinition
         {
-            public EarTailPoseId Id;
+            public FTExtrasPoseId Id;
             public string Label;
             public PoseGroup Group;
             public PoseSymmetry Symmetry;
             public string Hint;
 
             /// <summary>For derived poses: the stored pose they are mirrored from.</summary>
-            public EarTailPoseId? DerivedFrom;
+            public FTExtrasPoseId? DerivedFrom;
             public bool IsDerived => DerivedFrom.HasValue;
         }
 
@@ -42,61 +42,61 @@ namespace Pawlygon.UnityTools.Editor
         {
             new PoseDefinition
             {
-                Id = EarTailPoseId.EarLookRight, Label = "Look Right", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.IndependentEars,
+                Id = FTExtrasPoseId.EarLookRight, Label = "Look Right", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.IndependentEars,
                 Hint = "Eyes looking to the avatar's right. Pose both ears; the far (left) ear usually swings more. Look Left is mirrored from this.",
             },
             new PoseDefinition
             {
-                Id = EarTailPoseId.EarLookLeft, Label = "Look Left", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.IndependentEars,
-                DerivedFrom = EarTailPoseId.EarLookRight,
+                Id = FTExtrasPoseId.EarLookLeft, Label = "Look Left", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.IndependentEars,
+                DerivedFrom = FTExtrasPoseId.EarLookRight,
             },
             new PoseDefinition
             {
-                Id = EarTailPoseId.EarLookUp, Label = "Look Up", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.MirroredEars,
+                Id = FTExtrasPoseId.EarLookUp, Label = "Look Up", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.MirroredEars,
                 Hint = "Eyes looking up. Pose one ear; the other mirrors it.",
             },
             new PoseDefinition
             {
-                Id = EarTailPoseId.EarLookDown, Label = "Look Down", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.MirroredEars,
+                Id = FTExtrasPoseId.EarLookDown, Label = "Look Down", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.MirroredEars,
                 Hint = "Eyes looking down. Pose one ear; the other mirrors it.",
             },
             new PoseDefinition
             {
-                Id = EarTailPoseId.EarSad, Label = "Sad", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.MirroredEars,
+                Id = FTExtrasPoseId.EarSad, Label = "Sad", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.MirroredEars,
                 Hint = "Drooped ears while frowning. Pose one ear; the other mirrors it.",
             },
             new PoseDefinition
             {
-                Id = EarTailPoseId.EarHappy, Label = "Happy", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.MirroredEars,
+                Id = FTExtrasPoseId.EarHappy, Label = "Happy", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.MirroredEars,
                 Hint = "Perked ears while smiling. While smiling, the ears loop Happy → Happy Flick → Happy.",
             },
             new PoseDefinition
             {
-                Id = EarTailPoseId.EarHappyFlick, Label = "Happy Flick", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.MirroredEars,
+                Id = FTExtrasPoseId.EarHappyFlick, Label = "Happy Flick", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.MirroredEars,
                 Hint = "The other end of the happy flick loop (e.g. ears flicked further outward).",
             },
             new PoseDefinition
             {
-                Id = EarTailPoseId.TailRight, Label = "Tail Right", Group = PoseGroup.Tail, Symmetry = PoseSymmetry.Tail,
+                Id = FTExtrasPoseId.TailRight, Label = "Tail Right", Group = PoseGroup.Tail, Symmetry = PoseSymmetry.Tail,
                 Hint = "Tail swung to the avatar's right. Tail Left is mirrored from this. Used by the jaw control and as the edge of the happy wag.",
             },
             new PoseDefinition
             {
-                Id = EarTailPoseId.TailLeft, Label = "Tail Left", Group = PoseGroup.Tail, Symmetry = PoseSymmetry.Tail,
-                DerivedFrom = EarTailPoseId.TailRight,
+                Id = FTExtrasPoseId.TailLeft, Label = "Tail Left", Group = PoseGroup.Tail, Symmetry = PoseSymmetry.Tail,
+                DerivedFrom = FTExtrasPoseId.TailRight,
             },
             new PoseDefinition
             {
-                Id = EarTailPoseId.TailHappy, Label = "Tail Happy", Group = PoseGroup.Tail, Symmetry = PoseSymmetry.Tail,
+                Id = FTExtrasPoseId.TailHappy, Label = "Tail Happy", Group = PoseGroup.Tail, Symmetry = PoseSymmetry.Tail,
                 Hint = "Optional raised tail while happy. The wag swings around this pose.",
             },
         };
 
-        private static readonly Dictionary<EarTailPoseId, PoseDefinition> ById = Definitions.ToDictionary(d => d.Id);
+        private static readonly Dictionary<FTExtrasPoseId, PoseDefinition> ById = Definitions.ToDictionary(d => d.Id);
 
         internal static IEnumerable<PoseDefinition> All => Definitions;
 
-        internal static PoseDefinition Get(EarTailPoseId id) => ById[id];
+        internal static PoseDefinition Get(FTExtrasPoseId id) => ById[id];
 
         // =====================================================================
         // Mirroring
@@ -111,7 +111,7 @@ namespace Pawlygon.UnityTools.Editor
         /// Mirrors <paramref name="sourceLocal"/> (a local rotation of <paramref name="source"/>) onto
         /// <paramref name="target"/>. Source and target can be the same bone (centred tail bones).
         /// </summary>
-        internal static Quaternion MirrorLocal(Quaternion sourceLocal, EarTailProfileBone source, EarTailProfileBone target)
+        internal static Quaternion MirrorLocal(Quaternion sourceLocal, FTExtrasProfileBone source, FTExtrasProfileBone target)
         {
             // Rotation away from rest, in the source bone's local frame.
             Quaternion delta = Quaternion.Inverse(source.restLocal) * sourceLocal;
@@ -127,7 +127,7 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Mirrors a chain onto another chain bone by bone (index i → index i). Returns null when lengths differ.
         /// </summary>
-        internal static List<Quaternion> MirrorChain(List<Quaternion> sourceLocals, List<EarTailProfileBone> source, List<EarTailProfileBone> target)
+        internal static List<Quaternion> MirrorChain(List<Quaternion> sourceLocals, List<FTExtrasProfileBone> source, List<FTExtrasProfileBone> target)
         {
             if (sourceLocals == null || sourceLocals.Count != source.Count || source.Count != target.Count) return null;
 
@@ -146,15 +146,15 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Returns a pose, deriving it by mirroring when needed. Null if the pose (or its source) is not set.
         /// </summary>
-        internal static EarTailPoseData Resolve(EarTailProfile profile, EarTailPoseId id)
+        internal static FTExtrasPoseData Resolve(FTExtrasProfile profile, FTExtrasPoseId id)
         {
             PoseDefinition definition = Get(id);
             if (!definition.IsDerived) return profile.GetStoredPose(id);
 
-            EarTailPoseData source = profile.GetStoredPose(definition.DerivedFrom.Value);
+            FTExtrasPoseData source = profile.GetStoredPose(definition.DerivedFrom.Value);
             if (source == null) return null;
 
-            var derived = new EarTailPoseData { id = id };
+            var derived = new FTExtrasPoseData { id = id };
             if (definition.Group == PoseGroup.Ears)
             {
                 // Swap sides: the left ear of Look Left is the mirrored right ear of Look Right.
@@ -174,9 +174,9 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Rest local rotations for every bone, as a pose.
         /// </summary>
-        internal static EarTailPoseData RestPose(EarTailProfile profile)
+        internal static FTExtrasPoseData RestPose(FTExtrasProfile profile)
         {
-            return new EarTailPoseData
+            return new FTExtrasPoseData
             {
                 earLeft = profile.earLeft.Select(b => b.restLocal).ToList(),
                 earRight = profile.earRight.Select(b => b.restLocal).ToList(),
@@ -214,23 +214,23 @@ namespace Pawlygon.UnityTools.Editor
         /// while the ears are drooped or perked. Happiness also plays the ear flick and tail wag loops.
         /// Missing poses contribute nothing.
         /// </summary>
-        internal static EarTailPoseData Blend(EarTailProfile profile, BlendInputs inputs)
+        internal static FTExtrasPoseData Blend(FTExtrasProfile profile, BlendInputs inputs)
         {
-            EarTailPoseData mood = inputs.Mood < 0f
-                ? Resolve(profile, EarTailPoseId.EarSad)
+            FTExtrasPoseData mood = inputs.Mood < 0f
+                ? Resolve(profile, FTExtrasPoseId.EarSad)
                 : HappyEars(profile, inputs.PlayLoops, inputs.Time);
-            EarTailPoseData horizontal = Resolve(profile, inputs.GazeX < 0f ? EarTailPoseId.EarLookLeft : EarTailPoseId.EarLookRight);
-            EarTailPoseData vertical = Resolve(profile, inputs.GazeY < 0f ? EarTailPoseId.EarLookDown : EarTailPoseId.EarLookUp);
-            EarTailPoseData tailHappy = inputs.Mood > 0f ? Resolve(profile, EarTailPoseId.TailHappy) : null;
-            EarTailPoseData tailWag = inputs.Mood > 0f && inputs.PlayLoops ? TailWag(profile, inputs.Time) : null;
-            EarTailPoseData tailSide = Resolve(profile, inputs.JawX < 0f ? EarTailPoseId.TailLeft : EarTailPoseId.TailRight);
+            FTExtrasPoseData horizontal = Resolve(profile, inputs.GazeX < 0f ? FTExtrasPoseId.EarLookLeft : FTExtrasPoseId.EarLookRight);
+            FTExtrasPoseData vertical = Resolve(profile, inputs.GazeY < 0f ? FTExtrasPoseId.EarLookDown : FTExtrasPoseId.EarLookUp);
+            FTExtrasPoseData tailHappy = inputs.Mood > 0f ? Resolve(profile, FTExtrasPoseId.TailHappy) : null;
+            FTExtrasPoseData tailWag = inputs.Mood > 0f && inputs.PlayLoops ? TailWag(profile, inputs.Time) : null;
+            FTExtrasPoseData tailSide = Resolve(profile, inputs.JawX < 0f ? FTExtrasPoseId.TailLeft : FTExtrasPoseId.TailRight);
 
             float moodWeight = Mathf.Abs(inputs.Mood);
             float xWeight = Mathf.Abs(inputs.GazeX);
             float yWeight = Mathf.Abs(inputs.GazeY);
             float jawWeight = Mathf.Abs(inputs.JawX);
 
-            return new EarTailPoseData
+            return new FTExtrasPoseData
             {
                 earLeft = BlendChain(profile.earLeft, p => p.earLeft,
                     (mood, moodWeight), (horizontal, xWeight), (vertical, yWeight)),
@@ -250,20 +250,20 @@ namespace Pawlygon.UnityTools.Editor
         /// both ends (like a clip with flat tangents). Without Happy Flick, or when not playing, this is
         /// the Happy pose. Null if Happy is not set.
         /// </summary>
-        internal static EarTailPoseData HappyEars(EarTailProfile profile, bool playLoops, float time)
+        internal static FTExtrasPoseData HappyEars(FTExtrasProfile profile, bool playLoops, float time)
         {
-            EarTailPoseData happy = Resolve(profile, EarTailPoseId.EarHappy);
+            FTExtrasPoseData happy = Resolve(profile, FTExtrasPoseId.EarHappy);
             if (happy == null) return null;
 
-            EarTailPoseData flick = Resolve(profile, EarTailPoseId.EarHappyFlick);
+            FTExtrasPoseData flick = Resolve(profile, FTExtrasPoseId.EarHappyFlick);
             if (!playLoops || flick == null || profile.earFlickPeriod <= 0f) return happy;
 
             float phase = Mathf.Repeat(time / profile.earFlickPeriod, 1f);
             float t = (1f - Mathf.Cos(phase * 2f * Mathf.PI)) * 0.5f;
 
-            return new EarTailPoseData
+            return new FTExtrasPoseData
             {
-                id = EarTailPoseId.EarHappy,
+                id = FTExtrasPoseId.EarHappy,
                 earLeft = SlerpList(happy.earLeft, flick.earLeft, t),
                 earRight = SlerpList(happy.earRight, flick.earRight, t),
             };
@@ -274,10 +274,10 @@ namespace Pawlygon.UnityTools.Editor
         /// wave, with bones further down the tail lagging behind so the wag ripples along it.
         /// Null if Tail Right is not set.
         /// </summary>
-        internal static EarTailPoseData TailWag(EarTailProfile profile, float time)
+        internal static FTExtrasPoseData TailWag(FTExtrasProfile profile, float time)
         {
-            EarTailPoseData right = Resolve(profile, EarTailPoseId.TailRight);
-            EarTailPoseData left = Resolve(profile, EarTailPoseId.TailLeft);
+            FTExtrasPoseData right = Resolve(profile, FTExtrasPoseId.TailRight);
+            FTExtrasPoseData left = Resolve(profile, FTExtrasPoseId.TailLeft);
             if (right == null || left == null || profile.tailWagPeriod <= 0f) return null;
 
             var tail = new List<Quaternion>(profile.tail.Count);
@@ -289,7 +289,7 @@ namespace Pawlygon.UnityTools.Editor
                 tail.Add(Quaternion.Slerp(profile.tail[i].restLocal, edge, Mathf.Abs(swing)));
             }
 
-            return new EarTailPoseData { id = EarTailPoseId.TailRight, tail = tail };
+            return new FTExtrasPoseData { id = FTExtrasPoseId.TailRight, tail = tail };
         }
 
         private static List<Quaternion> SlerpList(List<Quaternion> from, List<Quaternion> to, float t)
@@ -298,9 +298,9 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         private static List<Quaternion> BlendChain(
-            List<EarTailProfileBone> bones,
-            System.Func<EarTailPoseData, List<Quaternion>> select,
-            params (EarTailPoseData Pose, float Weight)[] layers)
+            List<FTExtrasProfileBone> bones,
+            System.Func<FTExtrasPoseData, List<Quaternion>> select,
+            params (FTExtrasPoseData Pose, float Weight)[] layers)
         {
             var result = new List<Quaternion>(bones.Count);
             for (int i = 0; i < bones.Count; i++)

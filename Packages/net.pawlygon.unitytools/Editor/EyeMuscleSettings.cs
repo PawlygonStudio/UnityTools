@@ -1,6 +1,8 @@
 using System.Collections.Generic;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Pawlygon.UnityTools.Editor
 {
@@ -76,11 +78,17 @@ namespace Pawlygon.UnityTools.Editor
         {
             AutoSelectFirstSceneAvatar();
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+            EditorSceneManager.sceneSaving += OnSceneSaving;
+            EditorSceneManager.sceneClosing += OnSceneClosing;
+            AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
         }
 
         private void OnDisable()
         {
             EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
+            EditorSceneManager.sceneSaving -= OnSceneSaving;
+            EditorSceneManager.sceneClosing -= OnSceneClosing;
+            AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeAssemblyReload;
             StopPreview();
         }
 
@@ -96,6 +104,33 @@ namespace Pawlygon.UnityTools.Editor
             {
                 StopPreview();
             }
+        }
+
+        /// <summary>
+        /// Restores the previewed eye pose before the scene is written to disk, so a save
+        /// during a preview never persists the preview rotation or look blendshapes.
+        /// </summary>
+        private void OnSceneSaving(Scene scene, string path)
+        {
+            StopPreview();
+        }
+
+        /// <summary>
+        /// Restores the previewed eye pose before the scene closes, while the cached
+        /// bone and renderer references are still valid.
+        /// </summary>
+        private void OnSceneClosing(Scene scene, bool removingScene)
+        {
+            StopPreview();
+        }
+
+        /// <summary>
+        /// Restores the previewed eye pose before a domain reload wipes the cached
+        /// original rotations and blendshape weights (they are not serialized).
+        /// </summary>
+        private void OnBeforeAssemblyReload()
+        {
+            StopPreview();
         }
 
         // =====================================================================
@@ -160,6 +195,10 @@ namespace Pawlygon.UnityTools.Editor
                     hasUnsavedChanges = false;
                     splitLeftRight = false;
                     StopPreview();
+
+                    // The sections below disappear for the new avatar; restart the event
+                    // so IMGUI does not draw against the previous layout.
+                    GUIUtility.ExitGUI();
                 }
 
                 EditorGUILayout.Space(2f);
@@ -172,6 +211,10 @@ namespace Pawlygon.UnityTools.Editor
                     if (PawlygonEditorUI.DrawPrimaryButton("Load Eye Muscle Settings", 32f))
                     {
                         LoadSettings();
+
+                        // Loading adds/removes whole sections; restart the event so IMGUI
+                        // re-lays out instead of reporting control position errors.
+                        GUIUtility.ExitGUI();
                     }
                 }
             }
@@ -337,6 +380,7 @@ namespace Pawlygon.UnityTools.Editor
                         if (GUILayout.Button("Reset", GUILayout.Height(28f), GUILayout.Width(70f)))
                         {
                             StopPreview();
+                            GUIUtility.ExitGUI();
                         }
                     }
 
@@ -375,6 +419,9 @@ namespace Pawlygon.UnityTools.Editor
                 {
                     StartPreview(direction);
                 }
+
+                // Toggling the preview shows/hides the info box below the buttons.
+                GUIUtility.ExitGUI();
             }
         }
 
@@ -389,6 +436,9 @@ namespace Pawlygon.UnityTools.Editor
                 if (PawlygonEditorUI.DrawPrimaryButton("Apply Eye Muscle Settings"))
                 {
                     ApplySettings();
+
+                    // Applying reimports the model and hides the unsaved-changes box below.
+                    GUIUtility.ExitGUI();
                 }
             }
 
@@ -426,7 +476,9 @@ namespace Pawlygon.UnityTools.Editor
                 // Auto-enable split mode if loaded values differ between eyes
                 splitLeftRight = !leftEye.Equals(rightEye);
 
-                CacheEyeBones();
+                // Eye bones, their original rotations and the look blendshapes' original
+                // weights are captured when a preview starts (see StartPreview), so a restore
+                // always returns to the pose the user had right before previewing.
             }
         }
 
@@ -481,7 +533,7 @@ namespace Pawlygon.UnityTools.Editor
             if (selectedAvatar == null) return;
 
             previewAnimator = selectedAvatar.GetComponent<Animator>();
-            if (previewAnimator == null || !previewAnimator.avatar.isHuman) return;
+            if (previewAnimator == null || previewAnimator.avatar == null || !previewAnimator.avatar.isHuman) return;
 
             leftEyeBone = previewAnimator.GetBoneTransform(HumanBodyBones.LeftEye);
             rightEyeBone = previewAnimator.GetBoneTransform(HumanBodyBones.RightEye);
@@ -603,21 +655,22 @@ namespace Pawlygon.UnityTools.Editor
             return false;
         }
 
+        /// <summary>
+        /// Starts (or switches) the preview to the given direction. When no preview is
+        /// running yet, the eye bones' current rotations and the look blendshapes' current
+        /// weights are captured first, so <see cref="StopPreview"/> restores exactly the
+        /// pose the user had before previewing (including edits made since loading).
+        /// </summary>
         private void StartPreview(PreviewDirection direction)
         {
             if (!CanPreview()) return;
 
-            // Cache original rotations if not yet cached
-            if (leftEyeBone == null && rightEyeBone == null)
-            {
-                CacheEyeBones();
-            }
-
-            // Store original rotations before first preview
             if (!isPreviewActive)
             {
-                if (leftEyeBone != null) leftEyeOriginalRotation = leftEyeBone.localRotation;
-                if (rightEyeBone != null) rightEyeOriginalRotation = rightEyeBone.localRotation;
+                // Re-resolve the bones and re-capture originals (rotations + blendshape weights).
+                leftEyeBone = null;
+                rightEyeBone = null;
+                CacheEyeBones();
             }
 
             isPreviewActive = true;
@@ -653,15 +706,23 @@ namespace Pawlygon.UnityTools.Editor
             SceneView.RepaintAll();
         }
 
+        /// <summary>
+        /// Ends the preview and restores the eye bone rotations and look blendshape weights
+        /// captured when it started. Does nothing when no preview is running, so closing the
+        /// window, loading, applying or switching avatars never overwrites changes the user
+        /// made to the eyes or blendshapes outside a preview.
+        /// </summary>
         private void StopPreview()
         {
-            bool wasActive = isPreviewActive;
+            if (!isPreviewActive)
+            {
+                activePreview = PreviewDirection.None;
+                return;
+            }
+
             isPreviewActive = false;
             activePreview = PreviewDirection.None;
 
-            // Always attempt to restore original rotations if we have cached references,
-            // even if isPreviewActive was already false (e.g. state was lost during
-            // domain reload or play mode transition).
             if (leftEyeBone != null)
             {
                 leftEyeBone.localRotation = leftEyeOriginalRotation;
@@ -674,10 +735,8 @@ namespace Pawlygon.UnityTools.Editor
 
             RestoreAllBlendshapes();
 
-            if (wasActive)
-            {
-                SceneView.RepaintAll();
-            }
+            SceneView.RepaintAll();
+            Repaint();
         }
 
         // =====================================================================

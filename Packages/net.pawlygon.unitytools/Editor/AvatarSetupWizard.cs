@@ -295,6 +295,8 @@ namespace Pawlygon.UnityTools.Editor
                         if (GUILayout.Button("Add Avatar", GUILayout.Height(28f)))
                         {
                             avatarEntries.Add(new AvatarEntry());
+                            // The new entry adds controls mid-event; restart the layout pass.
+                            GUIUtility.ExitGUI();
                         }
 
                         GUILayout.FlexibleSpace();
@@ -389,6 +391,10 @@ namespace Pawlygon.UnityTools.Editor
                             {
                                 statusMessage = "Not every modified FBX is ready yet. Finish importing all copied FBXs, then continue.";
                             }
+
+                            // Diff generation refreshes the AssetDatabase, may show a dialog and
+                            // changes the step, all of which invalidate the current layout pass.
+                            GUIUtility.ExitGUI();
                         }
 
                         if (GUILayout.Button("Skip Waiting", GUILayout.Height(34f)))
@@ -401,6 +407,8 @@ namespace Pawlygon.UnityTools.Editor
                             {
                                 statusMessage = "The copied FBX and prefab assets are not loadable yet. Wait for Unity to finish importing before skipping.";
                             }
+
+                            GUIUtility.ExitGUI();
                         }
                     }
                 });
@@ -453,6 +461,8 @@ namespace Pawlygon.UnityTools.Editor
                         if (GUILayout.Button("Skip This Avatar", GUILayout.Height(34f)))
                         {
                             SkipEntryReview(selectedEntry);
+                            // Shows a modal dialog and may change the step.
+                            GUIUtility.ExitGUI();
                         }
 
                         using (new EditorGUI.DisabledScope(!HasAnySelectedReplacement(selectedEntry)))
@@ -460,6 +470,8 @@ namespace Pawlygon.UnityTools.Editor
                             if (PawlygonEditorUI.DrawPrimaryButton("Apply Selected Replacements", 34f))
                             {
                                 ApplySelectedReplacementsToPrefab(selectedEntry);
+                                // Saves the prefab, may show a dialog and may change the step.
+                                GUIUtility.ExitGUI();
                             }
                         }
                     }
@@ -497,6 +509,7 @@ namespace Pawlygon.UnityTools.Editor
                     if (PawlygonEditorUI.DrawPrimaryButton("Start Over", 34f))
                     {
                         ResetWizard();
+                        GUIUtility.ExitGUI();
                     }
                 });
         }
@@ -519,6 +532,7 @@ namespace Pawlygon.UnityTools.Editor
                     {
                         currentStep = WizardStep.FXCheck;
                         statusMessage = string.Empty;
+                        GUIUtility.ExitGUI();
                     }
                 });
         }
@@ -538,6 +552,8 @@ namespace Pawlygon.UnityTools.Editor
                     if (PawlygonEditorUI.DrawPrimaryButton("Add VRCFT To Prefabs", 32f))
                     {
                         AddVrcftSetupToPrefabs(vrcftPrefabPath);
+                        // Saves prefabs and refreshes the AssetDatabase.
+                        GUIUtility.ExitGUI();
                     }
                 }
                 else
@@ -552,6 +568,7 @@ namespace Pawlygon.UnityTools.Editor
                             vrcftSetupStatusMessage = refreshedAvailability
                                 ? "Pawlygon VRCFT package detected. You can now add the setup to the generated prefabs."
                                 : "Pawlygon VRCFT package is still not available in this project.";
+                            GUIUtility.ExitGUI();
                         }
                     }
                 }
@@ -587,6 +604,8 @@ namespace Pawlygon.UnityTools.Editor
                 if (PawlygonEditorUI.DrawPrimaryButton(isPatcherHubInstalled ? "Re-import Latest PatcherHub" : "Import Latest PatcherHub", 32f))
                 {
                     ImportLatestPatcherHub();
+                    // Shows progress bars and dialogs, then imports a package.
+                    GUIUtility.ExitGUI();
                 }
 
                 if (patcherHubImportedThisSession || !string.IsNullOrEmpty(patcherHubImportStatusMessage))
@@ -1665,6 +1684,13 @@ namespace Pawlygon.UnityTools.Editor
         {
             pendingImportTransition = false;
 
+            // A retry queued before the user continued manually (or started over) must not
+            // regenerate diffs and reset the mesh selections of a later step.
+            if (currentStep != WizardStep.WaitForImport)
+            {
+                return;
+            }
+
             if (!avatarEntries.All(entry => entry.hasImportedModifiedFbx))
             {
                 statusMessage = $"Waiting for {avatarEntries.Count(entry => !entry.hasImportedModifiedFbx)} more modified FBX import(s).";
@@ -2059,19 +2085,8 @@ namespace Pawlygon.UnityTools.Editor
 
             try
             {
-                Dictionary<string, SkinnedMeshRenderer> prefabRendererLookup = prefabRoot
-                    .GetComponentsInChildren<SkinnedMeshRenderer>(true)
-                    .ToDictionary(
-                        renderer => GetRelativeTransformPath(renderer.transform),
-                        renderer => renderer,
-                        StringComparer.OrdinalIgnoreCase);
-
-                Dictionary<string, Animator> prefabAnimatorLookup = prefabRoot
-                    .GetComponentsInChildren<Animator>(true)
-                    .ToDictionary(
-                        animator => GetRelativeTransformPath(animator.transform),
-                        animator => animator,
-                        StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, SkinnedMeshRenderer> prefabRendererLookup = BuildFirstComponentByPathLookup<SkinnedMeshRenderer>(prefabRoot);
+                Dictionary<string, Animator> prefabAnimatorLookup = BuildFirstComponentByPathLookup<Animator>(prefabRoot);
 
                 int replacedCount = 0;
                 bool replacedAnimator = false;
@@ -2089,7 +2104,7 @@ namespace Pawlygon.UnityTools.Editor
                         continue;
                     }
 
-                    if (!prefabRendererLookup.TryGetValue(mapping.prefabRelativePath, out SkinnedMeshRenderer prefabRenderer))
+                    if (!prefabRendererLookup.TryGetValue(mapping.prefabRelativePath ?? string.Empty, out SkinnedMeshRenderer prefabRenderer))
                     {
                         Debug.LogWarning($"[AvatarSetupWizard] No SkinnedMeshRenderer at relative path '{mapping.prefabRelativePath}' in prefab.");
                         continue;
@@ -2101,7 +2116,7 @@ namespace Pawlygon.UnityTools.Editor
 
                 if (shouldReplaceAnimator)
                 {
-                    if (!prefabAnimatorLookup.TryGetValue(entry.animatorReplacement.prefabAnimatorRelativePath, out Animator prefabAnimator))
+                    if (!prefabAnimatorLookup.TryGetValue(entry.animatorReplacement.prefabAnimatorRelativePath ?? string.Empty, out Animator prefabAnimator))
                     {
                         Debug.LogWarning($"[AvatarSetupWizard] No Animator at relative path '{entry.animatorReplacement.prefabAnimatorRelativePath}' in prefab.");
                     }
@@ -2120,6 +2135,31 @@ namespace Pawlygon.UnityTools.Editor
             {
                 PrefabUtility.UnloadPrefabContents(prefabRoot);
             }
+        }
+
+        /// <summary>
+        /// Maps each component's sibling-name path (case-insensitive) to the first component found
+        /// at that path in hierarchy order. Objects can share a name, so several components may
+        /// resolve to the same path; the first one is kept, matching how mesh selections are paired
+        /// (<see cref="FindBestRendererMatch"/> also takes the first renderer per path).
+        /// </summary>
+        private static Dictionary<string, T> BuildFirstComponentByPathLookup<T>(GameObject root) where T : Component
+        {
+            var lookup = new Dictionary<string, T>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (T component in root.GetComponentsInChildren<T>(true))
+            {
+                string relativePath = GetRelativeTransformPath(component.transform);
+                if (lookup.ContainsKey(relativePath))
+                {
+                    Debug.LogWarning($"[AvatarSetupWizard] Several objects with a {typeof(T).Name} share the path '{relativePath}' in prefab '{root.name}'. Only the first one can be updated.");
+                    continue;
+                }
+
+                lookup.Add(relativePath, component);
+            }
+
+            return lookup;
         }
 
         private void SkipEntryReview(AvatarEntry entry)
@@ -2224,6 +2264,8 @@ namespace Pawlygon.UnityTools.Editor
                         if (GUILayout.Button("Choose FBX...", GUILayout.Width(100f), GUILayout.Height(24f)))
                         {
                             PromptForModifiedFbx(entry);
+                            // Opens a modal file panel and imports the chosen FBX.
+                            GUIUtility.ExitGUI();
                         }
                     }
 
@@ -3156,6 +3198,7 @@ namespace Pawlygon.UnityTools.Editor
                         {
                             currentStep = WizardStep.Complete;
                             statusMessage = "Avatar setup completed.";
+                            GUIUtility.ExitGUI();
                         }
                         return;
                     }
@@ -3225,6 +3268,7 @@ namespace Pawlygon.UnityTools.Editor
                             foreach (AvatarEntry e in avatarEntries) e.fxCheckComplete = true;
                             currentStep = WizardStep.Complete;
                             statusMessage = "Avatar setup completed.";
+                            GUIUtility.ExitGUI();
                         }
                     }
 
@@ -3234,6 +3278,7 @@ namespace Pawlygon.UnityTools.Editor
                         {
                             currentStep = WizardStep.Complete;
                             statusMessage = "Avatar setup completed.";
+                            GUIUtility.ExitGUI();
                         }
                     }
                 });
@@ -3386,6 +3431,8 @@ namespace Pawlygon.UnityTools.Editor
                 if (PawlygonEditorUI.DrawPrimaryButton("Apply Fixes"))
                 {
                     ApplyFXFixesForEntry(entry);
+                    // Copies the FX controller and saves prefabs.
+                    GUIUtility.ExitGUI();
                 }
             }
 

@@ -62,6 +62,11 @@ namespace Pawlygon.UnityTools.Editor
         // --- Pupil preview ---
         private FTExtrasPupilPreview pupilPreview;
         private int pupilMeshCount;
+        private List<SkinnedMeshRenderer> pupilDilationMeshes = new List<SkinnedMeshRenderer>();
+        private List<SkinnedMeshRenderer> pupilConstrictMeshes = new List<SkinnedMeshRenderer>();
+
+        /// <summary>Cached result of the prefab-on-avatar scan, refreshed when the hierarchy changes.</summary>
+        private bool? prefabOnAvatarCache;
         private bool pupilIdlePlaying;
         private double pupilIdleStartTime;
         private double pupilReflexStartTime = -1;
@@ -89,6 +94,7 @@ namespace Pawlygon.UnityTools.Editor
         private void OnEnable()
         {
             EditorApplication.update += OnEditorUpdate;
+            Undo.undoRedoPerformed += OnUndoRedo;
 
             if (selectedAvatar == null)
             {
@@ -100,8 +106,60 @@ namespace Pawlygon.UnityTools.Editor
         private void OnDisable()
         {
             EditorApplication.update -= OnEditorUpdate;
+            Undo.undoRedoPerformed -= OnUndoRedo;
             StopMode();
             StopPupilPreview();
+        }
+
+        /// <summary>
+        /// The avatar was deleted or its scene closed: reload from whatever avatar is in the scene now, instead
+        /// of keeping a session bound to destroyed bones. Also refreshes the cached hierarchy scans.
+        /// </summary>
+        private void OnHierarchyChange()
+        {
+            if (selectedAvatar == null && (analysis != null || session != null || profile != null))
+            {
+                selectedAvatar = EyeMuscleSettingsCore.FindFirstAvatarInScene();
+                LoadAvatar(selectedAvatar);
+            }
+            else
+            {
+                // A bone in the chains was deleted or renamed: rebind, which reports the missing bones.
+                if (session != null && !session.MatchesProfile())
+                {
+                    StopMode();
+                    BindSession();
+                }
+                RefreshHierarchyCaches();
+            }
+            Repaint();
+        }
+
+        private void RefreshHierarchyCaches()
+        {
+            prefabOnAvatarCache = null;
+            var (dilation, constrict) = FTExtrasPupils.FindMeshes(selectedAvatar);
+            pupilDilationMeshes = dilation;
+            pupilConstrictMeshes = constrict;
+            pupilMeshCount = dilation.Count;
+        }
+
+        /// <summary>
+        /// Undo/redo can roll the profile back to different bone chains. Rebind so the session never indexes
+        /// bones the profile no longer has. (Undoing a gizmo rotation while editing leaves the chains alone.)
+        /// </summary>
+        private void OnUndoRedo()
+        {
+            if (profile != null && session != null && !session.MatchesProfile())
+            {
+                StopMode();
+                StopPupilPreview();
+                if (analysis != null && analysis.Success) ApplyProfileChains();
+                BindSession();
+            }
+
+            profileObject?.Update();
+            Repaint();
         }
 
         /// <summary>Loops redraw at most this often.</summary>
@@ -157,7 +215,7 @@ namespace Pawlygon.UnityTools.Editor
             DrawAvatarBar();
             EditorGUILayout.Space(6f);
 
-            if (!IsTabAvailable(currentTab)) currentTab = Tab.Setup;
+            if (!IsTabAvailable(currentTab)) SwitchTab(Tab.Setup);
             DrawTabBar();
             EditorGUILayout.Space(6f);
 
@@ -210,7 +268,7 @@ namespace Pawlygon.UnityTools.Editor
             var tabs = new[]
             {
                 (Tab.Setup, "Setup", IsSetupDone()),
-                (Tab.EarsAndTail, EarsAndTailTabLabel(), session != null && CountSetPoses() == CountStoredPoseSlots()),
+                (Tab.EarsAndTail, EarsAndTailTabLabel(), session != null && AreRequiredPosesSet()),
                 (Tab.Pupils, profile != null && !profile.generation.fakeDilation ? "Pupils (off)" : "Pupils", IsPupilsReady()),
                 (Tab.Generate, "Generate", IsGenerated()),
             };
@@ -265,6 +323,13 @@ namespace Pawlygon.UnityTools.Editor
             return FTExtrasPoses.All.Count(d => !d.IsDerived && HasBonesFor(d.Group) && profile.GetStoredPose(d.Id) != null);
         }
 
+        private bool AreRequiredPosesSet()
+        {
+            return profile != null && FTExtrasPoses.All
+                .Where(d => !d.IsDerived && !d.Optional && HasBonesFor(d.Group))
+                .All(d => profile.GetStoredPose(d.Id) != null);
+        }
+
         private bool HasBonesFor(FTExtrasPoses.PoseGroup group)
         {
             return group == FTExtrasPoses.PoseGroup.Tail
@@ -284,7 +349,14 @@ namespace Pawlygon.UnityTools.Editor
 
         private bool IsGenerated()
         {
-            return selectedAvatar != null && session != null && FTExtrasGenerator.IsPrefabOnAvatar(selectedAvatar);
+            return selectedAvatar != null && session != null && IsPrefabOnAvatar();
+        }
+
+        private bool IsPrefabOnAvatar()
+        {
+            if (selectedAvatar == null) return false;
+            if (prefabOnAvatarCache == null) prefabOnAvatarCache = FTExtrasGenerator.IsPrefabOnAvatar(selectedAvatar);
+            return prefabOnAvatarCache.Value;
         }
 
         private void SetStatus(string message, MessageType type)
@@ -309,15 +381,18 @@ namespace Pawlygon.UnityTools.Editor
                     {
                         selectedAvatar = newAvatar;
                         LoadAvatar(newAvatar);
+                        GUIUtility.ExitGUI();
                     }
 
                     EditorGUI.BeginChangeCheck();
                     FTExtrasProfile newProfile = (FTExtrasProfile)EditorGUILayout.ObjectField("Profile", profile, typeof(FTExtrasProfile), false);
                     if (EditorGUI.EndChangeCheck())
                     {
+                        StopPupilPreview();
                         profile = newProfile;
                         if (profile != null && analysis != null && analysis.Success) ApplyProfileChains();
                         BindSession();
+                        GUIUtility.ExitGUI();
                     }
                 }
 
@@ -336,7 +411,8 @@ namespace Pawlygon.UnityTools.Editor
             StopMode();
             StopPupilPreview();
             pupilPreview = null;
-            pupilMeshCount = FTExtrasPupils.FindMeshes(avatar).Dilation.Count;
+            selectedAvatar = avatar;
+            RefreshHierarchyCaches();
             analysis = null;
             selectedChains.Clear();
             lastExportPath = null;
@@ -546,6 +622,10 @@ namespace Pawlygon.UnityTools.Editor
             liveMirror = definition.Symmetry == FTExtrasPoses.PoseSymmetry.MirroredEars;
             session.ResetMirrorTracking();
 
+            // The gizmo edits go into the undo history; the session clears them when it restores the bones,
+            // however that happens (Save, Cancel, play mode, script reload), so Ctrl+Z can't re-pose the bones.
+            session.ClearUndoOnRestore = true;
+
             Tools.current = Tool.Rotate;
             Transform first = definition.Group == FTExtrasPoses.PoseGroup.Tail
                 ? session.Tail.FirstOrDefault()
@@ -612,17 +692,7 @@ namespace Pawlygon.UnityTools.Editor
 
             if (session != null && session.IsActive)
             {
-                bool wasEditing = mode == Mode.Editing;
                 session.Restore();
-
-                // Drop the gizmo rotations from the undo history so Ctrl+Z cannot re-pose the bones.
-                if (wasEditing)
-                {
-                    foreach (Transform bone in session.EarLeft.Concat(session.EarRight).Concat(session.Tail))
-                    {
-                        Undo.ClearUndo(bone);
-                    }
-                }
             }
 
             mode = Mode.Idle;

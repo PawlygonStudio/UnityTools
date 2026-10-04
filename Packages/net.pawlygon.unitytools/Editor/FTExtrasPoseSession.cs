@@ -23,6 +23,7 @@ namespace Pawlygon.UnityTools.Editor
         public Transform[] Tail { get; private set; }
 
         private Dictionary<Transform, Quaternion> snapshot;
+        private Dictionary<Transform, Vector3> eulerHints;
         private Dictionary<Transform, Quaternion> suspended;
         private Quaternion[] lastLeft;
         private Quaternion[] lastRight;
@@ -31,6 +32,12 @@ namespace Pawlygon.UnityTools.Editor
         internal static FTExtrasPoseSession Active { get; private set; }
 
         public bool IsActive => snapshot != null;
+
+        /// <summary>
+        /// When set, <see cref="Restore"/> also clears the bones' undo history, so gizmo edits made while
+        /// posing can't be re-applied with Ctrl+Z after the bones are back at rest.
+        /// </summary>
+        public bool ClearUndoOnRestore { get; set; }
 
         private FTExtrasPoseSession(FTExtrasProfile profile, Transform avatarRoot)
         {
@@ -91,6 +98,24 @@ namespace Pawlygon.UnityTools.Editor
 
         private IEnumerable<Transform> AllBones => EarLeft.Concat(EarRight).Concat(Tail);
 
+        /// <summary>
+        /// True while the profile's chains are still the bones this session was bound to (undo can change them).
+        /// </summary>
+        public bool MatchesProfile()
+        {
+            return Matches(EarLeft, Profile.earLeft) && Matches(EarRight, Profile.earRight) && Matches(Tail, Profile.tail);
+        }
+
+        private bool Matches(Transform[] bones, List<FTExtrasProfileBone> profileBones)
+        {
+            if (bones.Length != profileBones.Count) return false;
+            for (int i = 0; i < bones.Length; i++)
+            {
+                if (bones[i] == null || FaceTrackingExtrasCore.GetRelativePath(bones[i], AvatarRoot) != profileBones[i].path) return false;
+            }
+            return true;
+        }
+
         // =====================================================================
         // Begin / apply / restore
         // =====================================================================
@@ -103,7 +128,8 @@ namespace Pawlygon.UnityTools.Editor
             if (IsActive) return;
             if (Active != null && Active != this) Active.Restore();
 
-            snapshot = AllBones.Distinct().ToDictionary(t => t, t => t.localRotation);
+            snapshot = AllBones.Where(t => t != null).Distinct().ToDictionary(t => t, t => t.localRotation);
+            eulerHints = snapshot.Keys.ToDictionary(t => t, ReadEulerHint);
             Active = this;
         }
 
@@ -138,7 +164,17 @@ namespace Pawlygon.UnityTools.Editor
 
             WriteSnapshot();
 
+            if (ClearUndoOnRestore)
+            {
+                foreach (Transform bone in snapshot.Keys)
+                {
+                    if (bone != null) Undo.ClearUndo(bone);
+                }
+                ClearUndoOnRestore = false;
+            }
+
             snapshot = null;
+            eulerHints = null;
             suspended = null;
             if (Active == this) Active = null;
             SceneView.RepaintAll();
@@ -234,11 +270,33 @@ namespace Pawlygon.UnityTools.Editor
                 if (pair.Key == null) continue;
 
                 pair.Key.localRotation = pair.Value;
+
+                // The rotate gizmo also changes the editor-only Euler hint; put it back so no stray
+                // rotation override is left on the prefab instance.
+                if (eulerHints != null && eulerHints.TryGetValue(pair.Key, out Vector3 hint)) WriteEulerHint(pair.Key, hint);
+
                 if (PrefabUtility.IsPartOfPrefabInstance(pair.Key))
                 {
                     PrefabUtility.RecordPrefabInstancePropertyModifications(pair.Key);
                 }
             }
+        }
+
+        private const string EulerHintProperty = "m_LocalEulerAnglesHint";
+
+        private static Vector3 ReadEulerHint(Transform bone)
+        {
+            SerializedProperty property = new SerializedObject(bone).FindProperty(EulerHintProperty);
+            return property != null ? property.vector3Value : bone.localEulerAngles;
+        }
+
+        private static void WriteEulerHint(Transform bone, Vector3 hint)
+        {
+            var serialized = new SerializedObject(bone);
+            SerializedProperty property = serialized.FindProperty(EulerHintProperty);
+            if (property == null) return;
+            property.vector3Value = hint;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
         }
 
         internal void ResumeAfterSave()

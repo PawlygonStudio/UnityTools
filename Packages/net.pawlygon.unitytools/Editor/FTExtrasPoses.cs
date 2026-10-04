@@ -36,6 +36,9 @@ namespace Pawlygon.UnityTools.Editor
             /// <summary>For derived poses: the stored pose they are mirrored from.</summary>
             public FTExtrasPoseId? DerivedFrom;
             public bool IsDerived => DerivedFrom.HasValue;
+
+            /// <summary>Optional poses refine the result but are not needed for the tab to count as done.</summary>
+            public bool Optional;
         }
 
         private static readonly PoseDefinition[] Definitions =
@@ -72,7 +75,7 @@ namespace Pawlygon.UnityTools.Editor
             },
             new PoseDefinition
             {
-                Id = FTExtrasPoseId.EarHappyFlick, Label = "Happy Flick", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.MirroredEars,
+                Id = FTExtrasPoseId.EarHappyFlick, Label = "Happy Flick", Group = PoseGroup.Ears, Symmetry = PoseSymmetry.MirroredEars, Optional = true,
                 Hint = "The other end of the happy flick loop (e.g. ears flicked further outward).",
             },
             new PoseDefinition
@@ -87,7 +90,7 @@ namespace Pawlygon.UnityTools.Editor
             },
             new PoseDefinition
             {
-                Id = FTExtrasPoseId.TailHappy, Label = "Tail Happy", Group = PoseGroup.Tail, Symmetry = PoseSymmetry.Tail,
+                Id = FTExtrasPoseId.TailHappy, Label = "Tail Happy", Group = PoseGroup.Tail, Symmetry = PoseSymmetry.Tail, Optional = true,
                 Hint = "Optional raised tail while happy. The wag swings around this pose.",
             },
         };
@@ -125,16 +128,17 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Mirrors a chain onto another chain bone by bone (index i → index i). Returns null when lengths differ.
+        /// Mirrors a chain onto another chain bone by bone (index i → index i), matching from the root. When the
+        /// chains differ in length, extra target bones stay at rest. Returns null if the source pose is invalid.
         /// </summary>
         internal static List<Quaternion> MirrorChain(List<Quaternion> sourceLocals, List<FTExtrasProfileBone> source, List<FTExtrasProfileBone> target)
         {
-            if (sourceLocals == null || sourceLocals.Count != source.Count || source.Count != target.Count) return null;
+            if (sourceLocals == null || sourceLocals.Count != source.Count) return null;
 
-            var result = new List<Quaternion>(source.Count);
-            for (int i = 0; i < source.Count; i++)
+            var result = new List<Quaternion>(target.Count);
+            for (int i = 0; i < target.Count; i++)
             {
-                result.Add(MirrorLocal(sourceLocals[i], source[i], target[i]));
+                result.Add(i < source.Count ? MirrorLocal(sourceLocals[i], source[i], target[i]) : target[i].restLocal);
             }
             return result;
         }

@@ -104,8 +104,8 @@ namespace Pawlygon.UnityTools.Editor
                 int newIndex = EditorGUILayout.Popup("Detected", currentIndex, options.ToArray());
                 if (newIndex != currentIndex)
                 {
-                    chain = newIndex == 0 ? null : candidates[newIndex - 1];
-                    selectedChains[slot] = chain;
+                    selectedChains[slot] = newIndex == 0 ? null : candidates[newIndex - 1];
+                    GUIUtility.ExitGUI();
                 }
             }
             else
@@ -132,6 +132,7 @@ namespace Pawlygon.UnityTools.Editor
                     chain = FaceTrackingExtrasCore.BuildChainFromRoot(newRoot, kind, analysis);
                 }
                 selectedChains[slot] = chain;
+                GUIUtility.ExitGUI();
             }
 
             if (chain == null) return;
@@ -212,7 +213,7 @@ namespace Pawlygon.UnityTools.Editor
                 && left != null && right != null && left.Bones.Count != right.Bones.Count;
             if (earsMismatch)
             {
-                EditorGUILayout.HelpBox("The ears have different bone counts, so they can only be mirrored up to the shorter chain.", MessageType.Warning);
+                EditorGUILayout.HelpBox("The ears have different bone counts. Mirroring matches bones from the root, and the longer ear's extra bones stay at rest in mirrored poses.", MessageType.Warning);
             }
 
             EditorGUILayout.HelpBox(

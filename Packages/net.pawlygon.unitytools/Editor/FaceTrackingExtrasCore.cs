@@ -21,8 +21,9 @@ namespace Pawlygon.UnityTools.Editor
         internal const string LogPrefix = "[Pawlygon Face Tracking Extras]";
         internal const string DebugFolderName = "PawlygonDebug";
 
-        // "ear" not preceded by a letter (avoids Year/Hear/Beard) and not followed by "ring".
-        private static readonly Regex EarNamePattern = new Regex(@"(^|[^a-zA-Z])ear(?!ring)|mimi|耳", RegexOptions.IgnoreCase);
+        // "ear" not preceded by a letter (avoids Year/Hear/Beard), or a CamelCase "Ear" after a lowercase letter
+        // or digit (LeftEar, Head_LeftEar), never followed by "ring".
+        private static readonly Regex EarNamePattern = new Regex(@"(?i:(^|[^a-z])ear(?!ring))|(?<=[a-z0-9])Ear(?!ring)|(?i:mimi)|耳");
         private static readonly Regex TailNamePattern = new Regex(@"(?<!pony)tail|shippo|尻尾|しっぽ", RegexOptions.IgnoreCase);
 
         /// <summary>Helper bones that rigs use to drive the visible chain (e.g. Tail_Dummy_*, Tail_Constraint_*).</summary>

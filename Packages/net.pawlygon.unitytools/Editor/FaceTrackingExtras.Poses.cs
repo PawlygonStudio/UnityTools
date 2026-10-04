@@ -85,7 +85,7 @@ namespace Pawlygon.UnityTools.Editor
                 }
                 else
                 {
-                    status = isSet ? "<color=#6BCB77>✓ Set</color>" : "<color=#909090>Not set</color>";
+                    status = isSet ? "<color=#6BCB77>✓ Set</color>" : definition.Optional ? "<color=#909090>Optional</color>" : "<color=#909090>Not set</color>";
                 }
                 EditorGUILayout.LabelField(status, poseLabelStyle, GUILayout.MinWidth(90f));
 

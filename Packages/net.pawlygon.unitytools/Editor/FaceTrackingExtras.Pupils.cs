@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -41,7 +42,9 @@ namespace Pawlygon.UnityTools.Editor
                 if (EditorGUI.EndChangeCheck())
                 {
                     enabled.boolValue = isEnabled;
-                    if (!isEnabled) StopPupilPreview();
+                    profileObject.ApplyModifiedProperties();
+                    StopPupilPreview();
+                    GUIUtility.ExitGUI();
                 }
 
                 EditorGUILayout.Space(4f);
@@ -60,7 +63,8 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawPupilMeshes()
         {
-            var (dilation, constrict) = FTExtrasPupils.FindMeshes(selectedAvatar);
+            List<SkinnedMeshRenderer> dilation = pupilDilationMeshes;
+            List<SkinnedMeshRenderer> constrict = pupilConstrictMeshes;
             if (dilation.Count == 0)
             {
                 EditorGUILayout.HelpBox(
@@ -71,6 +75,7 @@ namespace Pawlygon.UnityTools.Editor
 
             foreach (SkinnedMeshRenderer renderer in dilation.Union(constrict))
             {
+                if (renderer == null) continue;
                 var shapes = new[]
                 {
                     dilation.Contains(renderer) ? FTExtrasPupils.DilationShape : null,
@@ -184,8 +189,10 @@ namespace Pawlygon.UnityTools.Editor
 
         private void UpdatePupilPreview()
         {
-            if (pupilPreview == null || !pupilPreview.IsActive)
+            if (pupilPreview == null || !pupilPreview.IsActive || profile == null)
             {
+                if (pupilPreview != null && pupilPreview.IsActive) pupilPreview.Restore();
+
                 // Restored from outside (play mode, script reload): drop the playing state.
                 if (pupilIdlePlaying || pupilReflexStartTime >= 0)
                 {

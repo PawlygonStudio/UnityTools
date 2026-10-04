@@ -509,6 +509,8 @@ namespace Pawlygon.UnityTools.Editor
                         }
                     }
 
+                    DrawMissingPatchConfigsNotice();
+
                     EditorGUILayout.Space(SectionSpacing);
 
                     if (PawlygonEditorUI.DrawPrimaryButton("Start Over", 34f))
@@ -611,7 +613,120 @@ namespace Pawlygon.UnityTools.Editor
                     EditorGUILayout.Space(6f);
                     EditorGUILayout.HelpBox(patcherHubImportStatusMessage, MessageType.None);
                 }
+
+                if (isPatcherHubInstalled)
+                {
+                    DrawMissingPatchConfigsNotice();
+                }
             }
+        }
+
+        /// <summary>
+        /// Patch configs are normally written during diff generation, which only happens if
+        /// PatcherHub was already installed at that point. When it was imported later (step 4 or
+        /// via the menu), offer to build the missing configs from the existing diff files.
+        /// </summary>
+        private void DrawMissingPatchConfigsNotice()
+        {
+            if (!FTPatchConfigGenerator.IsPatcherHubAvailable())
+            {
+                return;
+            }
+
+            int missingCount = GetEntriesMissingPatchConfig().Count;
+            if (missingCount == 0)
+            {
+                return;
+            }
+
+            EditorGUILayout.Space(6f);
+            EditorGUILayout.HelpBox(
+                $"{missingCount} avatar entr{(missingCount == 1 ? "y has" : "ies have")} diff files but no PatcherHub patch config yet.",
+                MessageType.Warning);
+
+            if (PawlygonEditorUI.DrawPrimaryButton("Generate Patch Configs", 30f))
+            {
+                GenerateMissingPatchConfigs();
+                // Creates assets and saves the AssetDatabase, which invalidates the current layout pass.
+                GUIUtility.ExitGUI();
+            }
+        }
+
+        /// <summary>
+        /// Returns the entries whose diff files were generated successfully and exist on disk but
+        /// whose PatcherHub config asset does not exist yet.
+        /// </summary>
+        private List<AvatarEntry> GetEntriesMissingPatchConfig()
+        {
+            var result = new List<AvatarEntry>();
+
+            foreach (AvatarEntry entry in avatarEntries)
+            {
+                if (entry.diffGenerationFailed ||
+                    string.IsNullOrEmpty(entry.avatarRootPath) ||
+                    string.IsNullOrEmpty(entry.diffGeneratorAssetPath))
+                {
+                    continue;
+                }
+
+                FTDiffGenerator diffGenerator = AssetDatabase.LoadAssetAtPath<FTDiffGenerator>(entry.diffGeneratorAssetPath);
+                string baseName = diffGenerator != null ? diffGenerator.GetBaseName() : null;
+                if (string.IsNullOrEmpty(baseName))
+                {
+                    continue;
+                }
+
+                string fbxDiffPath = GetFbxDiffAssetPath(entry.avatarRootPath, baseName);
+                string metaDiffPath = PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderPath(entry.avatarRootPath), FTDiffGenerator.GetMetaDiffFileName(baseName));
+                if (!File.Exists(ToAbsolutePath(fbxDiffPath)) || !File.Exists(ToAbsolutePath(metaDiffPath)))
+                {
+                    continue;
+                }
+
+                if (!File.Exists(ToAbsolutePath(GetPatchConfigAssetPath(entry, entry.avatarRootPath))))
+                {
+                    result.Add(entry);
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Builds the PatcherHub configs for every entry returned by
+        /// <see cref="GetEntriesMissingPatchConfig"/>, using the same context as diff generation.
+        /// </summary>
+        private void GenerateMissingPatchConfigs()
+        {
+            int createdCount = 0;
+            var failedNames = new List<string>();
+
+            foreach (AvatarEntry entry in GetEntriesMissingPatchConfig())
+            {
+                FTDiffGenerator diffGenerator = AssetDatabase.LoadAssetAtPath<FTDiffGenerator>(entry.diffGeneratorAssetPath);
+                FTPatchConfigGenerator.ConfigContext configContext = BuildPatchConfigContext(entry, diffGenerator);
+                string configPath = configContext != null ? FTPatchConfigGenerator.GenerateConfig(configContext) : null;
+
+                if (string.IsNullOrEmpty(configPath))
+                {
+                    failedNames.Add(GetEntryDisplayName(entry));
+                }
+                else
+                {
+                    createdCount++;
+                }
+            }
+
+            statusMessage = $"Generated {createdCount} PatcherHub patch config{(createdCount == 1 ? string.Empty : "s")}.";
+
+            if (failedNames.Count > 0)
+            {
+                statusMessage += $" Could not generate a config for: {string.Join(", ", failedNames)}. See the Console for details.";
+                EditorUtility.DisplayDialog("Patch Config Generation Failed",
+                    $"Could not generate a PatcherHub patch config for:\n\n{string.Join("\n", failedNames)}\n\nSee the Console for details.", "OK");
+            }
+
+            Repaint();
         }
 
         private void CreateAvatarStructures()

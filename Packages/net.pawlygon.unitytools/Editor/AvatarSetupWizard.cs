@@ -24,6 +24,8 @@ namespace Pawlygon.UnityTools.Editor
         private const string VrcftPrefabGuid = "ca618adb2c3333545a1f36d72a73a3ef";
         private const string VrcftPackageListingUrl = "https://vcc.pawlygon.net/";
         private const string PatcherHubLatestReleaseApiUrl = "https://api.github.com/repos/PawlygonStudio/PatcherHub/releases/latest";
+        private const int PatcherHubReleaseInfoTimeoutSeconds = 30;
+        private const int PatcherHubDownloadTimeoutSeconds = 300;
 
         private const int SourceFbxPickerControlId = 9001;
         private const int SourcePrefabPickerControlId = 9002;
@@ -183,30 +185,9 @@ namespace Pawlygon.UnityTools.Editor
                 if (!reimport) return;
             }
 
-            try
+            if (!DownloadAndImportLatestPatcherHub(out string resultMessage, out bool cancelled) && !cancelled)
             {
-                GitHubReleaseInfo releaseInfo = FetchLatestPatcherHubReleaseInfo();
-                GitHubReleaseAsset unityPackageAsset = releaseInfo?.assets?.FirstOrDefault(asset =>
-                    !string.IsNullOrEmpty(asset.name) &&
-                    asset.name.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase) &&
-                    !string.IsNullOrEmpty(asset.browser_download_url));
-
-                if (unityPackageAsset == null)
-                {
-                    EditorUtility.DisplayDialog("Import Failed",
-                        "Could not find a .unitypackage asset in the latest PatcherHub release.", "OK");
-                    return;
-                }
-
-                string downloadPath = Path.Combine(Path.GetTempPath(), unityPackageAsset.name);
-                DownloadFile(unityPackageAsset.browser_download_url, downloadPath);
-                AssetDatabase.ImportPackage(downloadPath, false);
-                Debug.Log($"[AvatarSetupWizard] Imported {unityPackageAsset.name} from {releaseInfo.tag_name}.");
-            }
-            catch (Exception ex)
-            {
-                EditorUtility.DisplayDialog("Import Failed",
-                    $"Failed to import PatcherHub: {ex.Message}", "OK");
+                EditorUtility.DisplayDialog("Import Failed", resultMessage, "OK");
             }
         }
 
@@ -1138,31 +1119,64 @@ namespace Pawlygon.UnityTools.Editor
 
         private void ImportLatestPatcherHub()
         {
-            patcherHubImportStatusMessage = "Downloading latest PatcherHub release...";
+            bool imported = DownloadAndImportLatestPatcherHub(out string resultMessage, out bool cancelled);
+            patcherHubImportStatusMessage = resultMessage;
+
+            if (imported)
+            {
+                patcherHubImportedThisSession = true;
+            }
+            else if (!cancelled)
+            {
+                EditorUtility.DisplayDialog("Import Failed", resultMessage, "OK");
+            }
+
+            Repaint();
+        }
+
+        /// <summary>
+        /// Downloads the latest PatcherHub .unitypackage from GitHub and imports it. Every network
+        /// request has a timeout and shows a cancelable progress bar, so a stalled connection can
+        /// never hang the editor. Returns false with a user-facing message on failure or cancel.
+        /// </summary>
+        private static bool DownloadAndImportLatestPatcherHub(out string resultMessage, out bool cancelled)
+        {
+            cancelled = false;
 
             try
             {
                 GitHubReleaseInfo releaseInfo = FetchLatestPatcherHubReleaseInfo();
-                GitHubReleaseAsset unityPackageAsset = releaseInfo?.assets?.FirstOrDefault(asset =>
+                GitHubReleaseAsset unityPackageAsset = releaseInfo.assets?.FirstOrDefault(asset =>
                     !string.IsNullOrEmpty(asset.name) &&
                     asset.name.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase) &&
                     !string.IsNullOrEmpty(asset.browser_download_url));
 
                 if (unityPackageAsset == null)
                 {
-                    patcherHubImportStatusMessage = "Could not find a .unitypackage asset in the latest PatcherHub release.";
-                    return;
+                    resultMessage = "Could not find a .unitypackage asset in the latest PatcherHub release.";
+                    Debug.LogError($"[AvatarSetupWizard] {resultMessage}");
+                    return false;
                 }
 
-                string downloadPath = Path.Combine(Path.GetTempPath(), unityPackageAsset.name);
-                DownloadFile(unityPackageAsset.browser_download_url, downloadPath);
+                string downloadPath = Path.Combine(Path.GetTempPath(), Path.GetFileName(unityPackageAsset.name));
+                DownloadFile(unityPackageAsset.browser_download_url, downloadPath, unityPackageAsset.name);
                 AssetDatabase.ImportPackage(downloadPath, false);
-                patcherHubImportedThisSession = true;
-                patcherHubImportStatusMessage = $"Imported {unityPackageAsset.name} from {releaseInfo.tag_name}.";
+
+                resultMessage = $"Imported {unityPackageAsset.name} from {releaseInfo.tag_name}.";
+                Debug.Log($"[AvatarSetupWizard] {resultMessage}");
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                cancelled = true;
+                resultMessage = "PatcherHub import was cancelled.";
+                return false;
             }
             catch (Exception ex)
             {
-                patcherHubImportStatusMessage = $"Failed to import PatcherHub: {ex.Message}";
+                resultMessage = $"Failed to import PatcherHub: {ex.Message}";
+                Debug.LogError($"[AvatarSetupWizard] {resultMessage}");
+                return false;
             }
         }
 
@@ -1170,16 +1184,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             using var request = UnityWebRequest.Get(PatcherHubLatestReleaseApiUrl);
             request.SetRequestHeader("User-Agent", "PawlygonUnityTools");
-            var operation = request.SendWebRequest();
-            while (!operation.isDone)
-            {
-                System.Threading.Thread.Sleep(10);
-            }
-
-            if (request.result != UnityWebRequest.Result.Success)
-            {
-                throw new InvalidOperationException(request.error);
-            }
+            SendWebRequestWithProgress(request, "Checking the latest PatcherHub release", PatcherHubReleaseInfoTimeoutSeconds);
 
             GitHubReleaseInfo releaseInfo = JsonUtility.FromJson<GitHubReleaseInfo>(request.downloadHandler.text);
             if (releaseInfo == null)
@@ -1190,20 +1195,83 @@ namespace Pawlygon.UnityTools.Editor
             return releaseInfo;
         }
 
-        private static void DownloadFile(string url, string destinationPath)
+        private static void DownloadFile(string url, string destinationPath, string displayName)
         {
-            using var request = UnityWebRequest.Get(url);
-            request.SetRequestHeader("User-Agent", "PawlygonUnityTools");
-            request.downloadHandler = new DownloadHandlerFile(destinationPath);
-            var operation = request.SendWebRequest();
-            while (!operation.isDone)
+            bool succeeded = false;
+
+            try
             {
-                System.Threading.Thread.Sleep(10);
+                // Dispose the request (and with it the file handle) before any cleanup below.
+                using (var request = UnityWebRequest.Get(url))
+                {
+                    request.SetRequestHeader("User-Agent", "PawlygonUnityTools");
+                    request.downloadHandler = new DownloadHandlerFile(destinationPath) { removeFileOnAbort = true };
+                    SendWebRequestWithProgress(request, $"Downloading {displayName}", PatcherHubDownloadTimeoutSeconds);
+                }
+
+                succeeded = true;
+            }
+            finally
+            {
+                if (!succeeded)
+                {
+                    TryDeleteFile(destinationPath);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Sends a request and polls it while showing a cancelable progress bar. The transfer runs
+        /// on Unity's background transport; <see cref="UnityWebRequest.timeout"/> bounds the total
+        /// time so a stalled connection fails instead of hanging. Throws
+        /// <see cref="OperationCanceledException"/> when the user cancels and
+        /// <see cref="InvalidOperationException"/> when the request fails.
+        /// </summary>
+        private static void SendWebRequestWithProgress(UnityWebRequest request, string description, int timeoutSeconds)
+        {
+            request.timeout = timeoutSeconds;
+            UnityWebRequestAsyncOperation operation = request.SendWebRequest();
+
+            try
+            {
+                while (!operation.isDone)
+                {
+                    float progress = Mathf.Clamp01(request.downloadProgress);
+                    string info = $"{description}... {request.downloadedBytes / 1024} KB";
+
+                    if (EditorUtility.DisplayCancelableProgressBar("PatcherHub", info, progress))
+                    {
+                        request.Abort();
+                        throw new OperationCanceledException($"{description} was cancelled.");
+                    }
+
+                    System.Threading.Thread.Sleep(50);
+                }
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
             }
 
             if (request.result != UnityWebRequest.Result.Success)
             {
-                throw new InvalidOperationException(request.error);
+                string httpStatus = request.responseCode > 0 ? $" (HTTP {request.responseCode})" : string.Empty;
+                throw new InvalidOperationException($"{description} failed: {request.error}{httpStatus}");
+            }
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[AvatarSetupWizard] Could not delete incomplete download '{path}': {ex.Message}");
             }
         }
 

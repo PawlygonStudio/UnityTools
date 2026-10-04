@@ -77,6 +77,8 @@ namespace Pawlygon.UnityTools.Editor
             public string createdScenePath;
             public string avatarRootPath;
             public string diffGeneratorAssetPath;
+            public bool diffGenerationFailed;
+            public string diffGenerationError;
             public long watchedFbxWriteTimeUtcTicks;
             public bool hasImportedModifiedFbx;
             public bool isMeshReviewComplete;
@@ -236,6 +238,8 @@ namespace Pawlygon.UnityTools.Editor
             using (new EditorGUILayout.VerticalScope(GUILayout.ExpandHeight(true)))
             {
                 mainContentScrollPosition = EditorGUILayout.BeginScrollView(mainContentScrollPosition, GUILayout.ExpandHeight(true));
+
+                DrawDiffFailureWarning();
 
                 switch (currentStep)
                 {
@@ -398,8 +402,7 @@ namespace Pawlygon.UnityTools.Editor
                         {
                             if (AreAllEntriesImportedAndLoadable())
                             {
-                                int generatedDiffCount = GenerateDiffFilesForEntries(importedOnly: true);
-                                MoveToMeshSelection(generatedDiffCount, skippedImportWait: false);
+                                GenerateDiffsAndMoveToMeshSelection(importedOnly: true, skippedImportWait: false);
                             }
                             else
                             {
@@ -411,8 +414,7 @@ namespace Pawlygon.UnityTools.Editor
                         {
                             if (CanLoadImportedAssets())
                             {
-                                int generatedDiffCount = GenerateDiffFilesForEntries(importedOnly: false);
-                                MoveToMeshSelection(generatedDiffCount, skippedImportWait: true);
+                                GenerateDiffsAndMoveToMeshSelection(importedOnly: false, skippedImportWait: true);
                             }
                             else
                             {
@@ -673,6 +675,8 @@ namespace Pawlygon.UnityTools.Editor
             {
                 entry.watchedFbxWriteTimeUtcTicks = GetAssetWriteTimeUtcTicks(entry.copiedFbxPath);
                 entry.hasImportedModifiedFbx = false;
+                entry.diffGenerationFailed = false;
+                entry.diffGenerationError = string.Empty;
                 entry.isMeshReviewComplete = false;
                 entry.reviewResultLabel = string.Empty;
                 entry.animatorReplacement = new AnimatorReplacementState();
@@ -1399,8 +1403,7 @@ namespace Pawlygon.UnityTools.Editor
 
             if (CanLoadImportedAssets())
             {
-                int generatedDiffCount = GenerateDiffFilesForEntries(importedOnly: true);
-                MoveToMeshSelection(generatedDiffCount, skippedImportWait: false);
+                GenerateDiffsAndMoveToMeshSelection(importedOnly: true, skippedImportWait: false);
                 return;
             }
 
@@ -1430,30 +1433,50 @@ namespace Pawlygon.UnityTools.Editor
             return avatarEntries.All(entry => entry.hasImportedModifiedFbx) && CanLoadImportedAssets();
         }
 
-        private int GenerateDiffFilesForEntries(bool importedOnly)
+        /// <summary>
+        /// Regenerates the .hdiff files for the wizard's entries and, when PatcherHub is installed,
+        /// writes a patch config for every entry whose diffs were generated successfully. Each
+        /// entry's <c>diffGenerationFailed</c> flag is updated; returns the number of entries whose
+        /// diffs were generated and reports failures through <paramref name="failedCount"/>.
+        /// </summary>
+        private int GenerateDiffFilesForEntries(Func<AvatarEntry, bool> shouldGenerate, out int failedCount)
         {
             int generatedCount = 0;
+            failedCount = 0;
 
             foreach (AvatarEntry entry in avatarEntries)
             {
-                if (importedOnly && !entry.hasImportedModifiedFbx)
+                if (!shouldGenerate(entry))
                 {
                     continue;
                 }
 
+                entry.diffGenerationFailed = false;
+                entry.diffGenerationError = string.Empty;
+
                 if (string.IsNullOrEmpty(entry.diffGeneratorAssetPath))
                 {
+                    MarkDiffGenerationFailed(entry, "No diff generator asset was created for this avatar.");
+                    failedCount++;
                     continue;
                 }
 
                 FTDiffGenerator diffGenerator = AssetDatabase.LoadAssetAtPath<FTDiffGenerator>(entry.diffGeneratorAssetPath);
                 if (diffGenerator == null)
                 {
-                    Debug.LogWarning($"[AvatarSetupWizard] Could not load diff generator asset at '{entry.diffGeneratorAssetPath}'.");
+                    MarkDiffGenerationFailed(entry, $"Could not load the diff generator asset at '{entry.diffGeneratorAssetPath}'.");
+                    failedCount++;
                     continue;
                 }
 
-                diffGenerator.GenerateDiffFiles();
+                if (!diffGenerator.GenerateDiffFiles(out string diffError))
+                {
+                    // Never write a patch config that would point at missing or stale diff files.
+                    MarkDiffGenerationFailed(entry, diffError);
+                    failedCount++;
+                    continue;
+                }
+
                 generatedCount++;
 
                 // Generate FTPatchConfig with wizard context if PatcherHub is installed
@@ -1488,8 +1511,117 @@ namespace Pawlygon.UnityTools.Editor
             return generatedCount;
         }
 
-        private void MoveToMeshSelection(int generatedDiffCount, bool skippedImportWait)
+        private static void MarkDiffGenerationFailed(AvatarEntry entry, string errorMessage)
         {
+            entry.diffGenerationFailed = true;
+            entry.diffGenerationError = string.IsNullOrEmpty(errorMessage) ? "Unknown error." : errorMessage;
+            Debug.LogError($"[AvatarSetupWizard] Diff generation failed for '{GetEntryDisplayName(entry)}': {entry.diffGenerationError}");
+        }
+
+        /// <summary>
+        /// Generates the diff files for the wizard's entries, then advances to mesh selection.
+        /// Diff failures do not block mesh review (it does not depend on the diffs), but they are
+        /// always reported with a dialog and a persistent warning instead of a success message.
+        /// </summary>
+        private void GenerateDiffsAndMoveToMeshSelection(bool importedOnly, bool skippedImportWait)
+        {
+            int generatedDiffCount = GenerateDiffFilesForEntries(
+                entry => !importedOnly || entry.hasImportedModifiedFbx,
+                out int failedDiffCount);
+            MoveToMeshSelection(generatedDiffCount, failedDiffCount, skippedImportWait);
+
+            if (failedDiffCount > 0)
+            {
+                EditorUtility.DisplayDialog(
+                    "Diff Generation Failed",
+                    $"The face tracking diff files could not be generated for:\n\n{BuildDiffFailureList()}\n\n" +
+                    "No patch config was written for these avatars. Fix the problem shown in the Console, then use " +
+                    "\"Retry Diff Generation\" at the top of the wizard.",
+                    "OK");
+            }
+        }
+
+        private string BuildDiffFailureList()
+        {
+            return string.Join("\n", avatarEntries
+                .Where(entry => entry.diffGenerationFailed)
+                .Select(entry => $"• {GetEntryDisplayName(entry)}: {FirstLine(entry.diffGenerationError)}"));
+        }
+
+        private static string FirstLine(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return string.Empty;
+            }
+
+            int newLineIndex = text.IndexOf('\n');
+            return newLineIndex >= 0 ? text.Substring(0, newLineIndex).TrimEnd() : text;
+        }
+
+        /// <summary>
+        /// Draws a persistent error box listing the entries whose diff generation failed, so the
+        /// problem stays visible after the status message has been replaced.
+        /// </summary>
+        private void DrawDiffFailureWarning()
+        {
+            if (currentStep == WizardStep.Setup || currentStep == WizardStep.WaitForImport)
+            {
+                return;
+            }
+
+            if (!avatarEntries.Any(entry => entry.diffGenerationFailed))
+            {
+                return;
+            }
+
+            EditorGUILayout.HelpBox(
+                $"Diff generation failed, so these avatars have no up-to-date patch files:\n{BuildDiffFailureList()}\n\n" +
+                "Fix the problem shown in the Console, then retry.",
+                MessageType.Error);
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("Retry Diff Generation", GUILayout.Width(170f), GUILayout.Height(24f)))
+                {
+                    RetryFailedDiffGeneration();
+                    // Runs hdiffz, refreshes the AssetDatabase and may show a dialog.
+                    GUIUtility.ExitGUI();
+                }
+            }
+
+            EditorGUILayout.Space(EditorGUIUtility.standardVerticalSpacing);
+        }
+
+        /// <summary>
+        /// Regenerates diffs (and patch configs, if PatcherHub is installed) for the entries whose
+        /// previous diff generation failed, reporting the outcome in the status message.
+        /// </summary>
+        private void RetryFailedDiffGeneration()
+        {
+            int generatedCount = GenerateDiffFilesForEntries(entry => entry.diffGenerationFailed, out int failedCount);
+
+            if (failedCount > 0)
+            {
+                statusMessage = $"Diff generation still fails for {failedCount} avatar entr{(failedCount == 1 ? "y" : "ies")}. See the Console for hdiffz's output.";
+                EditorUtility.DisplayDialog("Diff Generation Failed",
+                    $"The face tracking diff files could not be generated for:\n\n{BuildDiffFailureList()}\n\nSee the Console for details.", "OK");
+            }
+            else
+            {
+                statusMessage = $"Regenerated diff files for {generatedCount} avatar entr{(generatedCount == 1 ? "y" : "ies")}.";
+            }
+
+            Repaint();
+        }
+
+        private void MoveToMeshSelection(int generatedDiffCount, int failedDiffCount, bool skippedImportWait)
+        {
+            // A delayed import retry may still be queued; it must not run again after we moved on.
+            EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
+            pendingImportTransition = false;
+
             foreach (AvatarEntry entry in avatarEntries)
             {
                 LoadMeshSelections(entry);
@@ -1499,18 +1631,16 @@ namespace Pawlygon.UnityTools.Editor
 
             selectedEntryIndex = Mathf.Clamp(FindNextIncompleteEntryIndex(0), 0, avatarEntries.Count - 1);
             currentStep = WizardStep.SelectMeshes;
-            if (skippedImportWait)
-            {
-                statusMessage = generatedDiffCount > 0
-                    ? $"Skipped the import wait and regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}. Review each avatar entry and apply the mesh and rig replacements you want."
-                    : "Skipped the import wait. Review each avatar entry and apply the mesh and rig replacements you want.";
-            }
-            else
-            {
-                statusMessage = generatedDiffCount > 0
-                    ? $"All modified FBXs imported. Regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}. Review each avatar entry and apply the mesh and rig replacements you want."
-                    : "All modified FBXs imported. Review each avatar entry and apply the mesh and rig replacements you want.";
-            }
+
+            string prefix = skippedImportWait ? "Skipped the import wait." : "All modified FBXs imported.";
+            string diffSummary = generatedDiffCount > 0
+                ? $" Regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}."
+                : string.Empty;
+            string failureSummary = failedDiffCount > 0
+                ? $" Diff generation FAILED for {failedDiffCount} avatar entr{(failedDiffCount == 1 ? "y" : "ies")} — see the error above and the Console."
+                : string.Empty;
+
+            statusMessage = $"{prefix}{diffSummary}{failureSummary} Review each avatar entry and apply the mesh and rig replacements you want.";
 
             Repaint();
         }

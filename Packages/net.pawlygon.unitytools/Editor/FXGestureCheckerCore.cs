@@ -267,11 +267,18 @@ namespace Pawlygon.UnityTools.Editor
         /// Describes one kind of guard: an empty state entered from AnyState while
         /// <see cref="ParamName"/> satisfies the "active" condition, and left again (back to the
         /// layer's default state) once it satisfies the "clear" condition.
+        /// The static specs below describe the guard for the parameter type this tool creates;
+        /// <see cref="ResolveGuardSpec"/> adapts them when the controller already declares the
+        /// parameter with another type.
         /// </summary>
         private sealed class GuardSpec
         {
             public string StateName;
             public string ParamName;
+
+            /// <summary>The parameter's type the conditions below are written for.</summary>
+            public AnimatorControllerParameterType ParamType;
+
             public AnimatorConditionMode ActiveMode;
             public float ActiveThreshold;
             public AnimatorConditionMode ClearMode;
@@ -285,12 +292,30 @@ namespace Pawlygon.UnityTools.Editor
             /// neither could fire while both parameters are active.
             /// </summary>
             public string ExemptSiblingStateName;
+
+            /// <summary>
+            /// Returns a copy of this spec whose conditions are written for a parameter of
+            /// <paramref name="type"/>.
+            /// </summary>
+            public GuardSpec WithConditions(AnimatorControllerParameterType type,
+                AnimatorConditionMode activeMode, float activeThreshold,
+                AnimatorConditionMode clearMode, float clearThreshold)
+            {
+                GuardSpec copy = (GuardSpec)MemberwiseClone();
+                copy.ParamType = type;
+                copy.ActiveMode = activeMode;
+                copy.ActiveThreshold = activeThreshold;
+                copy.ClearMode = clearMode;
+                copy.ClearThreshold = clearThreshold;
+                return copy;
+            }
         }
 
         private static readonly GuardSpec LayerGuardSpec = new GuardSpec
         {
             StateName = EmptyStateName,
             ParamName = DisabledParamName,
+            ParamType = AnimatorControllerParameterType.Bool,
             ActiveMode = AnimatorConditionMode.If,
             ActiveThreshold = 0f,
             ClearMode = AnimatorConditionMode.IfNot,
@@ -304,6 +329,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             StateName = BlinkGuardStateName,
             ParamName = EyeTrackingActiveParam,
+            ParamType = AnimatorControllerParameterType.Float,
             ActiveMode = AnimatorConditionMode.Greater,
             ActiveThreshold = EyeTrackingActiveThreshold,
             ClearMode = AnimatorConditionMode.Less,
@@ -314,8 +340,135 @@ namespace Pawlygon.UnityTools.Editor
         };
 
         // =====================================================================
-        // Cached reflection types
+        // Guard parameter types
         // =====================================================================
+
+        /// <summary>
+        /// Returns the guard spec to use with <paramref name="controller"/>. When the controller
+        /// already declares the guard parameter with a different type, the conditions are adapted
+        /// to that type (Bool: If / IfNot; Float: Greater / Less 0.5; Int: Greater 0 / Less 1),
+        /// because Unity ignores conditions whose mode does not fit the parameter's type.
+        /// Returns null when the existing parameter is a Trigger, which cannot express the guard.
+        /// </summary>
+        private static GuardSpec ResolveGuardSpec(AnimatorController controller, GuardSpec spec)
+        {
+            AnimatorControllerParameter existing = FindParameter(controller, spec.ParamName);
+            if (existing == null || existing.type == spec.ParamType) return spec;
+
+            switch (existing.type)
+            {
+                case AnimatorControllerParameterType.Bool:
+                    return spec.WithConditions(AnimatorControllerParameterType.Bool,
+                        AnimatorConditionMode.If, 0f, AnimatorConditionMode.IfNot, 0f);
+                case AnimatorControllerParameterType.Float:
+                    return spec.WithConditions(AnimatorControllerParameterType.Float,
+                        AnimatorConditionMode.Greater, EyeTrackingActiveThreshold,
+                        AnimatorConditionMode.Less, EyeTrackingActiveThreshold);
+                case AnimatorControllerParameterType.Int:
+                    return spec.WithConditions(AnimatorControllerParameterType.Int,
+                        AnimatorConditionMode.Greater, 0f, AnimatorConditionMode.Less, 1f);
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>
+        /// Like <see cref="ResolveGuardSpec"/>, but falls back to the default spec when the
+        /// parameter type is unusable, so analysis can still find and classify existing guards.
+        /// </summary>
+        private static GuardSpec ResolveGuardSpecForAnalysis(AnimatorController controller, GuardSpec spec)
+        {
+            return ResolveGuardSpec(controller, spec) ?? spec;
+        }
+
+        private static AnimatorControllerParameter FindParameter(AnimatorController controller, string name)
+        {
+            if (controller == null) return null;
+
+            foreach (AnimatorControllerParameter parameter in controller.parameters)
+            {
+                if (parameter.name == name) return parameter;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Returns why the FacialExpressionsDisabled guards (transition and layer guards) cannot
+        /// be applied to <paramref name="controller"/>, or null when they can.
+        /// </summary>
+        internal static string GetLayerGuardParameterError(AnimatorController controller)
+        {
+            return GetGuardParameterError(controller, LayerGuardSpec);
+        }
+
+        /// <summary>
+        /// Returns why the EyeTrackingActive blink guards cannot be applied to
+        /// <paramref name="controller"/>, or null when they can.
+        /// </summary>
+        internal static string GetBlinkGuardParameterError(AnimatorController controller)
+        {
+            return GetGuardParameterError(controller, BlinkGuardSpec);
+        }
+
+        private static string GetGuardParameterError(AnimatorController controller, GuardSpec spec)
+        {
+            if (controller == null || ResolveGuardSpec(controller, spec) != null) return null;
+
+            AnimatorControllerParameter existing = FindParameter(controller, spec.ParamName);
+            return $"The FX controller already has a '{spec.ParamName}' parameter of type {existing.type}, " +
+                   $"which cannot be used for the guard. Change its type to {spec.ParamType} (or Bool, Int or Float) " +
+                   "in the Animator window's Parameters tab, then analyze again.";
+        }
+
+        /// <summary>
+        /// Describes how the guard conditions were adapted to an existing parameter of another
+        /// type, or returns null when the parameter is missing or has the expected type.
+        /// </summary>
+        private static string GetGuardParameterNote(AnimatorController controller, GuardSpec spec)
+        {
+            GuardSpec resolved = ResolveGuardSpec(controller, spec);
+            if (resolved == null || resolved == spec) return null;
+
+            return $"'{spec.ParamName}' already exists as {resolved.ParamType}; its guards use " +
+                   $"{DescribeCondition(resolved.ActiveMode, resolved.ActiveThreshold)} / " +
+                   $"{DescribeCondition(resolved.ClearMode, resolved.ClearThreshold)} conditions.";
+        }
+
+        private static string DescribeCondition(AnimatorConditionMode mode, float threshold)
+        {
+            switch (mode)
+            {
+                case AnimatorConditionMode.If: return "true";
+                case AnimatorConditionMode.IfNot: return "false";
+                case AnimatorConditionMode.Greater: return $"> {threshold:0.##}";
+                case AnimatorConditionMode.Less: return $"< {threshold:0.##}";
+                case AnimatorConditionMode.Equals: return $"== {threshold:0.##}";
+                case AnimatorConditionMode.NotEqual: return $"!= {threshold:0.##}";
+                default: return mode.ToString();
+            }
+        }
+
+        /// <summary>
+        /// Checks whether Unity can evaluate a condition mode on a parameter of the given type.
+        /// </summary>
+        private static bool IsModeValidForType(AnimatorConditionMode mode, AnimatorControllerParameterType type)
+        {
+            switch (type)
+            {
+                case AnimatorControllerParameterType.Bool:
+                    return mode == AnimatorConditionMode.If || mode == AnimatorConditionMode.IfNot;
+                case AnimatorControllerParameterType.Trigger:
+                    return mode == AnimatorConditionMode.If;
+                case AnimatorControllerParameterType.Float:
+                    return mode == AnimatorConditionMode.Greater || mode == AnimatorConditionMode.Less;
+                case AnimatorControllerParameterType.Int:
+                    return mode == AnimatorConditionMode.Greater || mode == AnimatorConditionMode.Less ||
+                           mode == AnimatorConditionMode.Equals || mode == AnimatorConditionMode.NotEqual;
+                default:
+                    return false;
+            }
+        }
 
         // =====================================================================
         // Reflection helpers
@@ -464,11 +617,12 @@ namespace Pawlygon.UnityTools.Editor
 
             List<LayerAnalysis> analysisResults = new List<LayerAnalysis>();
             AnimatorControllerLayer[] controllerLayers = controller.layers;
+            GuardSpec layerSpec = ResolveGuardSpecForAnalysis(controller, LayerGuardSpec);
 
             for (int i = 0; i < controllerLayers.Length; i++)
             {
                 AnimatorControllerLayer layer = controllerLayers[i];
-                LayerAnalysis layerAnalysis = AnalyzeLayer(layer, i);
+                LayerAnalysis layerAnalysis = AnalyzeLayer(layer, i, layerSpec);
 
                 // A layer whose gesture transitions all return to neutral is still listed, so its
                 // layer guard can be applied.
@@ -509,6 +663,23 @@ namespace Pawlygon.UnityTools.Editor
                 result.StatusMessageType = MessageType.Warning;
             }
 
+            foreach (GuardSpec spec in new[] { LayerGuardSpec, BlinkGuardSpec })
+            {
+                string parameterError = GetGuardParameterError(controller, spec);
+                if (parameterError != null)
+                {
+                    result.StatusMessage += " " + parameterError;
+                    result.StatusMessageType = MessageType.Error;
+                    continue;
+                }
+
+                string parameterNote = GetGuardParameterNote(controller, spec);
+                if (parameterNote != null)
+                {
+                    result.StatusMessage += " " + parameterNote;
+                }
+            }
+
             return result;
         }
 
@@ -525,6 +696,9 @@ namespace Pawlygon.UnityTools.Editor
             /// <summary>The layer's default state (the root state machine's default state).</summary>
             public AnimatorState DefaultState;
 
+            /// <summary>The layer guard spec resolved for the controller's parameter type.</summary>
+            public GuardSpec LayerSpec;
+
             public HashSet<AnimatorStateMachine> Visited = new HashSet<AnimatorStateMachine>();
         }
 
@@ -535,9 +709,9 @@ namespace Pawlygon.UnityTools.Editor
         /// machine its Entry transitions, its states' transitions and the transitions that leave
         /// its child sub-state machines.
         /// </summary>
-        private static LayerAnalysis AnalyzeLayer(AnimatorControllerLayer layer, int layerIndex)
+        private static LayerAnalysis AnalyzeLayer(AnimatorControllerLayer layer, int layerIndex, GuardSpec layerSpec)
         {
-            GuardStatus guardStatus = GetGuardStatus(layer.stateMachine, LayerGuardSpec);
+            GuardStatus guardStatus = GetGuardStatus(layer.stateMachine, layerSpec);
 
             LayerAnalysis analysis = new LayerAnalysis
             {
@@ -556,7 +730,8 @@ namespace Pawlygon.UnityTools.Editor
             {
                 Analysis = analysis,
                 Names = BuildPathNames(stateMachine),
-                DefaultState = stateMachine.defaultState
+                DefaultState = stateMachine.defaultState,
+                LayerSpec = layerSpec
             };
 
             foreach (AnimatorStateTransition transition in stateMachine.anyStateTransitions)
@@ -650,7 +825,7 @@ namespace Pawlygon.UnityTools.Editor
                 GestureValue = Mathf.RoundToInt(gestureConditions[0].threshold),
                 ConditionLabel = string.Join(" & ", gestureConditions.Select(FormatGestureCondition)),
                 IsReturnToNeutral = returnsToNeutral,
-                HasDisabledGuard = HasDisabledGuard(transition),
+                HasDisabledGuard = HasGuardCondition(transition, walk.LayerSpec),
                 SelectedForFix = false,
                 TransitionRef = transition
             };
@@ -793,20 +968,104 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
+        // =====================================================================
+        // Guard conditions
+        // =====================================================================
+
         /// <summary>
-        /// Checks whether a transition already has a FacialExpressionsDisabled condition.
+        /// Checks whether a transition already has a usable condition on the guard parameter
+        /// (one whose mode fits the parameter's type; Unity ignores the others).
         /// </summary>
-        private static bool HasDisabledGuard(AnimatorTransitionBase transition)
+        private static bool HasGuardCondition(AnimatorTransitionBase transition, GuardSpec spec)
         {
             foreach (AnimatorCondition condition in transition.conditions)
             {
-                if (condition.parameter == DisabledParamName)
+                if (condition.parameter == spec.ParamName && IsModeValidForType(condition.mode, spec.ParamType))
                 {
                     return true;
                 }
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Checks whether a transition has a condition on the guard parameter whose mode does not
+        /// fit the parameter's type (e.g. If/IfNot written for a Bool while the parameter is a Float).
+        /// </summary>
+        private static bool HasInvalidGuardCondition(AnimatorTransitionBase transition, GuardSpec spec)
+        {
+            foreach (AnimatorCondition condition in transition.conditions)
+            {
+                if (condition.parameter == spec.ParamName && !IsModeValidForType(condition.mode, spec.ParamType))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool HasCondition(AnimatorTransitionBase transition, string parameter, AnimatorConditionMode mode)
+        {
+            foreach (AnimatorCondition condition in transition.conditions)
+            {
+                if (condition.parameter == parameter && condition.mode == mode) return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Makes sure <paramref name="transition"/> cannot fire while the guard is active: drops
+        /// conditions on the guard parameter whose mode does not fit its type, then adds the
+        /// guard's "clear" condition unless a usable condition on the parameter remains.
+        /// </summary>
+        /// <returns>True when the transition was changed.</returns>
+        private static bool EnsureClearCondition(AnimatorTransitionBase transition, GuardSpec spec, string undoName)
+        {
+            bool hasValid = HasGuardCondition(transition, spec);
+            bool hasInvalid = HasInvalidGuardCondition(transition, spec);
+            if (hasValid && !hasInvalid) return false;
+
+            Undo.RecordObject(transition, undoName);
+
+            List<AnimatorCondition> conditions = transition.conditions
+                .Where(c => c.parameter != spec.ParamName || IsModeValidForType(c.mode, spec.ParamType))
+                .ToList();
+
+            if (!hasValid)
+            {
+                conditions.Add(new AnimatorCondition
+                {
+                    mode = spec.ClearMode,
+                    parameter = spec.ParamName,
+                    threshold = spec.ClearThreshold
+                });
+            }
+
+            transition.conditions = conditions.ToArray();
+            EditorUtility.SetDirty(transition);
+            return true;
+        }
+
+        /// <summary>
+        /// Replaces every condition on the guard parameter with a single
+        /// <paramref name="mode"/>/<paramref name="threshold"/> condition. Used on the guard's own
+        /// transitions so they always test the parameter in a way its type supports.
+        /// </summary>
+        private static void SetGuardCondition(AnimatorTransitionBase transition, GuardSpec spec,
+            AnimatorConditionMode mode, float threshold, string undoName)
+        {
+            Undo.RecordObject(transition, undoName);
+
+            List<AnimatorCondition> conditions = transition.conditions
+                .Where(c => c.parameter != spec.ParamName)
+                .ToList();
+            conditions.Add(new AnimatorCondition { mode = mode, parameter = spec.ParamName, threshold = threshold });
+
+            transition.conditions = conditions.ToArray();
+            EditorUtility.SetDirty(transition);
         }
 
         // =====================================================================
@@ -847,8 +1106,10 @@ namespace Pawlygon.UnityTools.Editor
         /// <see cref="GuardStatus.Outdated"/> when it was written by an older version of this tool:
         /// its AnyState transition can re-enter itself, the guard state has no exit transition back
         /// once the parameter clears, its Write Defaults differs from the layer's dominant setting,
-        /// or another AnyState transition could still pull the layer out of the guard state.
+        /// another AnyState transition could still pull the layer out of the guard state, or its
+        /// conditions do not fit the parameter's current type.
         /// </summary>
+        /// <param name="spec">The guard spec, resolved for the controller's parameter type.</param>
         private static GuardStatus GetGuardStatus(AnimatorStateMachine stateMachine, GuardSpec spec)
         {
             AnimatorState guardState = FindGuard(stateMachine, spec, out AnimatorStateTransition guardTransition);
@@ -856,7 +1117,10 @@ namespace Pawlygon.UnityTools.Editor
 
             bool upToDate =
                 !guardTransition.canTransitionToSelf &&
+                HasCondition(guardTransition, spec.ParamName, spec.ActiveMode) &&
+                !HasInvalidGuardCondition(guardTransition, spec) &&
                 HasClearExit(guardState, spec) &&
+                !guardState.transitions.Any(t => t != null && HasInvalidGuardCondition(t, spec)) &&
                 guardState.writeDefaultValues == GetDominantWriteDefaultValues(stateMachine) &&
                 !HasUngatedSiblingTransitions(stateMachine, guardTransition, spec);
 
@@ -902,7 +1166,7 @@ namespace Pawlygon.UnityTools.Editor
             foreach (AnimatorStateTransition transition in stateMachine.anyStateTransitions)
             {
                 if (IsExemptSibling(transition, guardTransition, spec)) continue;
-                if (!HasConditionOn(transition, spec.ParamName)) return true;
+                if (!HasGuardCondition(transition, spec) || HasInvalidGuardCondition(transition, spec)) return true;
             }
 
             return false;
@@ -918,7 +1182,7 @@ namespace Pawlygon.UnityTools.Editor
                    transition.destinationState.name == spec.ExemptSiblingStateName;
         }
 
-        private static bool HasConditionOn(AnimatorStateTransition transition, string parameter)
+        private static bool HasConditionOn(AnimatorTransitionBase transition, string parameter)
         {
             foreach (AnimatorCondition condition in transition.conditions)
             {
@@ -939,51 +1203,53 @@ namespace Pawlygon.UnityTools.Editor
 
         /// <summary>
         /// Ensures the FacialExpressionsDisabled bool parameter exists on the controller.
-        /// If it already exists, this method is a no-op.
+        /// If a parameter with that name already exists (of any type), this method is a no-op:
+        /// the guard conditions are adapted to its type instead (see <see cref="ResolveGuardSpec"/>).
         /// </summary>
         internal static void EnsureParameterExists(AnimatorController controller)
         {
-            AnimatorControllerParameter[] existingParams = controller.parameters;
-            foreach (AnimatorControllerParameter param in existingParams)
-            {
-                if (param.name == DisabledParamName)
-                {
-                    return;
-                }
-            }
+            if (FindParameter(controller, DisabledParamName) != null) return;
 
             controller.AddParameter(DisabledParamName, AnimatorControllerParameterType.Bool);
             Debug.Log($"{LogPrefix} Added parameter '{DisabledParamName}' to FX controller.");
         }
 
         /// <summary>
-        /// Adds a FacialExpressionsDisabled == false (IfNot) condition to a single transition.
+        /// Adds a FacialExpressionsDisabled == false (IfNot) condition to a single transition,
+        /// assuming the parameter is a Bool. Prefer
+        /// <see cref="ApplyTransitionGuard(AnimatorController, TransitionAnalysis)"/>, which adapts
+        /// the condition to the controller's parameter type.
         /// </summary>
         internal static void ApplyTransitionGuard(TransitionAnalysis transition)
+        {
+            ApplyTransitionGuard(LayerGuardSpec, transition);
+        }
+
+        /// <summary>
+        /// Adds the "FacialExpressionsDisabled is off" condition to a single transition, written
+        /// for the parameter's type on <paramref name="controller"/> (Bool: IfNot; Float: Less 0.5;
+        /// Int: Less 1). Conditions on the parameter whose mode does not fit its type are replaced.
+        /// Does nothing when the parameter's type cannot express the guard (see
+        /// <see cref="GetLayerGuardParameterError"/>).
+        /// </summary>
+        internal static void ApplyTransitionGuard(AnimatorController controller, TransitionAnalysis transition)
+        {
+            GuardSpec spec = ResolveGuardSpec(controller, LayerGuardSpec);
+            if (spec == null) return;
+
+            ApplyTransitionGuard(spec, transition);
+        }
+
+        private static void ApplyTransitionGuard(GuardSpec spec, TransitionAnalysis transition)
         {
             // The condition goes on the transition itself, wherever it lives (root, sub-state
             // machine, Entry or sub-state machine exit), so no placement logic is needed here.
             AnimatorTransitionBase t = transition.TransitionRef;
             if (t == null) return;
 
-            // Never add the condition twice (stale analysis, or an AnyState transition that a
+            // Never adds the condition twice (stale analysis, or an AnyState transition that a
             // layer guard already gated).
-            if (HasDisabledGuard(t)) return;
-
-            // Record undo on the transition asset itself
-            Undo.RecordObject(t, "Add FacialExpressionsDisabled condition");
-
-            AnimatorCondition newCondition = new AnimatorCondition
-            {
-                mode = AnimatorConditionMode.IfNot, // IfNot = false for bool
-                parameter = DisabledParamName,
-                threshold = 0f
-            };
-
-            List<AnimatorCondition> conditions = new List<AnimatorCondition>(t.conditions) { newCondition };
-            t.conditions = conditions.ToArray();
-
-            EditorUtility.SetDirty(t);
+            EnsureClearCondition(t, spec, "Add FacialExpressionsDisabled condition");
         }
 
         /// <summary>
@@ -1009,15 +1275,25 @@ namespace Pawlygon.UnityTools.Editor
         /// can pull the layer out of the guard state while the guard is active.</item>
         /// </list>
         /// An existing guard (e.g. from an older version) is reused and fixed instead of duplicated.
+        /// All conditions are written for the guard parameter's type on the controller.
         /// </summary>
-        private static void EnsureGuard(AnimatorController controller, int layerIndex, GuardSpec spec)
+        /// <param name="baseSpec">The default guard spec; resolved here for the controller.</param>
+        /// <returns>False when the guard could not be applied (e.g. unusable parameter type).</returns>
+        private static bool EnsureGuard(AnimatorController controller, int layerIndex, GuardSpec baseSpec)
         {
+            GuardSpec spec = ResolveGuardSpec(controller, baseSpec);
+            if (spec == null)
+            {
+                Debug.LogError($"{LogPrefix} {GetGuardParameterError(controller, baseSpec)}");
+                return false;
+            }
+
             AnimatorControllerLayer[] controllerLayers = controller.layers;
-            if (layerIndex < 0 || layerIndex >= controllerLayers.Length) return;
+            if (layerIndex < 0 || layerIndex >= controllerLayers.Length) return false;
 
             AnimatorStateMachine stateMachine = controllerLayers[layerIndex].stateMachine;
-            if (stateMachine == null) return;
-            if (GetGuardStatus(stateMachine, spec) == GuardStatus.Current) return;
+            if (stateMachine == null) return false;
+            if (GetGuardStatus(stateMachine, spec) == GuardStatus.Current) return true;
 
             Undo.RecordObject(stateMachine, spec.UndoName);
 
@@ -1039,6 +1315,13 @@ namespace Pawlygon.UnityTools.Editor
             {
                 Undo.RecordObject(guardState, spec.UndoName);
                 Undo.RecordObject(guardTransition, spec.UndoName);
+
+                // Rewrite the active condition when it was written for another parameter type
+                if (!HasCondition(guardTransition, spec.ParamName, spec.ActiveMode) ||
+                    HasInvalidGuardCondition(guardTransition, spec))
+                {
+                    SetGuardCondition(guardTransition, spec, spec.ActiveMode, spec.ActiveThreshold, spec.UndoName);
+                }
             }
 
             guardState.writeDefaultValues = writeDefaults;
@@ -1052,7 +1335,7 @@ namespace Pawlygon.UnityTools.Editor
 
             EnsureClearExit(stateMachine, guardState, spec);
             GateSiblingTransitions(stateMachine, guardTransition, spec);
-            GateForOtherGuards(stateMachine, guardTransition, spec);
+            GateForOtherGuards(controller, stateMachine, guardTransition, spec);
 
             // Reassign layer array since Unity uses copy-on-read for layers
             controller.layers = controllerLayers;
@@ -1060,16 +1343,26 @@ namespace Pawlygon.UnityTools.Editor
             EditorUtility.SetDirty(guardState);
             EditorUtility.SetDirty(guardTransition);
             EditorUtility.SetDirty(stateMachine);
+            return true;
         }
 
         /// <summary>
         /// Adds the transition that leaves the guard state once the guard parameter clears, unless
         /// one already exists. It targets the layer's default state; if the default state is
-        /// missing or is a guard state itself, the first other top-level state is used, and if
-        /// there is none the transition goes to the Exit node (which re-enters via Entry).
+        /// missing or is a guard state itself, the first other state is used, and if there is
+        /// none the transition goes to the Exit node (which re-enters via Entry). Exit transitions
+        /// whose condition was written for another parameter type are rewritten instead.
         /// </summary>
         private static void EnsureClearExit(AnimatorStateMachine stateMachine, AnimatorState guardState, GuardSpec spec)
         {
+            foreach (AnimatorStateTransition transition in guardState.transitions)
+            {
+                if (transition != null && HasInvalidGuardCondition(transition, spec))
+                {
+                    SetGuardCondition(transition, spec, spec.ClearMode, spec.ClearThreshold, spec.UndoName);
+                }
+            }
+
             if (HasClearExit(guardState, spec)) return;
 
             Undo.RecordObject(guardState, spec.UndoName);
@@ -1091,9 +1384,9 @@ namespace Pawlygon.UnityTools.Editor
 
         /// <summary>
         /// Adds the guard's "clear" condition to every other AnyState transition in the layer that
-        /// has no condition on the guard parameter yet. Without this, such a transition could fire
-        /// from inside the guard state (the guard transition cannot re-enter its own state), and the
-        /// layer would flicker between the guard and that transition's destination.
+        /// has no usable condition on the guard parameter yet. Without this, such a transition
+        /// could fire from inside the guard state (the guard transition cannot re-enter its own
+        /// state), and the layer would flicker between the guard and that transition's destination.
         /// </summary>
         private static void GateSiblingTransitions(AnimatorStateMachine stateMachine,
             AnimatorStateTransition guardTransition, GuardSpec spec)
@@ -1101,11 +1394,8 @@ namespace Pawlygon.UnityTools.Editor
             foreach (AnimatorStateTransition transition in stateMachine.anyStateTransitions)
             {
                 if (IsExemptSibling(transition, guardTransition, spec)) continue;
-                if (HasConditionOn(transition, spec.ParamName)) continue;
 
-                Undo.RecordObject(transition, spec.UndoName);
-                transition.AddCondition(spec.ClearMode, spec.ClearThreshold, spec.ParamName);
-                EditorUtility.SetDirty(transition);
+                EnsureClearCondition(transition, spec, spec.UndoName);
             }
         }
 
@@ -1116,17 +1406,19 @@ namespace Pawlygon.UnityTools.Editor
         /// would be reported as outdated) and makes the layer guard take precedence over the
         /// blink guard when both parameters are active.
         /// </summary>
-        private static void GateForOtherGuards(AnimatorStateMachine stateMachine,
+        private static void GateForOtherGuards(AnimatorController controller, AnimatorStateMachine stateMachine,
             AnimatorStateTransition guardTransition, GuardSpec spec)
         {
-            foreach (GuardSpec other in new[] { LayerGuardSpec, BlinkGuardSpec })
+            foreach (GuardSpec otherBase in new[] { LayerGuardSpec, BlinkGuardSpec })
             {
-                if (other == spec) continue;
+                if (otherBase.StateName == spec.StateName) continue;
+
+                GuardSpec other = ResolveGuardSpec(controller, otherBase);
+                if (other == null) continue;
                 if (FindGuard(stateMachine, other, out AnimatorStateTransition otherTransition) == null) continue;
                 if (IsExemptSibling(guardTransition, otherTransition, other)) continue;
-                if (HasConditionOn(guardTransition, other.ParamName)) continue;
 
-                guardTransition.AddCondition(other.ClearMode, other.ClearThreshold, other.ParamName);
+                EnsureClearCondition(guardTransition, other, spec.UndoName);
             }
         }
 
@@ -1197,6 +1489,14 @@ namespace Pawlygon.UnityTools.Editor
         {
             if (controller == null || layers == null) return (0, 0);
 
+            // Never write conditions that the existing parameter's type cannot evaluate
+            string parameterError = GetLayerGuardParameterError(controller);
+            if (parameterError != null)
+            {
+                Debug.LogError($"{LogPrefix} {parameterError}");
+                return (0, 0);
+            }
+
             Undo.RegisterCompleteObjectUndo(controller, "Apply FacialExpressionsDisabled Guards");
 
             EnsureParameterExists(controller);
@@ -1212,15 +1512,15 @@ namespace Pawlygon.UnityTools.Editor
                 {
                     if (transition.SelectedForFix && !transition.HasDisabledGuard)
                     {
-                        ApplyTransitionGuard(transition);
+                        ApplyTransitionGuard(controller, transition);
                         transitionFixCount++;
                     }
                 }
 
                 // Layer-level fix (creates a new guard or repairs an outdated one)
-                if (layer.SelectedForLayerDisable && !layer.AlreadyHasLayerGuard)
+                if (layer.SelectedForLayerDisable && !layer.AlreadyHasLayerGuard &&
+                    EnsureGuard(controller, layer.LayerIndex, LayerGuardSpec))
                 {
-                    ApplyLayerGuard(controller, layer);
                     layerFixCount++;
                     if (layer.LayerGuardNeedsRepair) layerRepairCount++;
                 }
@@ -1428,11 +1728,12 @@ namespace Pawlygon.UnityTools.Editor
         {
             List<BlinkLayerAnalysis> results = new List<BlinkLayerAnalysis>();
             AnimatorControllerLayer[] controllerLayers = controller.layers;
+            GuardSpec blinkSpec = ResolveGuardSpecForAnalysis(controller, BlinkGuardSpec);
 
             for (int i = 0; i < controllerLayers.Length; i++)
             {
                 AnimatorControllerLayer layer = controllerLayers[i];
-                BlinkLayerAnalysis analysis = AnalyzeBlinkLayer(layer, i);
+                BlinkLayerAnalysis analysis = AnalyzeBlinkLayer(layer, i, blinkSpec);
 
                 if (analysis.ConfidenceScore > 0)
                 {
@@ -1447,9 +1748,9 @@ namespace Pawlygon.UnityTools.Editor
         /// Scores a single layer for blink likelihood using name keywords,
         /// animation clip blendshape bindings, and state count heuristics.
         /// </summary>
-        private static BlinkLayerAnalysis AnalyzeBlinkLayer(AnimatorControllerLayer layer, int layerIndex)
+        private static BlinkLayerAnalysis AnalyzeBlinkLayer(AnimatorControllerLayer layer, int layerIndex, GuardSpec blinkSpec)
         {
-            GuardStatus guardStatus = GetGuardStatus(layer.stateMachine, BlinkGuardSpec);
+            GuardStatus guardStatus = GetGuardStatus(layer.stateMachine, blinkSpec);
 
             BlinkLayerAnalysis analysis = new BlinkLayerAnalysis
             {
@@ -1598,18 +1899,13 @@ namespace Pawlygon.UnityTools.Editor
 
         /// <summary>
         /// Ensures the EyeTrackingActive float parameter exists on the controller.
-        /// If it already exists, this method is a no-op.
+        /// If a parameter with that name already exists (of any type, e.g. a Bool declared by
+        /// another tool), this method is a no-op: the blink guard's conditions are adapted to its
+        /// type instead (see <see cref="ResolveGuardSpec"/>).
         /// </summary>
         internal static void EnsureEyeTrackingParameterExists(AnimatorController controller)
         {
-            AnimatorControllerParameter[] existingParams = controller.parameters;
-            foreach (AnimatorControllerParameter param in existingParams)
-            {
-                if (param.name == EyeTrackingActiveParam)
-                {
-                    return;
-                }
-            }
+            if (FindParameter(controller, EyeTrackingActiveParam) != null) return;
 
             controller.AddParameter(EyeTrackingActiveParam, AnimatorControllerParameterType.Float);
             Debug.Log($"{LogPrefix} Added float parameter '{EyeTrackingActiveParam}' to FX controller.");
@@ -1618,7 +1914,8 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Applies (or repairs) a blink guard: an empty state entered from AnyState while
         /// EyeTrackingActive &gt; 0.5, which returns to the layer's default state once
-        /// EyeTrackingActive &lt; 0.5 so blinking resumes when eye tracking turns off.
+        /// EyeTrackingActive &lt; 0.5 so blinking resumes when eye tracking turns off
+        /// (If / IfNot when EyeTrackingActive already exists as a Bool).
         /// The guard state's writeDefaultValues matches the layer's dominant WD setting.
         /// If the layer already has a guard from an older version, it is repaired in place.
         /// </summary>
@@ -1663,6 +1960,14 @@ namespace Pawlygon.UnityTools.Editor
         {
             if (controller == null || blinkLayers == null || blinkLayers.Count == 0) return 0;
 
+            // Never write conditions that the existing parameter's type cannot evaluate
+            string parameterError = GetBlinkGuardParameterError(controller);
+            if (parameterError != null)
+            {
+                Debug.LogError($"{LogPrefix} {parameterError}");
+                return 0;
+            }
+
             Undo.RegisterCompleteObjectUndo(controller, "Apply EyeTrackingActive Blink Guards");
 
             EnsureEyeTrackingParameterExists(controller);
@@ -1672,9 +1977,9 @@ namespace Pawlygon.UnityTools.Editor
 
             foreach (BlinkLayerAnalysis blinkLayer in blinkLayers)
             {
-                if (blinkLayer.SelectedForGuard && !blinkLayer.AlreadyHasBlinkGuard)
+                if (blinkLayer.SelectedForGuard && !blinkLayer.AlreadyHasBlinkGuard &&
+                    EnsureGuard(controller, blinkLayer.LayerIndex, BlinkGuardSpec))
                 {
-                    ApplyBlinkGuard(controller, blinkLayer);
                     guardCount++;
                     if (blinkLayer.BlinkGuardNeedsRepair) repairCount++;
                 }

@@ -270,8 +270,9 @@ namespace Pawlygon.UnityTools.Editor
             EditorGUILayout.Space(4f);
 
             string readOnlyReason = GetReadOnlyBlockReason();
+            string parameterError = FXGestureCheckerCore.GetLayerGuardParameterError(fxController);
 
-            using (new EditorGUI.DisabledScope(!anySelected || readOnlyReason != null))
+            using (new EditorGUI.DisabledScope(!anySelected || readOnlyReason != null || parameterError != null))
             {
                 string buttonLabel = workOnCopy
                     ? "Copy FX Controller & Apply Selected Fixes"
@@ -287,6 +288,11 @@ namespace Pawlygon.UnityTools.Editor
             if (readOnlyReason != null)
             {
                 EditorGUILayout.HelpBox(readOnlyReason, MessageType.Error);
+            }
+
+            if (parameterError != null)
+            {
+                EditorGUILayout.HelpBox(parameterError, MessageType.Error);
             }
 
             if (workOnCopy && anySelected)
@@ -345,8 +351,9 @@ namespace Pawlygon.UnityTools.Editor
             EditorGUILayout.Space(4f);
 
             string readOnlyReason = GetReadOnlyBlockReason();
+            string parameterError = FXGestureCheckerCore.GetBlinkGuardParameterError(fxController);
 
-            using (new EditorGUI.DisabledScope(!anySelected || readOnlyReason != null))
+            using (new EditorGUI.DisabledScope(!anySelected || readOnlyReason != null || parameterError != null))
             {
                 string buttonLabel = workOnCopy
                     ? "Copy FX Controller & Apply Blink Guards"
@@ -362,6 +369,11 @@ namespace Pawlygon.UnityTools.Editor
             if (readOnlyReason != null)
             {
                 EditorGUILayout.HelpBox(readOnlyReason, MessageType.Error);
+            }
+
+            if (parameterError != null)
+            {
+                EditorGUILayout.HelpBox(parameterError, MessageType.Error);
             }
 
             if (workOnCopy && anySelected)
@@ -477,13 +489,21 @@ namespace Pawlygon.UnityTools.Editor
         // =====================================================================
 
         /// <summary>
-        /// Validates that an analyzed, editable controller is available before applying.
+        /// Validates that an analyzed, editable controller is available before applying, and that
+        /// its guard parameter can express the guard (checked before any copy is made).
         /// </summary>
-        private bool CanApply()
+        /// <param name="parameterError">The guard parameter error for the guards being applied, or null.</param>
+        private bool CanApply(string parameterError)
         {
             if (fxController == null)
             {
                 SetStatus("No FX controller loaded. Run analysis first.", MessageType.Error);
+                return false;
+            }
+
+            if (parameterError != null)
+            {
+                SetStatus(parameterError, MessageType.Error);
                 return false;
             }
 
@@ -499,7 +519,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private void ApplySelectedFixes()
         {
-            if (!CanApply()) return;
+            if (!CanApply(FXGestureCheckerCore.GetLayerGuardParameterError(fxController))) return;
 
             // --- Copy mode: duplicate the controller and switch to the copy ---
             if (workOnCopy && !SwitchToCopy()) return;
@@ -524,7 +544,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private void ApplySelectedBlinkGuards()
         {
-            if (!CanApply()) return;
+            if (!CanApply(FXGestureCheckerCore.GetBlinkGuardParameterError(fxController))) return;
 
             // --- Copy mode: duplicate the controller and switch to the copy ---
             if (workOnCopy && !SwitchToCopy()) return;

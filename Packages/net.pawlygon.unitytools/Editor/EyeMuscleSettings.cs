@@ -690,20 +690,37 @@ namespace Pawlygon.UnityTools.Editor
             Quaternion leftRotation = EyeMuscleSettingsCore.GetEyeRotation(directionName, leftValue, true);
             Quaternion rightRotation = EyeMuscleSettingsCore.GetEyeRotation(directionName, rightValue, false);
 
-            if (leftEyeBone != null)
-            {
-                leftEyeBone.localRotation = leftEyeOriginalRotation * leftRotation;
-            }
-
-            if (rightEyeBone != null)
-            {
-                rightEyeBone.localRotation = rightEyeOriginalRotation * rightRotation;
-            }
+            ApplyAvatarSpaceRotation(leftEyeBone, leftEyeOriginalRotation, leftRotation);
+            ApplyAvatarSpaceRotation(rightEyeBone, rightEyeOriginalRotation, rightRotation);
 
             // Apply blendshapes: set active direction's shapes to 100, restore all others
             ApplyBlendshapesForDirection(activePreview);
 
             SceneView.RepaintAll();
+        }
+
+        /// <summary>
+        /// Turns an eye bone from its pre-preview pose by <paramref name="avatarSpaceRotation"/>
+        /// (pitch about the avatar's right axis, yaw about its up axis). Working in the avatar
+        /// root's space instead of the bone's local axes gives the right direction whatever the
+        /// bone's orientation (Blender-style rigs often point the bone's local Y forward, which
+        /// would turn a local-Y "yaw" into a roll). Only the bone's rotation is written, and
+        /// <see cref="StopPreview"/> restores its original local rotation exactly.
+        /// </summary>
+        private void ApplyAvatarSpaceRotation(Transform eyeBone, Quaternion originalLocalRotation, Quaternion avatarSpaceRotation)
+        {
+            if (eyeBone == null) return;
+
+            Quaternion avatarRotation = previewAnimator != null ? previewAnimator.transform.rotation : Quaternion.identity;
+            Quaternion worldOffset = avatarRotation * avatarSpaceRotation * Quaternion.Inverse(avatarRotation);
+
+            // The pre-preview world rotation, rebuilt from the parent so it stays valid if the
+            // head moved since the preview started
+            Quaternion originalWorldRotation = eyeBone.parent != null
+                ? eyeBone.parent.rotation * originalLocalRotation
+                : originalLocalRotation;
+
+            eyeBone.rotation = worldOffset * originalWorldRotation;
         }
 
         /// <summary>

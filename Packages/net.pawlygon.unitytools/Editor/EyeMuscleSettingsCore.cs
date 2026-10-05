@@ -497,11 +497,18 @@ namespace Pawlygon.UnityTools.Editor
         /// where the FT animation clips set muscle values like -2 (In), 2 (Out),
         /// 2.8 (Up), -3.5 (Down). This previews the maximum rotation the FT system
         /// will produce for the given rig limits.
+        /// <para>
+        /// The rotation is expressed in the avatar's space (X = the avatar's right, so pitch;
+        /// Y = the avatar's up, so yaw), like humanoid eye muscles, and not in the eye bone's local
+        /// space: bone axes depend on how the rig was authored (e.g. Blender bones point along
+        /// their local Y), so a local X/Y rotation turns the eye the wrong way on many rigs.
+        /// Convert it to world space with the avatar root's rotation before applying it.
+        /// </para>
         /// </summary>
         /// <param name="direction">The direction: "In", "Out", "Up", or "Down".</param>
         /// <param name="muscleLimit">The muscle limit value (degrees) set on the rig.</param>
         /// <param name="isLeftEye">Whether this is the left eye (affects In/Out yaw sign).</param>
-        /// <returns>A rotation quaternion representing the predicted eye movement.</returns>
+        /// <returns>A rotation in avatar space representing the predicted eye movement.</returns>
         internal static Quaternion GetEyeRotation(string direction, float muscleLimit, bool isLeftEye)
         {
             float ftAnimValue;
@@ -526,7 +533,7 @@ namespace Pawlygon.UnityTools.Editor
                     // Positive pitch = look down; rotation is positive (e.g. -8 * -3.5 = 28)
                     return Quaternion.Euler(Mathf.Abs(rotation), 0f, 0f);
                 case "In":
-                    // Left eye In = look right (+Y), Right eye In = look left (-Y)
+                    // Left eye In = look toward the avatar's right (+Y), Right eye In = toward its left (-Y)
                     float inYaw = isLeftEye ? rotation : -rotation;
                     return Quaternion.Euler(0f, inYaw, 0f);
                 case "Out":

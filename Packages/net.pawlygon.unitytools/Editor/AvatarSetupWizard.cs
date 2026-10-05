@@ -3496,29 +3496,27 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
-            // Restore user selections on re-analyzed gesture layers
+            // Restore the user's selections exactly. Analysis pre-selects some items (outdated
+            // guard repairs, high-confidence blink layers), so anything the user unticked must be
+            // explicitly cleared on the re-analyzed copy, not just left at its default.
             if (copyResult.Layers != null)
             {
                 foreach (FXGestureCheckerCore.LayerAnalysis layer in copyResult.Layers)
                 {
-                    if (selectedLayerIndices.Contains(layer.LayerIndex))
-                        layer.SelectedForLayerDisable = true;
+                    layer.SelectedForLayerDisable = selectedLayerIndices.Contains(layer.LayerIndex);
                     foreach (FXGestureCheckerCore.TransitionAnalysis t in layer.GestureTransitions)
                     {
                         string key = $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}";
-                        if (selectedTransitionKeys.Contains(key))
-                            t.SelectedForFix = true;
+                        t.SelectedForFix = selectedTransitionKeys.Contains(key);
                     }
                 }
             }
 
-            // Restore user selections on re-analyzed blink layers
             if (copyResult.BlinkLayers != null)
             {
                 foreach (FXGestureCheckerCore.BlinkLayerAnalysis bl in copyResult.BlinkLayers)
                 {
-                    if (selectedBlinkIndices.Contains(bl.LayerIndex))
-                        bl.SelectedForGuard = true;
+                    bl.SelectedForGuard = selectedBlinkIndices.Contains(bl.LayerIndex);
                 }
             }
 

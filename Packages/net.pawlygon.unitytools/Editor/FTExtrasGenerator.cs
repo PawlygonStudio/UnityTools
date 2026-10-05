@@ -35,6 +35,11 @@ namespace Pawlygon.UnityTools.Editor
         internal const string PrefabName = "!Pawlygon - Face Tracking Extras";
         private const string ControllerName = "FX - Face Tracking Extras";
         private const string BuildControllerName = "_Building - FX - Face Tracking Extras";
+
+        /// <summary>Menu icon for the Tail follows Jaw toggle, copied into each output folder.</summary>
+        internal const string TailJawIconFileName = "Icon - Tail Follows Jaw.png";
+        private const string BundledTailJawIconPath = "Editor/Icons/TailFollowsJaw.png";
+        private const int MenuIconMaxSize = 256;
         private const string AnimationsFolderName = "Animations";
 
         private const string ParamPrefix = "Pawlygon/FTExtras/";
@@ -144,6 +149,14 @@ namespace Pawlygon.UnityTools.Editor
                 if (layerControlType == null) result.Warnings.Add($"{layerControlProblem} The fake pupil dilation was skipped.");
             }
 
+            // Profiles created before the VRCFT/Extra default still carry an old default submenu name.
+            if (FTExtrasGenerationSettings.LegacyMenuNames.Contains(settings.menuName))
+            {
+                Undo.RecordObject(profile, "Update Face Tracking Extras Menu");
+                settings.menuName = FTExtrasGenerationSettings.DefaultMenuName;
+                EditorUtility.SetDirty(profile);
+            }
+
             string moveError = MoveProfileToOutputFolder(profile, avatar);
             if (moveError != null) result.Warnings.Add($"Could not move the profile: {moveError}");
 
@@ -211,8 +224,9 @@ namespace Pawlygon.UnityTools.Editor
             ScriptableObject parameters = null;
             try
             {
+                Texture2D tailJawIcon = EnsureTailJawIcon(folder, result.Warnings);
                 parameters = SaveOrReplace(CreateExpressionParameters(settings), PawlygonEditorUtils.CombineAssetPath(folder, "Parameters - Face Tracking Extras.asset"));
-                menu = SaveOrReplace(CreateExpressionsMenu(settings), PawlygonEditorUtils.CombineAssetPath(folder, "Menu - Face Tracking Extras.asset"));
+                menu = SaveOrReplace(CreateExpressionsMenu(settings, tailJawIcon), PawlygonEditorUtils.CombineAssetPath(folder, "Menu - Face Tracking Extras.asset"));
             }
             catch (Exception ex)
             {
@@ -699,7 +713,39 @@ namespace Pawlygon.UnityTools.Editor
             return asset;
         }
 
-        private static ScriptableObject CreateExpressionsMenu(FTExtrasGenerationSettings settings)
+        /// <summary>
+        /// Copies the bundled Tail follows Jaw icon into the output folder, so the generated menu does not
+        /// reference a file inside the package. An icon already in the folder is kept, which lets users swap
+        /// in their own. Returns null (with a warning) if the bundled icon is missing.
+        /// </summary>
+        private static Texture2D EnsureTailJawIcon(string folder, List<string> warnings)
+        {
+            string target = PawlygonEditorUtils.CombineAssetPath(folder, TailJawIconFileName);
+            var existing = AssetDatabase.LoadAssetAtPath<Texture2D>(target);
+            if (existing != null) return existing;
+
+            string source = PawlygonEditorUtils.CombineAssetPath(PawlygonPackagePaths.GetPackageRootAssetPath(), BundledTailJawIconPath);
+            if (!AssetDatabase.CopyAsset(source, target))
+            {
+                warnings.Add($"Could not copy the Tail follows Jaw icon from {source}; the menu toggle has no icon.");
+                return null;
+            }
+
+            // VRChat menu icons are small; keep the copy light.
+            if (AssetImporter.GetAtPath(target) is TextureImporter importer)
+            {
+                importer.textureType = TextureImporterType.Default;
+                importer.alphaIsTransparency = true;
+                importer.mipmapEnabled = false;
+                importer.maxTextureSize = MenuIconMaxSize;
+                importer.textureCompression = TextureImporterCompression.CompressedHQ;
+                importer.SaveAndReimport();
+            }
+
+            return AssetDatabase.LoadAssetAtPath<Texture2D>(target);
+        }
+
+        private static ScriptableObject CreateExpressionsMenu(FTExtrasGenerationSettings settings, Texture2D icon)
         {
             Type menuType = FindType("VRCExpressionsMenu", typeof(ScriptableObject))
                 ?? throw new InvalidOperationException("VRCExpressionsMenu type not found");
@@ -711,6 +757,7 @@ namespace Pawlygon.UnityTools.Editor
             SetField(control, "name", "Tail follows Jaw");
             SetField(control, "type", "Toggle");
             SetField(control, "value", 1f);
+            if (icon != null) SetField(control, "icon", icon);
 
             object parameter = Activator.CreateInstance(controlParamType);
             SetField(parameter, "name", settings.tailFollowsJawParameter);

@@ -87,8 +87,13 @@ namespace Pawlygon.UnityTools.Editor
         [Header("Menu")]
         [Tooltip("Synced, saved toggle that lets the jaw swing the tail.")]
         public string tailFollowsJawParameter = "Pawlygon/TailFollowsJaw";
-        [Tooltip("Submenu the toggle is placed in.")]
-        public string menuName = "Face Tracking Extras";
+        [Tooltip("Submenu path the toggle is placed in. '/' creates nested submenus, e.g. VRCFT/Extra.")]
+        public string menuName = DefaultMenuName;
+
+        internal const string DefaultMenuName = "VRCFT/Extra";
+
+        /// <summary>Earlier defaults; profiles still using one are moved to <see cref="DefaultMenuName"/>.</summary>
+        internal static readonly string[] LegacyMenuNames = { "Face Tracking Extras", "Custom Face Tracking" };
 
         [Header("Fake Pupil Dilation")]
         [Tooltip("Animates EyeDilation/EyeConstrict while eye tracking is active and real pupil dilation is off.")]

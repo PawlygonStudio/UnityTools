@@ -290,6 +290,14 @@ namespace Pawlygon.UnityTools.Editor
         /// <returns>True if the button was clicked.</returns>
         public static bool DrawPrimaryButton(string text, float height = 30f, params GUILayoutOption[] options)
         {
+            return DrawPrimaryButton(new GUIContent(text), height, options);
+        }
+
+        /// <summary>
+        /// Primary button with a tooltip, e.g. to explain why the main action is disabled.
+        /// </summary>
+        public static bool DrawPrimaryButton(GUIContent content, float height = 30f, params GUILayoutOption[] options)
+        {
             if (primaryButtonStyle == null)
             {
                 primaryButtonStyle = new GUIStyle(GUI.skin.button) { fontStyle = FontStyle.Bold, fontSize = 12 };
@@ -299,7 +307,7 @@ namespace Pawlygon.UnityTools.Editor
             GUI.backgroundColor = EditorGUIUtility.isProSkin
                 ? new Color(0.2f, 0.6f, 1f)
                 : new Color(0.1f, 0.4f, 0.8f);
-            bool clicked = GUILayout.Button(text, primaryButtonStyle, WithHeight(height, options));
+            bool clicked = GUILayout.Button(content, primaryButtonStyle, WithHeight(height, options));
             GUI.backgroundColor = oldColor;
             return clicked;
         }
@@ -431,6 +439,8 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Draws <paramref name="status"/> as a pinned bar with an icon, an optional action button and a dismiss
         /// button. Draws nothing when there is no message. Place it outside the scroll view so it stays visible.
+        /// Setting a message from inside OnGUI adds the bar in the same event, so follow the change with
+        /// <c>GUIUtility.ExitGUI()</c> to avoid layout errors.
         /// </summary>
         public static void DrawStatusBar(PawlygonStatus status)
         {

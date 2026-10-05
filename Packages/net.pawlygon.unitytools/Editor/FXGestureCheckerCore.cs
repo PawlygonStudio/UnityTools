@@ -1359,6 +1359,8 @@ namespace Pawlygon.UnityTools.Editor
                 }
             }
 
+            // Also covers a reused leftover guard state
+            Undo.RecordObject(guardState, spec.UndoName);
             guardState.writeDefaultValues = writeDefaults;
 
             // With Write Defaults off an empty state holds the last animated values, so an

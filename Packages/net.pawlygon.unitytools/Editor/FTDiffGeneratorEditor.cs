@@ -163,6 +163,11 @@ namespace Pawlygon.UnityTools.Editor
             return string.Equals(System.IO.Path.GetExtension(path), ".fbx", System.StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>
+        /// Writes the PatcherHub config for a generator, using the same context building as the
+        /// Avatar Setup Wizard (see <see cref="FTPatchConfigGenerator.BuildContextForGenerator"/>
+        /// for how the values the wizard knows from its avatar entry are derived here).
+        /// </summary>
         private static void GeneratePatchConfig(FTDiffGenerator generator)
         {
             if (!FTPatchConfigGenerator.IsPatcherHubAvailable())
@@ -170,25 +175,12 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
-            string baseName = generator.GetBaseName();
-            string patcherFolder = generator.GetPatcherFolderAssetPath();
-            if (string.IsNullOrEmpty(baseName) || string.IsNullOrEmpty(patcherFolder))
+            FTPatchConfigGenerator.ConfigContext context = FTPatchConfigGenerator.BuildContextForGenerator(generator);
+            if (context == null)
             {
+                Debug.LogWarning($"[FTDiffGenerator] Could not build a PatcherHub config for '{generator.name}'. Check the FBX references and output directory.", generator);
                 return;
             }
-
-            string diffFilesFolder = patcherFolder + "/data/DiffFiles";
-            string fbxFolder = System.IO.Path.GetDirectoryName(
-                AssetDatabase.GetAssetPath(generator.originalModelFbx))?.Replace('\\', '/');
-
-            var context = new FTPatchConfigGenerator.ConfigContext
-            {
-                OriginalFbx = generator.originalModelFbx,
-                FbxDiffAssetPath = diffFilesFolder + "/" + FTDiffGenerator.GetFbxDiffFileName(baseName),
-                MetaDiffAssetPath = diffFilesFolder + "/" + FTDiffGenerator.GetMetaDiffFileName(baseName),
-                ConfigOutputFolder = patcherFolder,
-                FbxOutputPath = fbxFolder
-            };
 
             FTPatchConfigGenerator.GenerateConfig(context);
         }

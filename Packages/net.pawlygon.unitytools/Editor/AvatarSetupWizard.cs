@@ -675,8 +675,8 @@ namespace Pawlygon.UnityTools.Editor
                     continue;
                 }
 
-                string fbxDiffPath = GetFbxDiffAssetPath(entry.avatarRootPath, baseName);
-                string metaDiffPath = PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderPath(entry.avatarRootPath), FTDiffGenerator.GetMetaDiffFileName(baseName));
+                string fbxDiffPath = FTDiffGenerator.GetFbxDiffAssetPath(entry.avatarRootPath, baseName);
+                string metaDiffPath = FTDiffGenerator.GetMetaDiffAssetPath(entry.avatarRootPath, baseName);
                 if (!File.Exists(ToAbsolutePath(fbxDiffPath)) || !File.Exists(ToAbsolutePath(metaDiffPath)))
                 {
                     continue;
@@ -1414,7 +1414,7 @@ namespace Pawlygon.UnityTools.Editor
                     continue;
                 }
 
-                string diffPath = GetFbxDiffAssetPath(avatarRootPath, diffBaseName);
+                string diffPath = FTDiffGenerator.GetFbxDiffAssetPath(avatarRootPath, diffBaseName);
                 if (diffOwners.TryGetValue(diffPath, out int diffOwner))
                 {
                     return $"Avatars {diffOwner + 1} and {i + 1} would both write the diff file '{diffPath}' (spaces in FBX names become underscores in diff file names). Rename one of the source FBXs or use separate folders.";
@@ -1801,34 +1801,26 @@ namespace Pawlygon.UnityTools.Editor
 
         /// <summary>
         /// Builds the PatcherHub config context for an entry whose structure has been created.
-        /// Used by every path that writes a config so they all produce the same asset name,
-        /// display name and diff references. Returns null when the diff base name or the
-        /// avatar root is unknown.
+        /// Used by every path that writes a config; the shared
+        /// <see cref="FTPatchConfigGenerator.BuildContext"/> keeps it identical to what the diff
+        /// generator inspector writes. Returns null when the diff base name or the avatar root
+        /// is unknown.
         /// </summary>
         private FTPatchConfigGenerator.ConfigContext BuildPatchConfigContext(AvatarEntry entry, FTDiffGenerator diffGenerator)
         {
-            string baseName = diffGenerator != null ? diffGenerator.GetBaseName() : null;
-            if (string.IsNullOrEmpty(baseName) || string.IsNullOrEmpty(entry.avatarRootPath))
+            if (diffGenerator == null)
             {
                 return null;
             }
 
-            string patcherFolder = GetPatcherFolderPath(entry.avatarRootPath);
-            string fbxFolder = PawlygonEditorUtils.CombineAssetPath(entry.avatarRootPath, "FBX");
-            string avatarName = GetPatchConfigAvatarName(entry);
             GameObject copiedPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedPrefabPath);
 
-            return new FTPatchConfigGenerator.ConfigContext
-            {
-                OriginalFbx = diffGenerator.originalModelFbx,
-                AvatarDisplayName = avatarName,
-                FbxDiffAssetPath = GetFbxDiffAssetPath(entry.avatarRootPath, baseName),
-                MetaDiffAssetPath = PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderPath(entry.avatarRootPath), FTDiffGenerator.GetMetaDiffFileName(baseName)),
-                ConfigOutputFolder = patcherFolder,
-                FbxOutputPath = fbxFolder,
-                PatchedPrefabs = copiedPrefab != null ? new List<GameObject> { copiedPrefab } : null,
-                ConfigAssetName = GetPatchConfigAssetName(avatarName)
-            };
+            return FTPatchConfigGenerator.BuildContext(
+                diffGenerator.originalModelFbx,
+                entry.avatarRootPath,
+                diffGenerator.GetBaseName(),
+                GetPatchConfigAvatarName(entry),
+                copiedPrefab != null ? new[] { copiedPrefab } : null);
         }
 
         /// <summary>
@@ -1860,29 +1852,9 @@ namespace Pawlygon.UnityTools.Editor
             return string.IsNullOrEmpty(name) ? GetEntryDisplayName(entry) : name;
         }
 
-        private static string GetPatchConfigAssetName(string avatarName)
-        {
-            return avatarName + " FTPatchConfig";
-        }
-
-        private static string GetPatcherFolderPath(string avatarRootPath)
-        {
-            return PawlygonEditorUtils.CombineAssetPath(avatarRootPath, "patcher");
-        }
-
-        private static string GetDiffFilesFolderPath(string avatarRootPath)
-        {
-            return PawlygonEditorUtils.CombineAssetPath(GetPatcherFolderPath(avatarRootPath), "data", "DiffFiles");
-        }
-
-        private static string GetFbxDiffAssetPath(string avatarRootPath, string diffBaseName)
-        {
-            return PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderPath(avatarRootPath), FTDiffGenerator.GetFbxDiffFileName(diffBaseName));
-        }
-
         private string GetPatchConfigAssetPath(AvatarEntry entry, string avatarRootPath)
         {
-            return PawlygonEditorUtils.CombineAssetPath(GetPatcherFolderPath(avatarRootPath), GetPatchConfigAssetName(GetPatchConfigAvatarName(entry)) + ".asset");
+            return FTPatchConfigGenerator.GetConfigAssetPath(avatarRootPath, GetPatchConfigAvatarName(entry));
         }
 
         private static void MarkDiffGenerationFailed(AvatarEntry entry, string errorMessage)

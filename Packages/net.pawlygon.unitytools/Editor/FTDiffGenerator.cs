@@ -116,7 +116,7 @@ namespace Pawlygon.UnityTools.Editor
 #endif
 
             string baseName = GetDiffBaseName(originalFbxPath);
-            string diffOutputPath = Path.Combine(Path.GetFullPath(outputFolderPath), "patcher", "data", "DiffFiles");
+            string diffOutputPath = Path.GetFullPath(GetDiffFilesFolderAssetPath(outputFolderPath));
             string fbxDiffOutputPath = Path.Combine(diffOutputPath, GetFbxDiffFileName(baseName));
             string metaDiffOutputPath = Path.Combine(diffOutputPath, GetMetaDiffFileName(baseName));
 
@@ -463,7 +463,31 @@ namespace Pawlygon.UnityTools.Editor
         public string GetPatcherFolderAssetPath()
         {
             if (outputDirectory == null) return null;
-            return AssetDatabase.GetAssetPath(outputDirectory) + "/patcher";
+            return GetPatcherFolderAssetPath(AssetDatabase.GetAssetPath(outputDirectory));
+        }
+
+        /// <summary>Asset path of the patcher folder inside an output (avatar root) folder.</summary>
+        public static string GetPatcherFolderAssetPath(string outputFolderAssetPath)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(outputFolderAssetPath, "patcher");
+        }
+
+        /// <summary>Asset path of the folder the .hdiff files are written to for an output folder.</summary>
+        public static string GetDiffFilesFolderAssetPath(string outputFolderAssetPath)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(GetPatcherFolderAssetPath(outputFolderAssetPath), "data", "DiffFiles");
+        }
+
+        /// <summary>Asset path of the FBX .hdiff for an output folder and diff base name.</summary>
+        public static string GetFbxDiffAssetPath(string outputFolderAssetPath, string baseName)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderAssetPath(outputFolderAssetPath), GetFbxDiffFileName(baseName));
+        }
+
+        /// <summary>Asset path of the .meta .hdiff for an output folder and diff base name.</summary>
+        public static string GetMetaDiffAssetPath(string outputFolderAssetPath, string baseName)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderAssetPath(outputFolderAssetPath), GetMetaDiffFileName(baseName));
         }
 
         private bool SetExecutablePermission(string path)

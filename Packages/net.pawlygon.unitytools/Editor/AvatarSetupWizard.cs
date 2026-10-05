@@ -634,7 +634,8 @@ namespace Pawlygon.UnityTools.Editor
         {
             int choice = EditorUtility.DisplayDialogComplex(
                 "Start Over",
-                "Start a new setup? The wizard forgets the progress of this one; the files it created stay in your project.\n\n" +
+                "Start a new setup? The wizard forgets the progress of this one; the files it created stay in your project, " +
+                "and entering the same avatars and folders again offers to resume them.\n\n" +
                 "Keep Inputs keeps the source FBXs, prefabs and folder names so you can adjust them. " +
                 "Clear Everything empties the form.",
                 "Keep Inputs",

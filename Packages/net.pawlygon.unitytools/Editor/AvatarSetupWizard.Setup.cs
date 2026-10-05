@@ -257,8 +257,9 @@ namespace Pawlygon.UnityTools.Editor
             string folders = string.Join("\n", setupExistingRoots.Select(path => "• " + path));
             EditorGUILayout.HelpBox(
                 $"These folders already exist from an earlier setup:\n{folders}\n\n" +
-                "Creating the structure again deletes them first (you'll be asked to confirm).",
-                MessageType.Warning);
+                "Resume continues that setup with the files that are there and opens the furthest step they allow. " +
+                "Overwrite deletes the folders and starts fresh.",
+                MessageType.Info);
         }
 
         private void DrawSetupActions()
@@ -282,13 +283,33 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
+            bool hasExistingSetup = setupExistingRoots.Count > 0;
+
+            if (hasExistingSetup &&
+                PawlygonEditorUI.DrawSecondaryButton(new GUIContent("Overwrite…", "Delete the existing folders (after a confirmation) and create everything again."),
+                    ActionButtonHeight))
+            {
+                if (ValidateBeforeCreate())
+                {
+                    CreateAvatarStructures(overwriteConfirmed: false);
+                }
+
+                GUIUtility.ExitGUI();
+            }
+
             GUILayout.FlexibleSpace();
 
-            var create = new GUIContent("Create Avatar Structure",
-                "Copy the FBX and prefab of each avatar into the folders above and create the working scene.");
-            if (PawlygonEditorUI.DrawPrimaryButton(create, ActionButtonHeight, GUILayout.MinWidth(PrimaryButtonMinWidth)))
+            var primary = hasExistingSetup
+                ? new GUIContent("Resume Setup", "Continue the earlier setup with the files in the existing folders. Nothing is deleted.")
+                : new GUIContent("Create Avatar Structure", "Copy the FBX and prefab of each avatar into the folders above and create the working scene.");
+            if (PawlygonEditorUI.DrawPrimaryButton(primary, ActionButtonHeight, GUILayout.MinWidth(PrimaryButtonMinWidth)))
             {
-                TryCreateAvatarStructures();
+                if (ValidateBeforeCreate())
+                {
+                    if (hasExistingSetup) ResumeExistingSetup();
+                    else CreateAvatarStructures(overwriteConfirmed: false);
+                }
+
                 // Creates assets and scenes, shows dialogs and changes the step.
                 GUIUtility.ExitGUI();
             }
@@ -660,17 +681,18 @@ namespace Pawlygon.UnityTools.Editor
         // Creating the structure
         // =====================================================================
 
-        private void TryCreateAvatarStructures()
+        /// <summary>Shows every validation error from now on; returns false (with a status error) when the inputs aren't valid.</summary>
+        private bool ValidateBeforeCreate()
         {
             createAttempted = true;
             string validationMessage = GetSetupValidationMessage();
-            if (!string.IsNullOrEmpty(validationMessage))
+            if (string.IsNullOrEmpty(validationMessage))
             {
-                status.Error($"Fix the marked fields first: {validationMessage}");
-                return;
+                return true;
             }
 
-            CreateAvatarStructures(overwriteConfirmed: false);
+            status.Error($"Fix the marked fields first: {validationMessage}");
+            return false;
         }
 
         /// <summary>

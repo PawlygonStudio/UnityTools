@@ -465,15 +465,15 @@ namespace Pawlygon.UnityTools.Editor
                 string copyPath = FXGestureCheckerCore.GetCopyPath(FXController, GetCopyFolder());
                 string original = AssetDatabase.GetAssetPath(FXController);
                 return overrideController != null
-                    ? $"a copy of the base controller at '{copyPath}' (plus a copy of the override '{overrideController.name}' that uses it, " +
-                      $"given to '{selectedAvatar.name}'). The originals stay unchanged"
-                    : $"a copy at '{copyPath}', given to '{selectedAvatar.name}'. The original '{original}' stays unchanged";
+                    ? $"a copy of the base controller at '{copyPath}' and a copy of the override '{overrideController.name}' that uses it " +
+                      $"('{selectedAvatar.name}' will use them; the originals stay unchanged)"
+                    : $"a copy at '{copyPath}' ('{selectedAvatar.name}' will use it; the original '{original}' stays unchanged)";
             }
 
             string path = AssetDatabase.GetAssetPath(FXController);
             return FXController == sessionCopy
                 ? $"'{path}', the copy made earlier, in place"
-                : $"the original controller '{path}', in place. Every avatar using it changes";
+                : $"the original controller '{path}', in place (every avatar that uses it changes)";
         }
 
         /// <summary>

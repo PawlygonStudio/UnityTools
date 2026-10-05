@@ -34,6 +34,7 @@ namespace Pawlygon.UnityTools.Editor
         internal const string OutputFolderName = "FaceTrackingExtras";
         internal const string PrefabName = "!Pawlygon - Face Tracking Extras";
         private const string ControllerName = "FX - Face Tracking Extras";
+        private const string BuildControllerName = "_Building - FX - Face Tracking Extras";
         private const string AnimationsFolderName = "Animations";
 
         private const string ParamPrefix = "Pawlygon/FTExtras/";
@@ -128,6 +129,14 @@ namespace Pawlygon.UnityTools.Editor
                 return result;
             }
 
+            FTExtrasProfile folderOwner = FindOtherProfileInFolder(profile, GetOutputFolder(avatar));
+            if (folderOwner != null)
+            {
+                result.Message = $"Nothing was generated: {GetOutputFolder(avatar)} already holds the profile '{folderOwner.name}' " +
+                                 $"for '{folderOwner.avatarName}'. Rename one of the avatars or make it a prefab so each gets its own folder.";
+                return result;
+            }
+
             Type layerControlType = null;
             if (settings.fakeDilation)
             {
@@ -145,34 +154,51 @@ namespace Pawlygon.UnityTools.Editor
             var clips = new ClipStore(clipFolder);
 
             // --- Controller ---
-            // An existing controller is emptied and rebuilt in place, so its GUID (and every reference to it,
-            // such as the prefab's VRCFury component or a hand-made merge) stays valid.
+            // The controller is built into a temporary asset first. Only when that succeeds is its content moved
+            // into the real controller, which keeps its GUID (so the prefab's VRCFury component and any hand-made
+            // reference stay valid) and is never left half-built by a failure.
             string controllerPath = PawlygonEditorUtils.CombineAssetPath(folder, ControllerName + ".controller");
-            AnimatorController controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(controllerPath);
-            if (controller != null)
+            string buildPath = PawlygonEditorUtils.CombineAssetPath(folder, BuildControllerName + ".controller");
+            if (AssetDatabase.LoadMainAssetAtPath(buildPath) != null) AssetDatabase.DeleteAsset(buildPath);
+
+            AnimatorController building = AnimatorController.CreateAnimatorControllerAtPath(buildPath);
+            try
             {
-                ClearController(controller);
+                var builder = new ControllerBuilder(building);
+
+                AddParameters(builder, settings);
+
+                BuildInputsLayer(builder, clips, settings);
+                bool earLayer = BuildEarsLayer(builder, clips, profile);
+                bool tailLayer = BuildTailLayer(builder, clips, profile);
+
+                if (!earLayer) result.Warnings.Add("No ear poses move any bones, so no ear layer was generated.");
+                if (!tailLayer) result.Warnings.Add("No tail poses move any bones, so no tail layer was generated.");
+
+                if (settings.fakeDilation && layerControlType != null)
+                {
+                    string dilationWarning = BuildFakeDilationLayer(builder, clips, avatar, settings, layerControlType);
+                    if (dilationWarning != null) result.Warnings.Add(dilationWarning);
+                }
+            }
+            catch
+            {
+                AssetDatabase.DeleteAsset(buildPath);
+                throw;
+            }
+
+            AnimatorController controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(controllerPath);
+            if (controller == null)
+            {
+                if (AssetDatabase.LoadMainAssetAtPath(controllerPath) != null) AssetDatabase.DeleteAsset(controllerPath);
+                string moveControllerError = AssetDatabase.MoveAsset(buildPath, controllerPath);
+                if (!string.IsNullOrEmpty(moveControllerError)) throw new InvalidOperationException($"Could not save the controller: {moveControllerError}");
+                controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(controllerPath);
             }
             else
             {
-                if (AssetDatabase.LoadMainAssetAtPath(controllerPath) != null) AssetDatabase.DeleteAsset(controllerPath);
-                controller = AnimatorController.CreateAnimatorControllerAtPath(controllerPath);
-            }
-            var builder = new ControllerBuilder(controller);
-
-            AddParameters(builder, settings);
-
-            BuildInputsLayer(builder, clips, settings);
-            bool earLayer = BuildEarsLayer(builder, clips, profile);
-            bool tailLayer = BuildTailLayer(builder, clips, profile);
-
-            if (!earLayer) result.Warnings.Add("No ear poses move any bones, so no ear layer was generated.");
-            if (!tailLayer) result.Warnings.Add("No tail poses move any bones, so no tail layer was generated.");
-
-            if (settings.fakeDilation && layerControlType != null)
-            {
-                string dilationWarning = BuildFakeDilationLayer(builder, clips, avatar, settings, layerControlType);
-                if (dilationWarning != null) result.Warnings.Add(dilationWarning);
+                ReplaceControllerContent(building, controller);
+                AssetDatabase.DeleteAsset(buildPath);
             }
 
             EditorUtility.SetDirty(controller);
@@ -208,9 +234,33 @@ namespace Pawlygon.UnityTools.Editor
 
             AssetDatabase.SaveAssets();
 
+            Undo.RecordObject(profile, "Generate Face Tracking Extras");
+            profile.lastGeneratedHash = profile.ComputeGenerationHash();
+            EditorUtility.SetDirty(profile);
+            AssetDatabase.SaveAssetIfDirty(profile);
+
             result.Success = true;
             result.Message = $"Generated {clips.Count} clips and {controller.layers.Length} layers in {folder}.";
             return result;
+        }
+
+        /// <summary>
+        /// Another profile already living in <paramref name="folder"/>, which would mean two avatars share one
+        /// output folder (non-prefab avatars with the same name). Null when the folder is free or already ours.
+        /// </summary>
+        private static FTExtrasProfile FindOtherProfileInFolder(FTExtrasProfile profile, string folder)
+        {
+            if (!AssetDatabase.IsValidFolder(folder)) return null;
+
+            foreach (string guid in AssetDatabase.FindAssets($"t:{nameof(FTExtrasProfile)}", new[] { folder }))
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                if (PawlygonEditorUtils.NormalizeAssetPath(Path.GetDirectoryName(path)) != folder) continue;
+
+                var other = AssetDatabase.LoadAssetAtPath<FTExtrasProfile>(path);
+                if (other != null && other != profile) return other;
+            }
+            return null;
         }
 
         // =====================================================================
@@ -285,21 +335,33 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Removes every layer, parameter and sub-asset (state machines, states, transitions, blend trees,
-        /// behaviours) so the controller can be rebuilt in place.
+        /// Replaces <paramref name="target"/>'s layers, parameters and sub-assets with <paramref name="source"/>'s.
+        /// The sub-assets (state machines, states, transitions, blend trees, behaviours) are moved rather than
+        /// copied, so every reference between them stays intact, and the target keeps its GUID.
         /// </summary>
-        private static void ClearController(AnimatorController controller)
+        private static void ReplaceControllerContent(AnimatorController source, AnimatorController target)
         {
-            controller.layers = Array.Empty<AnimatorControllerLayer>();
-            controller.parameters = Array.Empty<AnimatorControllerParameter>();
+            AnimatorControllerLayer[] layers = source.layers;
+            AnimatorControllerParameter[] parameters = source.parameters;
 
-            string path = AssetDatabase.GetAssetPath(controller);
-            foreach (UnityEngine.Object subAsset in AssetDatabase.LoadAllAssetsAtPath(path))
+            target.layers = Array.Empty<AnimatorControllerLayer>();
+            target.parameters = Array.Empty<AnimatorControllerParameter>();
+            foreach (UnityEngine.Object oldSubAsset in AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(target)))
             {
-                if (subAsset == null || subAsset == controller) continue;
-                AssetDatabase.RemoveObjectFromAsset(subAsset);
-                UnityEngine.Object.DestroyImmediate(subAsset, true);
+                if (oldSubAsset == null || oldSubAsset == target) continue;
+                AssetDatabase.RemoveObjectFromAsset(oldSubAsset);
+                UnityEngine.Object.DestroyImmediate(oldSubAsset, true);
             }
+
+            foreach (UnityEngine.Object newSubAsset in AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(source)))
+            {
+                if (newSubAsset == null || newSubAsset == source) continue;
+                AssetDatabase.RemoveObjectFromAsset(newSubAsset);
+                AssetDatabase.AddObjectToAsset(newSubAsset, target);
+            }
+
+            target.parameters = parameters;
+            target.layers = layers;
         }
 
         // =====================================================================

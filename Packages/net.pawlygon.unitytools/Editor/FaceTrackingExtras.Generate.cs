@@ -45,6 +45,11 @@ namespace Pawlygon.UnityTools.Editor
                 EditorGUILayout.Space(8f);
 
                 DrawGenerateSummary();
+                if (IsGenerationStale())
+                {
+                    EditorGUILayout.Space(4f);
+                    EditorGUILayout.HelpBox("Poses or settings changed since the last generation. Generate again to update the animations.", MessageType.Warning);
+                }
                 EditorGUILayout.Space(4f);
                 EditorGUILayout.LabelField($"<b>Output:</b> {FTExtrasGenerator.GetOutputFolder(selectedAvatar)}", PawlygonEditorUI.RichMiniLabelStyle);
                 EditorGUILayout.Space(8f);

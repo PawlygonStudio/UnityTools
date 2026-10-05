@@ -145,10 +145,20 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
+        /// <summary>
+        /// Row label for a transition: path-qualified source and destination (e.g.
+        /// "Left Hand/Fist -> Left Hand/Idle") and its gesture conditions.
+        /// </summary>
+        private static string GetTransitionLabel(FXGestureCheckerCore.TransitionAnalysis transition)
+        {
+            string conditions = transition.ConditionLabel ??
+                                $"{transition.GestureParameter}={FXGestureCheckerCore.GetGestureName(transition.GestureValue)}";
+            return $"{transition.SourceName} -> {transition.DestinationName} ({conditions})";
+        }
+
         private static void DrawTransitionRow(FXGestureCheckerCore.TransitionAnalysis transition)
         {
-            string gestureName = FXGestureCheckerCore.GetGestureName(transition.GestureValue);
-            string label = $"{transition.SourceName} -> {transition.DestinationName} ({transition.GestureParameter}={gestureName})";
+            string label = GetTransitionLabel(transition);
 
             using (new EditorGUILayout.HorizontalScope())
             {

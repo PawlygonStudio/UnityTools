@@ -127,18 +127,42 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Holds the analysis results for a single animator state transition
-        /// that references a gesture parameter (GestureLeft or GestureRight).
+        /// Holds the analysis results for a single animator transition that references a gesture
+        /// parameter (GestureLeft or GestureRight). The transition can be an AnyState or state
+        /// transition (<see cref="AnimatorStateTransition"/>) or an Entry / sub-state machine
+        /// transition (<see cref="AnimatorTransition"/>), anywhere in the layer's state machine tree.
         /// </summary>
         internal class TransitionAnalysis
         {
+            /// <summary>
+            /// Where the transition starts, qualified with its sub-state machine path, e.g.
+            /// "AnyState", "Entry", "Idle", "Left Hand/Fist", "Left Hand/Entry" or
+            /// "Left Hand/Exit" (a transition leaving the "Left Hand" sub-state machine).
+            /// </summary>
             public string SourceName;
+
+            /// <summary>Destination state or sub-state machine, path-qualified like <see cref="SourceName"/>.</summary>
             public string DestinationName;
+
+            /// <summary>The first gesture parameter the transition tests.</summary>
             public string GestureParameter;
+
+            /// <summary>The threshold of the first gesture condition, rounded to a gesture value.</summary>
             public int GestureValue;
+
+            /// <summary>Readable form of all the transition's gesture conditions, e.g. "GestureLeft=Fist".</summary>
+            public string ConditionLabel;
+
+            /// <summary>
+            /// Identifies the transition within its controller across re-analysis and controller
+            /// copies (layer index, path-qualified source/destination, conditions and an occurrence
+            /// counter, so two transitions with the same endpoints never share a key).
+            /// </summary>
+            public string Key;
+
             public bool HasDisabledGuard;
             public bool SelectedForFix;
-            public AnimatorStateTransition TransitionRef;
+            public AnimatorTransitionBase TransitionRef;
         }
 
         /// <summary>
@@ -454,7 +478,24 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Analyzes a single animator controller layer for gesture transitions.
+        /// State shared while walking one layer's state machine tree.
+        /// </summary>
+        private sealed class LayerWalk
+        {
+            public LayerAnalysis Analysis;
+
+            /// <summary>Path-qualified display names of every state and sub-state machine.</summary>
+            public Dictionary<UnityEngine.Object, string> Names;
+
+            public HashSet<AnimatorStateMachine> Visited = new HashSet<AnimatorStateMachine>();
+        }
+
+        /// <summary>
+        /// Analyzes a single animator controller layer for gesture transitions. Walks the whole
+        /// state machine tree: the root's AnyState transitions (Unity only evaluates AnyState
+        /// transitions on the root state machine), and for the root and every nested sub-state
+        /// machine its Entry transitions, its states' transitions and the transitions that leave
+        /// its child sub-state machines.
         /// </summary>
         private static LayerAnalysis AnalyzeLayer(AnimatorControllerLayer layer, int layerIndex)
         {
@@ -473,67 +514,210 @@ namespace Pawlygon.UnityTools.Editor
             AnimatorStateMachine stateMachine = layer.stateMachine;
             if (stateMachine == null) return analysis;
 
-            // Check AnyState transitions
+            LayerWalk walk = new LayerWalk
+            {
+                Analysis = analysis,
+                Names = BuildPathNames(stateMachine)
+            };
+
             foreach (AnimatorStateTransition transition in stateMachine.anyStateTransitions)
             {
-                AnalyzeTransition(transition, "AnyState", analysis);
+                AnalyzeTransition(transition, "AnyState", walk);
             }
 
-            // Check per-state transitions
-            foreach (ChildAnimatorState childState in stateMachine.states)
-            {
-                AnimatorState state = childState.state;
-                if (state == null) continue;
-
-                foreach (AnimatorStateTransition transition in state.transitions)
-                {
-                    AnalyzeTransition(transition, state.name, analysis);
-                }
-            }
+            AnalyzeStateMachine(stateMachine, string.Empty, walk);
+            AssignTransitionKeys(analysis);
 
             return analysis;
         }
 
         /// <summary>
+        /// Analyzes the Entry transitions, state transitions and sub-state machine transitions of
+        /// one state machine, then recurses into its child sub-state machines.
+        /// </summary>
+        /// <param name="path">The state machine's path ("" for the layer's root state machine).</param>
+        private static void AnalyzeStateMachine(AnimatorStateMachine stateMachine, string path, LayerWalk walk)
+        {
+            if (stateMachine == null || !walk.Visited.Add(stateMachine)) return;
+
+            string entryName = path.Length > 0 ? path + "/Entry" : "Entry";
+            foreach (AnimatorTransition transition in stateMachine.entryTransitions)
+            {
+                AnalyzeTransition(transition, entryName, walk);
+            }
+
+            foreach (ChildAnimatorState childState in stateMachine.states)
+            {
+                AnimatorState state = childState.state;
+                if (state == null) continue;
+
+                string stateName = GetPathName(walk.Names, state);
+                foreach (AnimatorStateTransition transition in state.transitions)
+                {
+                    AnalyzeTransition(transition, stateName, walk);
+                }
+            }
+
+            foreach (ChildAnimatorStateMachine childMachine in stateMachine.stateMachines)
+            {
+                AnimatorStateMachine child = childMachine.stateMachine;
+                if (child == null) continue;
+
+                string childPath = GetPathName(walk.Names, child);
+
+                // Transitions out of a sub-state machine live on its parent and fire once the
+                // sub-state machine reaches its Exit node.
+                foreach (AnimatorTransition transition in stateMachine.GetStateMachineTransitions(child))
+                {
+                    AnalyzeTransition(transition, childPath + "/Exit", walk);
+                }
+
+                AnalyzeStateMachine(child, childPath, walk);
+            }
+        }
+
+        /// <summary>
         /// Analyzes a single transition for gesture parameter conditions and records findings.
         /// </summary>
-        private static void AnalyzeTransition(AnimatorStateTransition transition, string sourceName, LayerAnalysis analysis)
+        private static void AnalyzeTransition(AnimatorTransitionBase transition, string sourceName, LayerWalk walk)
         {
             if (transition == null) return;
 
+            List<AnimatorCondition> gestureConditions = new List<AnimatorCondition>();
             foreach (AnimatorCondition condition in transition.conditions)
             {
                 if (condition.parameter == GestureLeftParam || condition.parameter == GestureRightParam)
                 {
-                    string destinationName = transition.destinationState != null
-                        ? transition.destinationState.name
-                        : transition.destinationStateMachine != null
-                            ? transition.destinationStateMachine.name
-                            : "(exit)";
-
-                    bool hasGuard = HasDisabledGuard(transition);
-
-                    analysis.GestureTransitions.Add(new TransitionAnalysis
-                    {
-                        SourceName = sourceName,
-                        DestinationName = destinationName,
-                        GestureParameter = condition.parameter,
-                        GestureValue = Mathf.RoundToInt(condition.threshold),
-                        HasDisabledGuard = hasGuard,
-                        SelectedForFix = false,
-                        TransitionRef = transition
-                    });
-
-                    // Only add once per transition even if it has both GestureLeft and GestureRight conditions
-                    break;
+                    gestureConditions.Add(condition);
                 }
+            }
+
+            if (gestureConditions.Count == 0) return;
+
+            string destinationName = transition.destinationState != null
+                ? GetPathName(walk.Names, transition.destinationState)
+                : transition.destinationStateMachine != null
+                    ? GetPathName(walk.Names, transition.destinationStateMachine)
+                    : "(exit)";
+
+            // Listed once per transition even if it has both GestureLeft and GestureRight conditions
+            walk.Analysis.GestureTransitions.Add(new TransitionAnalysis
+            {
+                SourceName = sourceName,
+                DestinationName = destinationName,
+                GestureParameter = gestureConditions[0].parameter,
+                GestureValue = Mathf.RoundToInt(gestureConditions[0].threshold),
+                ConditionLabel = string.Join(" & ", gestureConditions.Select(FormatGestureCondition)),
+                HasDisabledGuard = HasDisabledGuard(transition),
+                SelectedForFix = false,
+                TransitionRef = transition
+            });
+        }
+
+        /// <summary>
+        /// Formats a gesture condition for display, e.g. "GestureLeft=Fist" or "GestureRight!=Victory".
+        /// </summary>
+        private static string FormatGestureCondition(AnimatorCondition condition)
+        {
+            string gesture = GetGestureName(Mathf.RoundToInt(condition.threshold));
+            switch (condition.mode)
+            {
+                case AnimatorConditionMode.Equals: return $"{condition.parameter}={gesture}";
+                case AnimatorConditionMode.NotEqual: return $"{condition.parameter}!={gesture}";
+                case AnimatorConditionMode.Greater: return $"{condition.parameter}>{condition.threshold:0.##}";
+                case AnimatorConditionMode.Less: return $"{condition.parameter}<{condition.threshold:0.##}";
+                default: return $"{condition.parameter} {condition.mode}";
+            }
+        }
+
+        /// <summary>
+        /// Gives every transition of the layer a <see cref="TransitionAnalysis.Key"/>. Transitions
+        /// with identical source, destination and conditions are told apart by their order of
+        /// appearance, which is the same in a copy of the controller.
+        /// </summary>
+        private static void AssignTransitionKeys(LayerAnalysis analysis)
+        {
+            Dictionary<string, int> occurrences = new Dictionary<string, int>();
+
+            foreach (TransitionAnalysis transition in analysis.GestureTransitions)
+            {
+                string baseKey = $"{analysis.LayerIndex}:{transition.SourceName}->{transition.DestinationName}:{transition.ConditionLabel}";
+                occurrences.TryGetValue(baseKey, out int count);
+                occurrences[baseKey] = count + 1;
+                transition.Key = $"{baseKey}#{count}";
+            }
+        }
+
+        /// <summary>
+        /// Maps every state and sub-state machine under <paramref name="root"/> to its path-qualified
+        /// display name ("State" at the root, "Sub/State" and "Sub/Nested" below it).
+        /// </summary>
+        private static Dictionary<UnityEngine.Object, string> BuildPathNames(AnimatorStateMachine root)
+        {
+            Dictionary<UnityEngine.Object, string> names = new Dictionary<UnityEngine.Object, string>();
+            AddPathNames(root, string.Empty, names);
+            return names;
+        }
+
+        private static void AddPathNames(AnimatorStateMachine stateMachine, string prefix,
+            Dictionary<UnityEngine.Object, string> names)
+        {
+            if (stateMachine == null) return;
+
+            foreach (ChildAnimatorState childState in stateMachine.states)
+            {
+                if (childState.state != null && !names.ContainsKey(childState.state))
+                {
+                    names[childState.state] = prefix + childState.state.name;
+                }
+            }
+
+            foreach (ChildAnimatorStateMachine childMachine in stateMachine.stateMachines)
+            {
+                AnimatorStateMachine child = childMachine.stateMachine;
+                if (child == null || names.ContainsKey(child)) continue;
+
+                string path = prefix + child.name;
+                names[child] = path;
+                AddPathNames(child, path + "/", names);
+            }
+        }
+
+        private static string GetPathName(Dictionary<UnityEngine.Object, string> names, UnityEngine.Object target)
+        {
+            return names.TryGetValue(target, out string name) ? name : target.name;
+        }
+
+        /// <summary>
+        /// Returns every state in a state machine and its nested sub-state machines.
+        /// </summary>
+        private static List<AnimatorState> GetAllStates(AnimatorStateMachine stateMachine)
+        {
+            List<AnimatorState> states = new List<AnimatorState>();
+            CollectStates(stateMachine, states, new HashSet<AnimatorStateMachine>());
+            return states;
+        }
+
+        private static void CollectStates(AnimatorStateMachine stateMachine, List<AnimatorState> states,
+            HashSet<AnimatorStateMachine> visited)
+        {
+            if (stateMachine == null || !visited.Add(stateMachine)) return;
+
+            foreach (ChildAnimatorState childState in stateMachine.states)
+            {
+                if (childState.state != null) states.Add(childState.state);
+            }
+
+            foreach (ChildAnimatorStateMachine childMachine in stateMachine.stateMachines)
+            {
+                CollectStates(childMachine.stateMachine, states, visited);
             }
         }
 
         /// <summary>
         /// Checks whether a transition already has a FacialExpressionsDisabled condition.
         /// </summary>
-        private static bool HasDisabledGuard(AnimatorStateTransition transition)
+        private static bool HasDisabledGuard(AnimatorTransitionBase transition)
         {
             foreach (AnimatorCondition condition in transition.conditions)
             {
@@ -698,7 +882,9 @@ namespace Pawlygon.UnityTools.Editor
         /// </summary>
         internal static void ApplyTransitionGuard(TransitionAnalysis transition)
         {
-            AnimatorStateTransition t = transition.TransitionRef;
+            // The condition goes on the transition itself, wherever it lives (root, sub-state
+            // machine, Entry or sub-state machine exit), so no placement logic is needed here.
+            AnimatorTransitionBase t = transition.TransitionRef;
             if (t == null) return;
 
             // Never add the condition twice (stale analysis, or an AnyState transition that a
@@ -867,7 +1053,8 @@ namespace Pawlygon.UnityTools.Editor
 
         /// <summary>
         /// Picks the state the guard returns to: the layer's default state, or the first other
-        /// top-level state when the default is missing or is a guard state. Null if none exists.
+        /// state (top-level first, then inside sub-state machines) when the default is missing or
+        /// is a guard state. Null if none exists.
         /// </summary>
         private static AnimatorState FindReturnState(AnimatorStateMachine stateMachine, AnimatorState guardState)
         {
@@ -877,10 +1064,9 @@ namespace Pawlygon.UnityTools.Editor
                 return defaultState;
             }
 
-            foreach (ChildAnimatorState childState in stateMachine.states)
+            foreach (AnimatorState state in GetAllStates(stateMachine))
             {
-                AnimatorState state = childState.state;
-                if (state != null && state != guardState && !IsGuardStateName(state.name))
+                if (state != guardState && !IsGuardStateName(state.name))
                 {
                     return state;
                 }
@@ -1233,8 +1419,9 @@ namespace Pawlygon.UnityTools.Editor
             AnimatorStateMachine stateMachine = layer.stateMachine;
             if (stateMachine != null)
             {
-                // Our own guard states are not part of the layer's blink logic
-                int stateCount = stateMachine.states.Count(s => s.state != null && !IsGuardStateName(s.state.name));
+                // Our own guard states are not part of the layer's blink logic. States inside
+                // sub-state machines count too.
+                int stateCount = GetAllStates(stateMachine).Count(s => !IsGuardStateName(s.name));
                 if (stateCount >= 1 && stateCount <= 4)
                 {
                     analysis.ConfidenceScore += 1;
@@ -1267,8 +1454,8 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Checks whether any animation clips in the layer animate blendshape properties
-        /// whose names match known blink blendshape keywords.
+        /// Checks whether any animation clips in the layer (including states inside sub-state
+        /// machines) animate blendshape properties whose names match known blink blendshape keywords.
         /// </summary>
         private static bool LayerClipsContainBlinkBlendshapes(AnimatorControllerLayer layer, out List<string> matchedBlendshapes)
         {
@@ -1278,13 +1465,9 @@ namespace Pawlygon.UnityTools.Editor
 
             HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (ChildAnimatorState childState in stateMachine.states)
+            foreach (AnimatorState state in GetAllStates(stateMachine))
             {
-                AnimatorState state = childState.state;
-                if (state == null) continue;
-
-                Motion motion = state.motion;
-                CollectBlinkBlendshapesFromMotion(motion, seen);
+                CollectBlinkBlendshapesFromMotion(state.motion, seen);
             }
 
             matchedBlendshapes.AddRange(seen);
@@ -1375,30 +1558,19 @@ namespace Pawlygon.UnityTools.Editor
         {
             int wdTrue = 0;
             int wdFalse = 0;
-            CountWriteDefaults(stateMachine, ref wdTrue, ref wdFalse);
 
-            // Default to true if no states or even split
-            return wdFalse <= wdTrue;
-        }
-
-        private static void CountWriteDefaults(AnimatorStateMachine stateMachine, ref int wdTrue, ref int wdFalse)
-        {
-            if (stateMachine == null) return;
-
-            foreach (ChildAnimatorState childState in stateMachine.states)
+            foreach (AnimatorState state in GetAllStates(stateMachine))
             {
-                if (childState.state == null || IsGuardStateName(childState.state.name)) continue;
+                if (IsGuardStateName(state.name)) continue;
 
-                if (childState.state.writeDefaultValues)
+                if (state.writeDefaultValues)
                     wdTrue++;
                 else
                     wdFalse++;
             }
 
-            foreach (ChildAnimatorStateMachine child in stateMachine.stateMachines)
-            {
-                CountWriteDefaults(child.stateMachine, ref wdTrue, ref wdFalse);
-            }
+            // Default to true if no states or even split
+            return wdFalse <= wdTrue;
         }
 
         /// <summary>

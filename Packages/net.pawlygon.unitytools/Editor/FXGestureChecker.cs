@@ -647,9 +647,14 @@ namespace Pawlygon.UnityTools.Editor
             return true;
         }
 
+        /// <summary>
+        /// Key that matches a transition between the original controller and its copy. Uses the
+        /// core's per-transition key, which stays unique when two transitions share the same
+        /// source, destination and gesture parameter.
+        /// </summary>
         private static string GetTransitionKey(FXGestureCheckerCore.LayerAnalysis layer, FXGestureCheckerCore.TransitionAnalysis t)
         {
-            return $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}";
+            return t.Key ?? $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}";
         }
 
         // =====================================================================

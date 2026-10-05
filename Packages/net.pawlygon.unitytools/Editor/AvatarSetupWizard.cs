@@ -200,7 +200,7 @@ namespace Pawlygon.UnityTools.Editor
         // Window lifecycle
         // =====================================================================
 
-        [MenuItem(MenuPath)]
+        [MenuItem(MenuPath, priority = 1)]
         public static void ShowWindow()
         {
             AvatarSetupWizard window = GetWindow<AvatarSetupWizard>();

@@ -547,7 +547,8 @@ namespace Pawlygon.UnityTools.Editor
 
             string title = scope == FxApplyScope.Recommended ? "Apply Recommended Guards" : "Apply Selected Guards";
             string targetDescription = DescribeFxTarget(entry, sourceController, inPlace, folder, sharing);
-            if (!EditorUtility.DisplayDialog(title, FXGestureCheckerCore.BuildConfirmationMessage(changes, targetDescription), "Apply", "Cancel"))
+            if (!EditorUtility.DisplayDialog(title, FXGestureCheckerCore.BuildConfirmationMessage(changes, targetDescription,
+                    "The original FX controller isn't changed; the avatar's prefab is switched to the guarded copy."), "Apply", "Cancel"))
             {
                 return;
             }

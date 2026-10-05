@@ -258,11 +258,12 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Text for the confirmation dialog: the target, then one bullet per change (capped), then how to
-        /// undo. <paramref name="targetDescription"/> completes "This changes ...", e.g. "a copy at
-        /// 'Assets/FX_Modified.controller'" or "the original controller 'Assets/FX.controller', in place".
+        /// Text for the confirmation dialog: the target, then one bullet per change (capped), then
+        /// <paramref name="closingNote"/> (by default how to undo). <paramref name="targetDescription"/> completes
+        /// "This changes ...", e.g. "a copy at 'Assets/FX_Modified.controller'" or "the original controller
+        /// 'Assets/FX.controller', in place".
         /// </summary>
-        internal static string BuildConfirmationMessage(IList<string> changes, string targetDescription)
+        internal static string BuildConfirmationMessage(IList<string> changes, string targetDescription, string closingNote = "Undo (Ctrl+Z) reverts it.")
         {
             const int MaxLines = 12;
             var text = new StringBuilder();
@@ -278,7 +279,7 @@ namespace Pawlygon.UnityTools.Editor
                 text.Append($"• …and {changes.Count - MaxLines} more\n");
             }
 
-            text.Append("\nUndo (Ctrl+Z) reverts it.");
+            if (!string.IsNullOrEmpty(closingNote)) text.Append("\n").Append(closingNote);
             return text.ToString();
         }
 

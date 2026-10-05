@@ -58,7 +58,7 @@ namespace Pawlygon.UnityTools.Editor
         // Window lifecycle
         // =====================================================================
 
-        [MenuItem(MenuPath)]
+        [MenuItem(MenuPath, priority = 21)] // Tools: Check
         public static void ShowWindow()
         {
             FXGestureChecker window = GetWindow<FXGestureChecker>();

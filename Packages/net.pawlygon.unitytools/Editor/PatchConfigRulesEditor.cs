@@ -105,7 +105,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private static string ProjectKey => PlayerSettings.productGUID.ToString();
 
-        [MenuItem(MenuPath)]
+        [MenuItem(MenuPath, priority = 60)] // Tools: Publish
         public static void ShowWindow()
         {
             PatchConfigRulesEditor window = GetWindow<PatchConfigRulesEditor>();

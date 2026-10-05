@@ -100,7 +100,7 @@ namespace Pawlygon.UnityTools.Editor
         // Window lifecycle
         // =====================================================================
 
-        [MenuItem(MenuPath)]
+        [MenuItem(MenuPath, priority = 40)] // Tools: Tune
         public static void ShowWindow()
         {
             EyeMuscleSettings window = GetWindow<EyeMuscleSettings>();

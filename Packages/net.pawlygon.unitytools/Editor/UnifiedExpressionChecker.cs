@@ -75,7 +75,7 @@ namespace Pawlygon.UnityTools.Editor
         // Window lifecycle
         // =====================================================================
 
-        [MenuItem(MenuPath)]
+        [MenuItem(MenuPath, priority = 20)] // Tools: Check
         public static void ShowWindow()
         {
             UnifiedExpressionChecker window = GetWindow<UnifiedExpressionChecker>();

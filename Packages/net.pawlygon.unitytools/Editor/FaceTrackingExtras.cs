@@ -84,7 +84,7 @@ namespace Pawlygon.UnityTools.Editor
         // Window lifecycle
         // =====================================================================
 
-        [MenuItem(MenuPath)]
+        [MenuItem(MenuPath, priority = 41)] // Tools: Tune
         public static void ShowWindow()
         {
             FaceTrackingExtras window = GetWindow<FaceTrackingExtras>();

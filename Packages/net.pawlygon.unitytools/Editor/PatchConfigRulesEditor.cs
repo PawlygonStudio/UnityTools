@@ -153,9 +153,11 @@ namespace Pawlygon.UnityTools.Editor
         {
             int total = configItems.Count;
             int selectedCount = configItems.Count(c => c.Selected);
+            int hiddenSelected = configItems.Count(c => c.Selected && !MatchesSearch(c));
+            string hiddenNote = hiddenSelected > 0 ? $", {hiddenSelected} hidden by search" : string.Empty;
 
             PawlygonEditorUI.DrawSection(
-                $"Configs to Update  ({selectedCount}/{total} selected)",
+                $"Configs to Update  ({selectedCount}/{total} selected{hiddenNote})",
                 "Pick the FTPatchConfig assets that the rule should be added to.",
                 () =>
                 {
@@ -423,6 +425,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             SerializedProperty packageName = element.FindPropertyRelative(PackageNameField);
             SerializedProperty minVersion = element.FindPropertyRelative(MinVersionField);
+            bool unreadableVersion = minVersion != null && !IsPatcherHubReadableVersion(minVersion.stringValue);
             SerializedProperty vccUrl = element.FindPropertyRelative(VccUrlField);
             SerializedProperty missingError = element.FindPropertyRelative(MissingErrorField);
             SerializedProperty versionError = element.FindPropertyRelative(VersionErrorField);
@@ -430,7 +433,15 @@ namespace Pawlygon.UnityTools.Editor
             if (packageName != null)
                 EditorGUILayout.PropertyField(packageName, new GUIContent("Package Name"));
             if (minVersion != null)
+            {
                 EditorGUILayout.PropertyField(minVersion, new GUIContent("Min Version", "Use \"Any\" to accept any installed version."));
+                if (unreadableVersion)
+                {
+                    EditorGUILayout.HelpBox(
+                        $"PatcherHub can't read '{minVersion.stringValue}', so this requirement always fails. Use '{ToPatcherHubVersion(minVersion.stringValue)}' or \"Any\".",
+                        MessageType.Warning);
+                }
+            }
             if (vccUrl != null)
                 EditorGUILayout.PropertyField(vccUrl, new GUIContent("VCC URL", "Optional link opened when this package is missing or invalid."));
 
@@ -475,6 +486,12 @@ namespace Pawlygon.UnityTools.Editor
                         new GUIContent("Package Name", "UPM package id, e.g. com.vrchat.avatars."), draft.packageName);
                     draft.minVersion = EditorGUILayout.TextField(
                         new GUIContent("Min Version", "Use \"Any\" to accept any installed version."), draft.minVersion);
+                    if (!IsPatcherHubReadableVersion(draft.minVersion))
+                    {
+                        EditorGUILayout.HelpBox(
+                            $"PatcherHub compares versions as plain numbers (e.g. 1.2.3) and treats anything it can't read as not installed. Use '{ToPatcherHubVersion(draft.minVersion)}' or \"Any\".",
+                            MessageType.Warning);
+                    }
                     draft.vccUrl = EditorGUILayout.TextField(
                         new GUIContent("VCC URL", "Optional link opened when this package is missing or invalid."), draft.vccUrl);
 
@@ -622,6 +639,18 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
+        /// <summary>
+        /// Whether a config is visible with the current search text. Selected configs stay selected (and
+        /// receive the rule) while hidden; the section title says how many are hidden.
+        /// </summary>
+        private bool MatchesSearch(ConfigItem item)
+        {
+            string filter = configSearch?.Trim();
+            if (string.IsNullOrEmpty(filter)) return true;
+            return (item.DisplayName?.IndexOf(filter, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0
+                || (item.Path?.IndexOf(filter, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0;
+        }
+
         private void ApplyPackageAutoFill()
         {
             int packageIndex = selectedPackageIndex - 1; // index 0 is the "Custom" entry
@@ -632,7 +661,7 @@ namespace Pawlygon.UnityTools.Editor
 
             PackageItem pkg = installedPackages[packageIndex];
             draft.packageName = pkg.Name;
-            draft.minVersion = string.IsNullOrEmpty(pkg.Version) ? DefaultMinVersion : pkg.Version;
+            draft.minVersion = string.IsNullOrEmpty(pkg.Version) ? DefaultMinVersion : ToPatcherHubVersion(pkg.Version);
             draft.vccUrl = pkg.VccUrl ?? string.Empty;
             draft.missingMessage =
                 $"{pkg.DisplayName} is required for this avatar but is not installed. Please install it before patching.";
@@ -690,6 +719,26 @@ namespace Pawlygon.UnityTools.Editor
                 SetString(versionError, MessageField, draft.versionMessage);
                 SetEnum(versionError, MessageTypeField, draft.versionType);
             }
+        }
+
+        /// <summary>
+        /// PatcherHub checks requirements with <c>new System.Version(installed) &gt;= new System.Version(min)</c> and
+        /// treats a parse failure as "too old". Prerelease and build suffixes (e.g. <c>3.8.0-beta.1</c>,
+        /// <c>1.2.0+abc</c>) can't be parsed, so they are stripped to the plain version.
+        /// </summary>
+        private static string ToPatcherHubVersion(string version)
+        {
+            if (string.IsNullOrWhiteSpace(version)) return DefaultMinVersion;
+
+            string trimmed = version.Trim();
+            int suffix = trimmed.IndexOfAny(new[] { '-', '+' });
+            if (suffix > 0) trimmed = trimmed.Substring(0, suffix);
+            return Version.TryParse(trimmed, out _) ? trimmed : DefaultMinVersion;
+        }
+
+        private static bool IsPatcherHubReadableVersion(string version)
+        {
+            return string.IsNullOrEmpty(version) || version == DefaultMinVersion || Version.TryParse(version, out _);
         }
 
         private static void SetString(SerializedProperty parent, string relativeName, string value)

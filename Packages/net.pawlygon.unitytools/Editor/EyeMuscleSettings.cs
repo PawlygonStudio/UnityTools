@@ -31,6 +31,13 @@ namespace Pawlygon.UnityTools.Editor
         private bool hasUnsavedChanges;
         private bool splitLeftRight;
 
+        /// <summary>
+        /// The model's eye limits as they were before this window first applied changes to it in
+        /// this session; "Revert" writes them back. Unity cannot undo import settings, so this is
+        /// the way back. Only offered while the same model is loaded.
+        /// </summary>
+        private EyeMuscleSettingsCore.EyeLimitSnapshot revertSnapshot;
+
         // --- Preview ---
         private enum PreviewDirection { None, In, Out, Up, Down }
         private PreviewDirection activePreview = PreviewDirection.None;
@@ -431,7 +438,9 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawApplySection()
         {
-            using (new EditorGUI.DisabledScope(!hasUnsavedChanges))
+            string readOnlyReason = analysisResult.ReadOnlyReason;
+
+            using (new EditorGUI.DisabledScope(!hasUnsavedChanges || readOnlyReason != null))
             {
                 if (PawlygonEditorUI.DrawPrimaryButton("Apply Eye Muscle Settings"))
                 {
@@ -442,12 +451,37 @@ namespace Pawlygon.UnityTools.Editor
                 }
             }
 
-            if (hasUnsavedChanges)
+            if (readOnlyReason != null)
+            {
+                EditorGUILayout.Space(2f);
+                EditorGUILayout.HelpBox(readOnlyReason, MessageType.Error);
+            }
+            else if (hasUnsavedChanges)
             {
                 EditorGUILayout.Space(2f);
                 EditorGUILayout.HelpBox(
                     "You have unsaved changes. Click 'Apply Eye Muscle Settings' to write them to the model and reimport.",
                     MessageType.Warning);
+            }
+
+            if (CanRevert())
+            {
+                EditorGUILayout.Space(4f);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.FlexibleSpace();
+
+                    GUIContent revertContent = new GUIContent("Revert to Previous Settings",
+                        "Writes back the eye muscle limits this model had before you first applied changes " +
+                        "in this window, and reimports it.");
+                    if (GUILayout.Button(revertContent, GUILayout.Height(26f), GUILayout.Width(200f)))
+                    {
+                        RevertSettings();
+
+                        // Reverting reimports the model and removes this button.
+                        GUIUtility.ExitGUI();
+                    }
+                }
             }
         }
 
@@ -490,7 +524,31 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
+            if (analysisResult.ReadOnlyReason != null)
+            {
+                SetStatus(analysisResult.ReadOnlyReason, MessageType.Error);
+                return;
+            }
+
+            string modelName = System.IO.Path.GetFileName(analysisResult.ModelAssetPath);
+            bool confirmed = EditorUtility.DisplayDialog(
+                "Apply Eye Muscle Settings",
+                $"Write these eye muscle limits to the import settings of '{modelName}' and reimport it?\n\n" +
+                $"Left eye:  {DescribeValues(leftEye)}\n" +
+                $"Right eye: {DescribeValues(rightEye)}\n\n" +
+                "Unity cannot undo import settings. 'Revert to Previous Settings' in this window restores " +
+                "the values the model had before your first apply.",
+                "Apply and Reimport",
+                "Cancel");
+            if (!confirmed) return;
+
             StopPreview();
+
+            // Keep the model's values from before the first apply in this session for Revert
+            if (revertSnapshot == null || revertSnapshot.ModelAssetPath != analysisResult.ModelAssetPath)
+            {
+                revertSnapshot = EyeMuscleSettingsCore.CaptureEyeLimits(analysisResult.Importer);
+            }
 
             bool success = EyeMuscleSettingsCore.ApplyEyeMuscleValues(analysisResult.Importer, leftEye, rightEye);
 
@@ -498,19 +556,76 @@ namespace Pawlygon.UnityTools.Editor
             {
                 hasUnsavedChanges = false;
                 SetStatus("Eye muscle settings applied and model reimported successfully.", MessageType.Info);
-
-                // Reload to reflect the reimported values
-                analysisResult = EyeMuscleSettingsCore.Analyze(selectedAvatar);
-                if (analysisResult.Success)
-                {
-                    leftEye = analysisResult.LeftEye.Clone();
-                    rightEye = analysisResult.RightEye.Clone();
-                }
+                ReloadAfterReimport();
             }
             else
             {
                 SetStatus("Failed to apply eye muscle settings. Check the Console for details.", MessageType.Error);
             }
+        }
+
+        /// <summary>
+        /// True when the loaded model has a snapshot from before this window's first apply.
+        /// </summary>
+        private bool CanRevert()
+        {
+            return revertSnapshot != null &&
+                   analysisResult != null &&
+                   analysisResult.Success &&
+                   analysisResult.ReadOnlyReason == null &&
+                   revertSnapshot.ModelAssetPath == analysisResult.ModelAssetPath;
+        }
+
+        /// <summary>
+        /// Writes the snapshot taken before the first apply back to the model (after confirming)
+        /// and reimports it. Discards unsaved slider edits.
+        /// </summary>
+        private void RevertSettings()
+        {
+            if (!CanRevert() || analysisResult.Importer == null) return;
+
+            string modelName = System.IO.Path.GetFileName(analysisResult.ModelAssetPath);
+            bool confirmed = EditorUtility.DisplayDialog(
+                "Revert Eye Muscle Settings",
+                $"Restore the eye muscle limits '{modelName}' had before you first applied changes in this window, " +
+                "and reimport it?" + (hasUnsavedChanges ? "\n\nYour unsaved slider changes will be discarded." : string.Empty),
+                "Revert and Reimport",
+                "Cancel");
+            if (!confirmed) return;
+
+            StopPreview();
+
+            if (EyeMuscleSettingsCore.RestoreEyeLimits(analysisResult.Importer, revertSnapshot))
+            {
+                revertSnapshot = null;
+                hasUnsavedChanges = false;
+                SetStatus("Previous eye muscle settings restored and model reimported.", MessageType.Info);
+                ReloadAfterReimport();
+            }
+            else
+            {
+                SetStatus("Failed to restore the previous eye muscle settings. Check the Console for details.", MessageType.Error);
+            }
+        }
+
+        /// <summary>
+        /// Re-reads the values from the reimported model so the sliders show what was written.
+        /// </summary>
+        private void ReloadAfterReimport()
+        {
+            EyeMuscleSettingsCore.AnalysisResult reloaded = EyeMuscleSettingsCore.Analyze(selectedAvatar);
+            if (!reloaded.Success) return;
+
+            analysisResult = reloaded;
+            leftEye = reloaded.LeftEye.Clone();
+            rightEye = reloaded.RightEye.Clone();
+            splitLeftRight = splitLeftRight || !leftEye.Equals(rightEye);
+        }
+
+        private static string DescribeValues(EyeMuscleSettingsCore.EyeMuscleValues values)
+        {
+            // In and Down are stored negative; show magnitudes like the sliders do
+            return $"In {-values.In:0.#}, Out {values.Out:0.#}, Up {values.Up:0.#}, Down {-values.Down:0.#}";
         }
 
         // =====================================================================

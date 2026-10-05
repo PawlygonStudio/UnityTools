@@ -93,6 +93,34 @@ namespace Pawlygon.UnityTools.Editor
 
             /// <summary>Current eye muscle values for the right eye.</summary>
             public EyeMuscleValues RightEye;
+
+            /// <summary>
+            /// Why the model's import settings cannot be changed (e.g. it lives in an immutable
+            /// package), or null when they can.
+            /// </summary>
+            public string ReadOnlyReason;
+        }
+
+        /// <summary>
+        /// The serialized limit of one eye bone as stored on the ModelImporter.
+        /// </summary>
+        internal class EyeBoneLimit
+        {
+            public bool Found;
+            public bool Modified;
+            public Vector3 Min;
+            public Vector3 Max;
+        }
+
+        /// <summary>
+        /// The eye bone limits of a model exactly as they were stored on its ModelImporter
+        /// (including whether they used Unity's defaults), so they can be written back later.
+        /// </summary>
+        internal class EyeLimitSnapshot
+        {
+            public string ModelAssetPath;
+            public EyeBoneLimit LeftEye;
+            public EyeBoneLimit RightEye;
         }
 
         // =====================================================================
@@ -228,6 +256,8 @@ namespace Pawlygon.UnityTools.Editor
             EyeMuscleValues leftEye = ReadEyeMuscleValues(serializedImporter, "LeftEye", true);
             EyeMuscleValues rightEye = ReadEyeMuscleValues(serializedImporter, "RightEye", false);
 
+            string readOnlyReason = GetReadOnlyReason(assetPath);
+
             return new AnalysisResult
             {
                 Success = true,
@@ -236,9 +266,40 @@ namespace Pawlygon.UnityTools.Editor
                 ModelAssetPath = assetPath,
                 LeftEye = leftEye,
                 RightEye = rightEye,
-                StatusMessage = $"Loaded eye muscle settings from '{System.IO.Path.GetFileName(assetPath)}'.",
-                StatusMessageType = MessageType.Info
+                ReadOnlyReason = readOnlyReason,
+                StatusMessage = $"Loaded eye muscle settings from '{System.IO.Path.GetFileName(assetPath)}'." +
+                                (readOnlyReason != null ? " The model is read-only; values can be previewed but not applied." : string.Empty),
+                StatusMessageType = readOnlyReason != null ? MessageType.Warning : MessageType.Info
             };
+        }
+
+        /// <summary>
+        /// Returns why the import settings of the model at <paramref name="assetPath"/> cannot be
+        /// changed, or null when they can. Models inside immutable packages (registry, git,
+        /// tarball, built-in) are read-only: Unity refuses or silently reverts changes to them.
+        /// Embedded and local packages are regular files on disk and are editable.
+        /// </summary>
+        internal static string GetReadOnlyReason(string assetPath)
+        {
+            if (string.IsNullOrEmpty(assetPath) || !assetPath.StartsWith("Packages/", StringComparison.Ordinal)) return null;
+
+            UnityEditor.PackageManager.PackageInfo packageInfo =
+                UnityEditor.PackageManager.PackageInfo.FindForAssetPath(assetPath);
+
+            if (packageInfo != null &&
+                (packageInfo.source == UnityEditor.PackageManager.PackageSource.Embedded ||
+                 packageInfo.source == UnityEditor.PackageManager.PackageSource.Local))
+            {
+                return null;
+            }
+
+            string packageName = packageInfo != null
+                ? (string.IsNullOrEmpty(packageInfo.displayName) ? packageInfo.name : packageInfo.displayName)
+                : "an immutable package";
+
+            return $"'{System.IO.Path.GetFileName(assetPath)}' is inside the read-only package '{packageName}', " +
+                   "so its import settings cannot be changed. Copy the model into the Assets folder, use the copy " +
+                   "on the avatar, then load the eye muscle settings again.";
         }
 
         // =====================================================================
@@ -385,16 +446,30 @@ namespace Pawlygon.UnityTools.Editor
         /// Applies new eye muscle values to the ModelImporter using SerializedObject
         /// and reimports the model. Sets m_Modified=true on the per-bone limits so
         /// Unity uses custom values instead of HumanTrait defaults.
+        /// <para>
+        /// The write is not registered with Undo: Unity's undo would only revert the in-memory
+        /// importer, leaving the reimported model (and the .meta on disk) out of sync. Callers
+        /// take a <see cref="CaptureEyeLimits"/> snapshot first and offer
+        /// <see cref="RestoreEyeLimits"/> as the way back.
+        /// </para>
         /// </summary>
         /// <param name="importer">The ModelImporter to modify.</param>
         /// <param name="leftEye">New left eye muscle values.</param>
         /// <param name="rightEye">New right eye muscle values.</param>
-        /// <returns>True if the values were applied and reimport was triggered.</returns>
+        /// <returns>True if the values were applied and reimport was triggered. False when the
+        /// model is read-only (see <see cref="GetReadOnlyReason"/>) or its eye bones are missing.</returns>
         internal static bool ApplyEyeMuscleValues(ModelImporter importer, EyeMuscleValues leftEye, EyeMuscleValues rightEye)
         {
             if (importer == null)
             {
                 Debug.LogError($"{LogPrefix} ModelImporter is null, cannot apply muscle values.");
+                return false;
+            }
+
+            string readOnlyReason = GetReadOnlyReason(importer.assetPath);
+            if (readOnlyReason != null)
+            {
+                Debug.LogError($"{LogPrefix} {readOnlyReason}");
                 return false;
             }
 
@@ -483,6 +558,118 @@ namespace Pawlygon.UnityTools.Editor
             serializedImporter.ApplyModifiedPropertiesWithoutUndo();
             importer.SaveAndReimport();
 
+            return true;
+        }
+
+        // =====================================================================
+        // Snapshot / revert
+        // =====================================================================
+
+        /// <summary>
+        /// Captures the eye bone limits currently stored on the importer, including whether they
+        /// were customized at all, so <see cref="RestoreEyeLimits"/> can put them back exactly.
+        /// </summary>
+        internal static EyeLimitSnapshot CaptureEyeLimits(ModelImporter importer)
+        {
+            if (importer == null) return null;
+
+            SerializedObject serializedImporter = new SerializedObject(importer);
+            SerializedProperty humanArray = serializedImporter.FindProperty(HumanBoneArrayPath);
+            if (humanArray == null || !humanArray.isArray) return null;
+
+            return new EyeLimitSnapshot
+            {
+                ModelAssetPath = importer.assetPath,
+                LeftEye = ReadBoneLimit(humanArray, "LeftEye"),
+                RightEye = ReadBoneLimit(humanArray, "RightEye")
+            };
+        }
+
+        /// <summary>
+        /// Writes a snapshot taken by <see cref="CaptureEyeLimits"/> back to the importer and
+        /// reimports the model. Bones that used Unity's default limits go back to the defaults.
+        /// </summary>
+        /// <returns>True when the snapshot was written and the model reimported.</returns>
+        internal static bool RestoreEyeLimits(ModelImporter importer, EyeLimitSnapshot snapshot)
+        {
+            if (importer == null || snapshot == null) return false;
+
+            if (importer.assetPath != snapshot.ModelAssetPath)
+            {
+                Debug.LogError($"{LogPrefix} The saved eye muscle settings belong to '{snapshot.ModelAssetPath}', not '{importer.assetPath}'.");
+                return false;
+            }
+
+            string readOnlyReason = GetReadOnlyReason(importer.assetPath);
+            if (readOnlyReason != null)
+            {
+                Debug.LogError($"{LogPrefix} {readOnlyReason}");
+                return false;
+            }
+
+            SerializedObject serializedImporter = new SerializedObject(importer);
+            SerializedProperty humanArray = serializedImporter.FindProperty(HumanBoneArrayPath);
+            if (humanArray == null || !humanArray.isArray)
+            {
+                Debug.LogError($"{LogPrefix} Could not find '{HumanBoneArrayPath}' property on ModelImporter.");
+                return false;
+            }
+
+            bool restored = WriteBoneLimit(humanArray, "LeftEye", snapshot.LeftEye) |
+                            WriteBoneLimit(humanArray, "RightEye", snapshot.RightEye);
+            if (!restored) return false;
+
+            serializedImporter.ApplyModifiedPropertiesWithoutUndo();
+            importer.SaveAndReimport();
+
+            Debug.Log($"{LogPrefix} Restored the previous eye muscle settings of '{System.IO.Path.GetFileName(importer.assetPath)}'.");
+            return true;
+        }
+
+        private static SerializedProperty FindHumanBone(SerializedProperty humanArray, string humanBoneName)
+        {
+            for (int i = 0; i < humanArray.arraySize; i++)
+            {
+                SerializedProperty element = humanArray.GetArrayElementAtIndex(i);
+                SerializedProperty nameProp = element.FindPropertyRelative("m_HumanName");
+                if (nameProp != null && nameProp.stringValue == humanBoneName) return element;
+            }
+
+            return null;
+        }
+
+        private static EyeBoneLimit ReadBoneLimit(SerializedProperty humanArray, string humanBoneName)
+        {
+            SerializedProperty element = FindHumanBone(humanArray, humanBoneName);
+            SerializedProperty modified = element?.FindPropertyRelative("m_Limit.m_Modified");
+            SerializedProperty limitMin = element?.FindPropertyRelative("m_Limit.m_Min");
+            SerializedProperty limitMax = element?.FindPropertyRelative("m_Limit.m_Max");
+
+            if (limitMin == null || limitMax == null) return new EyeBoneLimit { Found = false };
+
+            return new EyeBoneLimit
+            {
+                Found = true,
+                Modified = modified != null && modified.boolValue,
+                Min = limitMin.vector3Value,
+                Max = limitMax.vector3Value
+            };
+        }
+
+        private static bool WriteBoneLimit(SerializedProperty humanArray, string humanBoneName, EyeBoneLimit limit)
+        {
+            if (limit == null || !limit.Found) return false;
+
+            SerializedProperty element = FindHumanBone(humanArray, humanBoneName);
+            SerializedProperty modified = element?.FindPropertyRelative("m_Limit.m_Modified");
+            SerializedProperty limitMin = element?.FindPropertyRelative("m_Limit.m_Min");
+            SerializedProperty limitMax = element?.FindPropertyRelative("m_Limit.m_Max");
+
+            if (limitMin == null || limitMax == null) return false;
+
+            if (modified != null) modified.boolValue = limit.Modified;
+            limitMin.vector3Value = limit.Min;
+            limitMax.vector3Value = limit.Max;
             return true;
         }
 

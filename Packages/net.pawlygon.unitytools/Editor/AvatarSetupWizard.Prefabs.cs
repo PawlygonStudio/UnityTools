@@ -3,16 +3,19 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEditor;
-using UnityEditor.Animations;
-using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Networking;
-using UnityEngine.SceneManagement;
 
 namespace Pawlygon.UnityTools.Editor
 {
+    /// <summary>
+    /// Step 4: optional helpers. Adds the Pawlygon VRCFT prefab to the copied prefabs, imports PatcherHub and
+    /// writes the PatcherHub patch configs that are still missing. Also hosts the "Import Latest PatcherHub" menu item.
+    /// </summary>
     public partial class AvatarSetupWizard
     {
+        private const string ImportPatcherHubMenuPath = "!Pawlygon/Import Latest PatcherHub";
+
         [Serializable]
         private class GitHubReleaseInfo
         {
@@ -27,8 +30,6 @@ namespace Pawlygon.UnityTools.Editor
             public string name;
             public string browser_download_url;
         }
-
-        private const string ImportPatcherHubMenuPath = "!Pawlygon/Import Latest PatcherHub";
 
         [MenuItem(ImportPatcherHubMenuPath, validate = true)]
         private static bool ValidateImportPatcherHub()
@@ -55,143 +56,185 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
+        // =====================================================================
+        // Drawing
+        // =====================================================================
+
         private void DrawPrefabsStep()
         {
-            bool isVrcftAvailable = IsVrcftPackageAvailable(out string vrcftPrefabPath);
+            EditorGUILayout.LabelField(
+                "Optional helpers for your avatars. You can skip both and come back to this step later.",
+                PawlygonEditorUI.SubLabelStyle);
+            EditorGUILayout.Space(SectionSpacing);
 
-            PawlygonEditorUI.DrawSection(
-                "Prefabs",
-                "Optional tools for adding prefab helpers and distributing patch assets.",
-                () =>
-                {
-                    DrawVrcftPrefabBlock(isVrcftAvailable, vrcftPrefabPath);
-                    EditorGUILayout.Space(SectionSpacing);
-                    DrawPatcherHubBlock();
-                    EditorGUILayout.Space(SectionSpacing);
-
-                    if (PawlygonEditorUI.DrawPrimaryButton("Continue", 34f))
-                    {
-                        currentStep = WizardStep.FXCheck;
-                        statusMessage = string.Empty;
-                        GUIUtility.ExitGUI();
-                    }
-                });
+            DrawVrcftCard();
+            EditorGUILayout.Space(SectionSpacing);
+            DrawPatcherHubCard();
         }
 
-        private void DrawVrcftPrefabBlock(bool isVrcftAvailable, string vrcftPrefabPath)
+        private void DrawVrcftCard()
         {
+            int presentCount = avatarEntries.Where((entry, index) => IsVrcftOnEntry(index)).Count();
+            bool allPresent = presentCount == avatarEntries.Count;
+
             using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
-                EditorGUILayout.LabelField("Pawlygon VRCFT", boldLabel13);
-                EditorGUILayout.Space(2f);
-
-                if (isVrcftAvailable)
+                using (new EditorGUILayout.HorizontalScope())
                 {
-                    EditorGUILayout.LabelField("Package detected. Add the VRCFT setup to each generated prefab.", PawlygonEditorUI.SubLabelStyle);
-                    EditorGUILayout.Space(8f);
+                    EditorGUILayout.LabelField("Pawlygon VRCFT prefab", PawlygonEditorUI.SectionTitleStyle);
+                    GUILayout.FlexibleSpace();
 
-                    if (PawlygonEditorUI.DrawPrimaryButton("Add VRCFT To Prefabs", 32f))
+                    if (!cachedVrcftAvailable)
                     {
-                        AddVrcftSetupToPrefabs(vrcftPrefabPath);
-                        // Saves prefabs and refreshes the AssetDatabase.
-                        GUIUtility.ExitGUI();
+                        PawlygonEditorUI.DrawBadge("Not installed", PawlygonEditorUI.BadgeKind.Neutral, "The Pawlygon - VRC Facetracking package isn't in this project.");
+                    }
+                    else if (allPresent)
+                    {
+                        PawlygonEditorUI.DrawBadge("Done", PawlygonEditorUI.BadgeKind.Ok, "Every prefab already has the VRCFT setup.");
+                    }
+                    else if (presentCount > 0)
+                    {
+                        PawlygonEditorUI.DrawBadge($"{presentCount}/{avatarEntries.Count} added", PawlygonEditorUI.BadgeKind.Warning, "Some prefabs don't have the VRCFT setup yet.");
+                    }
+                    else
+                    {
+                        PawlygonEditorUI.DrawBadge("Not added", PawlygonEditorUI.BadgeKind.Neutral, "The prefabs don't have the VRCFT setup yet.");
                     }
                 }
-                else
-                {
-                    EditorGUILayout.HelpBox($"Install Pawlygon - VRC Facetracking from VCC at {VrcftPackageListingUrl}. Once installed, this wizard can auto-add the VRCFT setup for you.", MessageType.Info);
 
-                    using (new EditorGUILayout.HorizontalScope())
+                EditorGUILayout.Space(2f);
+                EditorGUILayout.LabelField(
+                    "Adds the Pawlygon VRC Face Tracking setup (face tracking animations, parameters and menu) to each copied prefab.",
+                    PawlygonEditorUI.SubLabelStyle);
+                EditorGUILayout.Space(6f);
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (!cachedVrcftAvailable)
                     {
-                        if (GUILayout.Button("Refresh", GUILayout.Height(28f)))
+                        EditorGUILayout.LabelField($"Install 'Pawlygon - VRC Facetracking' with the VRChat Creator Companion ({VrcftPackageListingUrl}), then check again.",
+                            PawlygonEditorUI.RichMiniLabelStyle);
+
+                        if (GUILayout.Button(new GUIContent("Open Listing", "Open the Pawlygon VCC listing in your browser."), GUILayout.Width(96f)))
                         {
-                            bool refreshedAvailability = IsVrcftPackageAvailable(out _);
-                            vrcftSetupStatusMessage = refreshedAvailability
-                                ? "Pawlygon VRCFT package detected. You can now add the setup to the generated prefabs."
-                                : "Pawlygon VRCFT package is still not available in this project.";
+                            Application.OpenURL(VrcftPackageListingUrl);
+                        }
+
+                        if (GUILayout.Button(new GUIContent("Check Again", "Look for the package again after installing it."), GUILayout.Width(96f)))
+                        {
+                            InvalidateProjectCaches();
+                            GUIUtility.ExitGUI();
+                        }
+                    }
+                    else if (allPresent)
+                    {
+                        EditorGUILayout.LabelField("Already added to every prefab.", PawlygonEditorUI.RichMiniLabelStyle);
+                    }
+                    else
+                    {
+                        GUILayout.FlexibleSpace();
+                        string label = presentCount > 0 ? $"Add to the Other {Plural(avatarEntries.Count - presentCount, "Prefab")}" : "Add to Prefabs";
+                        if (PawlygonEditorUI.DrawSecondaryButton(new GUIContent(label, "Adds the VRCFT prefab under '!Pawlygon - VRCFT' in each copied prefab."), 24f, GUILayout.MinWidth(160f)))
+                        {
+                            AddVrcftSetupToPrefabs(cachedVrcftPrefabPath);
+                            // Saves prefabs and refreshes the AssetDatabase.
                             GUIUtility.ExitGUI();
                         }
                     }
                 }
-
-                if (!string.IsNullOrEmpty(vrcftSetupStatusMessage))
-                {
-                    EditorGUILayout.Space(6f);
-                    EditorGUILayout.HelpBox(vrcftSetupStatusMessage, MessageType.None);
-                }
             }
         }
 
-        private void DrawPatcherHubBlock()
+        private void DrawPatcherHubCard()
         {
-            bool isPatcherHubInstalled = FTPatchConfigGenerator.IsPatcherHubAvailable();
-
             using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
-                EditorGUILayout.LabelField("PatcherHub", boldLabel13);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField("PatcherHub", PawlygonEditorUI.SectionTitleStyle);
+                    GUILayout.FlexibleSpace();
+
+                    if (cachedPatcherHubAvailable)
+                    {
+                        PawlygonEditorUI.DrawBadge("Done", PawlygonEditorUI.BadgeKind.Ok, "PatcherHub is installed in this project.");
+                    }
+                    else
+                    {
+                        PawlygonEditorUI.DrawBadge("Not installed", PawlygonEditorUI.BadgeKind.Neutral, "PatcherHub isn't in this project yet.");
+                    }
+                }
+
                 EditorGUILayout.Space(2f);
+                EditorGUILayout.LabelField(
+                    "PatcherHub is what your customers run to apply the face tracking patch to their copy of the avatar. " +
+                    "With it installed, the wizard also writes a patch config for each avatar.",
+                    PawlygonEditorUI.SubLabelStyle);
+                EditorGUILayout.Space(6f);
 
-                if (isPatcherHubInstalled)
+                using (new EditorGUILayout.HorizontalScope())
                 {
-                    EditorGUILayout.LabelField("PatcherHub detected. You can re-import to update to the latest version.", PawlygonEditorUI.SubLabelStyle);
-                }
-                else
-                {
-                    EditorGUILayout.LabelField("Import the latest PatcherHub unitypackage so end users can patch the face-tracking changes onto the avatar FBX model.", PawlygonEditorUI.SubLabelStyle);
-                }
-
-                EditorGUILayout.Space(8f);
-
-                if (PawlygonEditorUI.DrawPrimaryButton(isPatcherHubInstalled ? "Re-import Latest PatcherHub" : "Import Latest PatcherHub", 32f))
-                {
-                    ImportLatestPatcherHub();
-                    // Shows progress bars and dialogs, then imports a package.
-                    GUIUtility.ExitGUI();
-                }
-
-                if (patcherHubImportedThisSession || !string.IsNullOrEmpty(patcherHubImportStatusMessage))
-                {
-                    EditorGUILayout.Space(6f);
-                    EditorGUILayout.HelpBox(patcherHubImportStatusMessage, MessageType.None);
+                    GUILayout.FlexibleSpace();
+                    var content = cachedPatcherHubAvailable
+                        ? new GUIContent("Re-import Latest PatcherHub", "Download the latest PatcherHub release from GitHub and import it again.")
+                        : new GUIContent("Import Latest PatcherHub", "Download the latest PatcherHub release from GitHub and import it.");
+                    if (PawlygonEditorUI.DrawSecondaryButton(content, 24f, GUILayout.MinWidth(200f)))
+                    {
+                        ImportLatestPatcherHub();
+                        // Shows progress bars and dialogs, then imports a package.
+                        GUIUtility.ExitGUI();
+                    }
                 }
 
-                if (isPatcherHubInstalled)
-                {
-                    DrawMissingPatchConfigsNotice();
-                }
+                DrawMissingPatchConfigsNotice();
             }
         }
 
         /// <summary>
         /// Patch configs are normally written during diff generation, which only happens if
-        /// PatcherHub was already installed at that point. When it was imported later (step 4 or
+        /// PatcherHub was already installed at that point. When it was imported later (in Prefabs or
         /// via the menu), offer to build the missing configs from the existing diff files.
         /// </summary>
         private void DrawMissingPatchConfigsNotice()
         {
-            if (!FTPatchConfigGenerator.IsPatcherHubAvailable())
-            {
-                return;
-            }
-
-            int missingCount = GetEntriesMissingPatchConfig().Count;
+            int missingCount = cachedEntriesMissingPatchConfig.Count;
             if (missingCount == 0)
             {
                 return;
             }
 
             EditorGUILayout.Space(6f);
-            EditorGUILayout.HelpBox(
-                $"{missingCount} avatar entr{(missingCount == 1 ? "y has" : "ies have")} diff files but no PatcherHub patch config yet.",
-                MessageType.Warning);
-
-            if (PawlygonEditorUI.DrawPrimaryButton("Generate Patch Configs", 30f))
+            using (new EditorGUILayout.HorizontalScope())
             {
-                GenerateMissingPatchConfigs();
-                // Creates assets and saves the AssetDatabase, which invalidates the current layout pass.
+                GUILayout.Label(EditorGUIUtility.IconContent("console.warnicon.sml"), GUILayout.Width(18f), GUILayout.Height(18f));
+                EditorGUILayout.LabelField(
+                    $"{Plural(missingCount, "avatar has", "avatars have")} patch files but no PatcherHub patch config yet.",
+                    PawlygonEditorUI.RichLabelStyle);
+
+                if (PawlygonEditorUI.DrawSecondaryButton(new GUIContent("Generate Patch Configs", "Write the missing PatcherHub configs from the existing patch files."),
+                        22f, GUILayout.Width(170f)))
+                {
+                    GenerateMissingPatchConfigs();
+                    // Creates assets and saves the AssetDatabase, which invalidates the current layout pass.
+                    GUIUtility.ExitGUI();
+                }
+            }
+        }
+
+        private void DrawPrefabsActions()
+        {
+            DrawBackButton(WizardStep.SelectMeshes);
+            GUILayout.FlexibleSpace();
+
+            if (PawlygonEditorUI.DrawPrimaryButton(new GUIContent("Continue", "Check the FX controllers next."), ActionButtonHeight, GUILayout.MinWidth(PrimaryButtonMinWidth)))
+            {
+                GoToStep(WizardStep.FXCheck);
                 GUIUtility.ExitGUI();
             }
         }
+
+        // =====================================================================
+        // Patch configs
+        // =====================================================================
 
         /// <summary>
         /// Returns the entries whose diff files were generated successfully and exist on disk but
@@ -241,6 +284,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             int createdCount = 0;
             var failedNames = new List<string>();
+            string lastConfigPath = null;
 
             foreach (AvatarEntry entry in GetEntriesMissingPatchConfig())
             {
@@ -255,25 +299,58 @@ namespace Pawlygon.UnityTools.Editor
                 else
                 {
                     createdCount++;
+                    lastConfigPath = configPath;
                 }
             }
 
-            statusMessage = $"Generated {createdCount} PatcherHub patch config{(createdCount == 1 ? string.Empty : "s")}.";
+            InvalidateProjectCaches();
 
             if (failedNames.Count > 0)
             {
-                statusMessage += $" Could not generate a config for: {string.Join(", ", failedNames)}. See the Console for details.";
-                EditorUtility.DisplayDialog("Patch Config Generation Failed",
-                    $"Could not generate a PatcherHub patch config for:\n\n{string.Join("\n", failedNames)}\n\nSee the Console for details.", "OK");
+                status.Error($"Generated {Plural(createdCount, "patch config")}, but couldn't generate one for {string.Join(", ", failedNames)}. See the Console for details.");
+            }
+            else
+            {
+                status.Info($"Generated {Plural(createdCount, "PatcherHub patch config")}.", "Ping",
+                    () => PingAssetPath(lastConfigPath));
             }
 
             Repaint();
         }
 
-        private bool IsVrcftPackageAvailable(out string prefabAssetPath)
+        // =====================================================================
+        // VRCFT
+        // =====================================================================
+
+        private static bool IsVrcftPackageAvailable(out string prefabAssetPath)
         {
             prefabAssetPath = AssetDatabase.GUIDToAssetPath(VrcftPrefabGuid);
             return !string.IsNullOrEmpty(prefabAssetPath) && AssetDatabase.LoadAssetAtPath<GameObject>(prefabAssetPath) != null;
+        }
+
+        /// <summary>True when <paramref name="prefabRoot"/> has an instance of the VRCFT prefab under its "!Pawlygon - VRCFT" child.</summary>
+        private static bool HasVrcftSetup(GameObject prefabRoot, GameObject vrcftPrefabAsset)
+        {
+            if (prefabRoot == null || vrcftPrefabAsset == null)
+            {
+                return false;
+            }
+
+            Transform container = prefabRoot.transform.Find(VrcftContainerName);
+            if (container == null)
+            {
+                return false;
+            }
+
+            foreach (Transform child in container)
+            {
+                if (PrefabUtility.GetCorrespondingObjectFromSource(child.gameObject) == vrcftPrefabAsset)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private void AddVrcftSetupToPrefabs(string vrcftPrefabPath)
@@ -281,85 +358,86 @@ namespace Pawlygon.UnityTools.Editor
             GameObject vrcftPrefabAsset = AssetDatabase.LoadAssetAtPath<GameObject>(vrcftPrefabPath);
             if (vrcftPrefabAsset == null)
             {
-                vrcftSetupStatusMessage = "The VRCFT prefab could not be loaded from the installed package.";
+                status.Error("The VRCFT prefab couldn't be loaded from the installed package. Try reinstalling it.");
                 return;
             }
 
             int addedCount = 0;
             int alreadyConfiguredCount = 0;
 
-            foreach (AvatarEntry entry in avatarEntries)
+            try
             {
-                GameObject prefabRoot = PrefabUtility.LoadPrefabContents(entry.copiedPrefabPath);
-
-                try
+                for (int i = 0; i < avatarEntries.Count; i++)
                 {
-                    Transform container = prefabRoot.transform.Find("!Pawlygon - VRCFT");
-                    if (container == null)
-                    {
-                        var containerObject = new GameObject("!Pawlygon - VRCFT");
-                        containerObject.transform.SetParent(prefabRoot.transform, false);
-                        container = containerObject.transform;
-                    }
+                    AvatarEntry entry = avatarEntries[i];
+                    EditorUtility.DisplayProgressBar(ProgressTitle, $"Adding VRCFT to '{GetEntryDisplayName(entry)}'…", (float)i / avatarEntries.Count);
+                    GameObject prefabRoot = PrefabUtility.LoadPrefabContents(entry.copiedPrefabPath);
 
-                    bool hasExistingSetup = false;
-                    foreach (Transform child in container)
+                    try
                     {
-                        GameObject source = PrefabUtility.GetCorrespondingObjectFromSource(child.gameObject);
-                        if (source == vrcftPrefabAsset)
+                        if (HasVrcftSetup(prefabRoot, vrcftPrefabAsset))
                         {
-                            hasExistingSetup = true;
-                            break;
+                            alreadyConfiguredCount++;
+                            continue;
                         }
-                    }
 
-                    if (hasExistingSetup)
+                        Transform container = prefabRoot.transform.Find(VrcftContainerName);
+                        if (container == null)
+                        {
+                            var containerObject = new GameObject(VrcftContainerName);
+                            containerObject.transform.SetParent(prefabRoot.transform, false);
+                            container = containerObject.transform;
+                        }
+
+                        GameObject instance = PrefabUtility.InstantiatePrefab(vrcftPrefabAsset) as GameObject;
+                        if (instance != null)
+                        {
+                            instance.transform.SetParent(container, false);
+                            addedCount++;
+                        }
+
+                        PrefabUtility.SaveAsPrefabAsset(prefabRoot, entry.copiedPrefabPath);
+                    }
+                    finally
                     {
-                        alreadyConfiguredCount++;
-                        continue;
+                        PrefabUtility.UnloadPrefabContents(prefabRoot);
                     }
-
-                    GameObject instance = PrefabUtility.InstantiatePrefab(vrcftPrefabAsset) as GameObject;
-                    if (instance != null)
-                    {
-                        instance.transform.SetParent(container, false);
-                        addedCount++;
-                    }
-
-                    PrefabUtility.SaveAsPrefabAsset(prefabRoot, entry.copiedPrefabPath);
                 }
-                finally
-                {
-                    PrefabUtility.UnloadPrefabContents(prefabRoot);
-                }
+
+                AssetDatabase.SaveAssets();
+                AssetDatabase.Refresh();
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
             }
 
-            vrcftSetupStatusMessage = $"Added VRCFT setup to {addedCount} prefab{(addedCount == 1 ? string.Empty : "s")}";
-            if (alreadyConfiguredCount > 0)
-            {
-                vrcftSetupStatusMessage += $", already present on {alreadyConfiguredCount}.";
-            }
-            else
-            {
-                vrcftSetupStatusMessage += ".";
-            }
-
-            AssetDatabase.SaveAssets();
-            AssetDatabase.Refresh();
+            InvalidateProjectCaches();
+            string message = $"Added the VRCFT setup to {Plural(addedCount, "prefab")}";
+            message += alreadyConfiguredCount > 0 ? $"; {alreadyConfiguredCount} already had it." : ".";
+            status.Info(message, "Ping", () => PingAssetPath(avatarEntries[0].copiedPrefabPath));
         }
+
+        // =====================================================================
+        // PatcherHub
+        // =====================================================================
 
         private void ImportLatestPatcherHub()
         {
             bool imported = DownloadAndImportLatestPatcherHub(out string resultMessage, out bool cancelled);
-            patcherHubImportStatusMessage = resultMessage;
+            InvalidateProjectCaches();
 
             if (imported)
             {
-                patcherHubImportedThisSession = true;
+                status.Info(resultMessage + " If patch configs are missing, generate them below once the import finishes.");
             }
-            else if (!cancelled)
+            else if (cancelled)
             {
-                EditorUtility.DisplayDialog("Import Failed", resultMessage, "OK");
+                status.Info(resultMessage);
+            }
+            else
+            {
+                status.Error(resultMessage);
             }
 
             Repaint();

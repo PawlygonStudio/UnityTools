@@ -17,6 +17,48 @@ namespace Pawlygon.UnityTools.Editor
         // FX Gesture Check step
         // =====================================================================
 
+        private bool fxCheckAnalyzed;
+        private readonly HashSet<int> fxExpandedLayers = new HashSet<int>();
+        private readonly HashSet<int> fxExpandedBlinkLayers = new HashSet<int>();
+        private bool fxShowAllBlinkLayers;
+
+        private void OnEnterFXCheck()
+        {
+            SelectFirstEntry(entry => !entry.fxCheckComplete);
+        }
+
+        private void ResetFXCheckState()
+        {
+            fxCheckAnalyzed = false;
+            fxExpandedLayers.Clear();
+            fxExpandedBlinkLayers.Clear();
+            fxShowAllBlinkLayers = false;
+        }
+
+        private static void ResetEntryFXState(AvatarEntry entry)
+        {
+            entry.fxAnalysisResult = null;
+            entry.fxCheckComplete = false;
+        }
+
+        private static bool IsFxComplete(AvatarEntry entry)
+        {
+            return entry.fxCheckComplete;
+        }
+
+        private (string Text, PawlygonEditorUI.BadgeKind Kind, string Tooltip) GetFxBadge(AvatarEntry entry)
+        {
+            if (!entry.fxCheckComplete) return ("Pending", PawlygonEditorUI.BadgeKind.Info, "Not checked yet.");
+            return string.IsNullOrEmpty(entry.copiedFxControllerPath)
+                ? ("Unchanged", PawlygonEditorUI.BadgeKind.Neutral, "The FX controller was left as it is.")
+                : ("Fixed", PawlygonEditorUI.BadgeKind.Ok, "The prefab uses a guarded copy of its FX controller.");
+        }
+
+        private void DrawFXCheckActions()
+        {
+            DrawBackButton(WizardStep.Prefabs);
+        }
+
         private void DrawFXCheckStep()
         {
             PawlygonEditorUI.DrawSection(
@@ -33,8 +75,7 @@ namespace Pawlygon.UnityTools.Editor
                         EditorGUILayout.Space(SectionSpacing);
                         if (PawlygonEditorUI.DrawPrimaryButton("Continue to Finish", 34f))
                         {
-                            currentStep = WizardStep.Complete;
-                            statusMessage = "Avatar setup completed.";
+                            GoToStep(WizardStep.Complete);
                             GUIUtility.ExitGUI();
                         }
                         return;
@@ -103,8 +144,7 @@ namespace Pawlygon.UnityTools.Editor
                         if (GUILayout.Button("Skip FX Check", GUILayout.Height(28f)))
                         {
                             foreach (AvatarEntry e in avatarEntries) e.fxCheckComplete = true;
-                            currentStep = WizardStep.Complete;
-                            statusMessage = "Avatar setup completed.";
+                            GoToStep(WizardStep.Complete);
                             GUIUtility.ExitGUI();
                         }
                     }
@@ -113,8 +153,7 @@ namespace Pawlygon.UnityTools.Editor
                     {
                         if (PawlygonEditorUI.DrawPrimaryButton("Continue to Finish", 34f))
                         {
-                            currentStep = WizardStep.Complete;
-                            statusMessage = "Avatar setup completed.";
+                            GoToStep(WizardStep.Complete);
                             GUIUtility.ExitGUI();
                         }
                     }
@@ -319,7 +358,7 @@ namespace Pawlygon.UnityTools.Editor
                 result.FXController, vrchatFolder, out string copyError);
             if (copy == null)
             {
-                statusMessage = copyError ?? "Failed to copy FX controller.";
+                status.Error(copyError ?? "Failed to copy FX controller.");
                 return;
             }
             entry.copiedFxControllerPath = AssetDatabase.GetAssetPath(copy);
@@ -328,7 +367,7 @@ namespace Pawlygon.UnityTools.Editor
             FXGestureCheckerCore.AnalysisResult copyResult = FXGestureCheckerCore.Analyze(copy);
             if (!copyResult.Success)
             {
-                statusMessage = "Failed to analyze copied FX controller.";
+                status.Error("Failed to analyze copied FX controller.");
                 return;
             }
 
@@ -400,7 +439,7 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             entry.fxCheckComplete = true;
-            statusMessage = $"Applied {tFixes} transition guard(s), {lFixes} layer guard(s), and {bFixes} blink guard(s).";
+            status.Info($"Applied {tFixes} transition guard(s), {lFixes} layer guard(s), and {bFixes} blink guard(s).");
 
             // Propagate to other entries sharing the same original FX controller
             PropagateSharedFXFixes(entry, copy);

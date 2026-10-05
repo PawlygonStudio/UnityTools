@@ -3,67 +3,237 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEditor;
-using UnityEditor.Animations;
-using UnityEditor.SceneManagement;
 using UnityEngine;
-using UnityEngine.Networking;
-using UnityEngine.SceneManagement;
 
 namespace Pawlygon.UnityTools.Editor
 {
+    /// <summary>
+    /// Step 2: waiting for the edited FBX files (detected through <see cref="FBXImportDetector"/> or chosen
+    /// with "Choose FBX…"), then generating the patch files and loading the replacements. A copied FBX
+    /// replaced again later marks only that avatar as out of date.
+    /// </summary>
     public partial class AvatarSetupWizard
     {
+        // =====================================================================
+        // Drawing
+        // =====================================================================
+
         private void DrawWaitForImportStep()
         {
-            PawlygonEditorUI.DrawSection(
-                "Import Modified FBX",
-                "Replace each copied FBX on disk with its edited version, or choose an edited FBX below. Continue after every model below shows Updated.",
-                () =>
+            int importedCount = avatarEntries.Count(entry => entry.hasImportedModifiedFbx);
+            bool allImported = importedCount == avatarEntries.Count;
+
+            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
+            {
+                using (new EditorGUILayout.HorizontalScope())
                 {
-                    int importedCount = avatarEntries.Count(entry => entry.hasImportedModifiedFbx);
-                    EditorGUILayout.HelpBox($"Progress: {importedCount} / {avatarEntries.Count} modified FBXs detected.", MessageType.Info);
-                    EditorGUILayout.Space(EditorGUIUtility.standardVerticalSpacing);
-                    DrawImportStatusSummary();
-                    EditorGUILayout.Space(SectionSpacing);
+                    EditorGUILayout.LabelField("Swap in your edited FBX", PawlygonEditorUI.SectionTitleStyle);
+                    GUILayout.FlexibleSpace();
+                    GUILayout.Label($"{importedCount} of {avatarEntries.Count} updated", mutedMiniStyle);
+                }
 
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        if (PawlygonEditorUI.DrawPrimaryButton("Continue After Import", 34f))
-                        {
-                            if (AreAllEntriesImportedAndLoadable())
-                            {
-                                GenerateDiffsAndMoveToMeshSelection(importedOnly: true, skippedImportWait: false);
-                            }
-                            else
-                            {
-                                statusMessage = "Not every modified FBX is ready yet. Finish importing all copied FBXs, then continue.";
-                            }
+                EditorGUILayout.Space(2f);
+                EditorGUILayout.LabelField(
+                    allImported
+                        ? "Every edited FBX has been detected."
+                        : "Replace each copied FBX below with your edited (face tracking) version: overwrite the file in your " +
+                          "file browser, export over it from Blender, or use Choose FBX…. The wizard continues by itself as soon " +
+                          "as every avatar shows Updated.",
+                    PawlygonEditorUI.SubLabelStyle);
+                EditorGUILayout.Space(6f);
 
-                            // Diff generation refreshes the AssetDatabase, may show a dialog and
-                            // changes the step, all of which invalidate the current layout pass.
-                            GUIUtility.ExitGUI();
-                        }
-
-                        if (GUILayout.Button("Skip Waiting", GUILayout.Height(34f)))
-                        {
-                            if (CanLoadImportedAssets())
-                            {
-                                GenerateDiffsAndMoveToMeshSelection(importedOnly: false, skippedImportWait: true);
-                            }
-                            else
-                            {
-                                statusMessage = "The copied FBX and prefab assets are not loadable yet. Wait for Unity to finish importing before skipping.";
-                            }
-
-                            GUIUtility.ExitGUI();
-                        }
-                    }
-                });
+                foreach (AvatarEntry entry in avatarEntries)
+                {
+                    DrawImportRow(entry);
+                    EditorGUILayout.Space(2f);
+                }
+            }
         }
+
+        private void DrawImportRow(AvatarEntry entry)
+        {
+            using (new EditorGUILayout.VerticalScope(cardStyle))
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.Label(GetEntryDisplayName(entry), EditorStyles.boldLabel, GUILayout.ExpandWidth(false));
+
+                    if (entry.hasImportedModifiedFbx)
+                    {
+                        PawlygonEditorUI.DrawBadge("Updated", PawlygonEditorUI.BadgeKind.Ok, "The edited FBX has been detected.");
+                    }
+                    else if (!entry.needsProcessing)
+                    {
+                        PawlygonEditorUI.DrawBadge("Not replaced", PawlygonEditorUI.BadgeKind.Warning,
+                            "You continued without an edited FBX, so this avatar's patch doesn't change the model.");
+                    }
+                    else
+                    {
+                        PawlygonEditorUI.DrawBadge("Waiting", PawlygonEditorUI.BadgeKind.Info, "Waiting for the edited FBX.");
+                    }
+
+                    GUILayout.FlexibleSpace();
+
+                    if (GUILayout.Button(new GUIContent("Choose FBX…", "Pick the edited FBX file; it is copied over the file below."),
+                            GUILayout.Width(100f), GUILayout.Height(20f)))
+                    {
+                        PromptForModifiedFbx(entry);
+                        // Opens a modal file panel and imports the chosen FBX.
+                        GUIUtility.ExitGUI();
+                    }
+                }
+
+                EditorGUILayout.SelectableLabel(entry.copiedFbxPath ?? string.Empty, pathLabelStyle, GUILayout.Height(EditorGUIUtility.singleLineHeight));
+            }
+        }
+
+        private void DrawImportActions()
+        {
+            DrawBackButton(WizardStep.Setup);
+
+            int waitingCount = avatarEntries.Count(entry => !entry.hasImportedModifiedFbx);
+            bool anyNeedsProcessing = avatarEntries.Any(entry => entry.needsProcessing);
+
+            if (waitingCount > 0 && anyNeedsProcessing &&
+                PawlygonEditorUI.DrawSecondaryButton(new GUIContent("Continue Without Waiting",
+                    "Continue with the copied FBX files as they are now. An avatar whose FBX wasn't replaced gets a patch that changes nothing."),
+                    ActionButtonHeight))
+            {
+                ContinueFromImport(skippedImportWait: true);
+                // Generates the patch files, may show dialogs and changes the step.
+                GUIUtility.ExitGUI();
+            }
+
+            GUILayout.FlexibleSpace();
+
+            bool canContinue = waitingCount == 0 || !anyNeedsProcessing;
+            var content = canContinue
+                ? new GUIContent("Continue", anyNeedsProcessing ? "Generate the patch files and review the replacements." : "Review the replacements.")
+                : new GUIContent("Continue", $"Waiting for {Plural(waitingCount, "edited FBX file")}. The wizard continues by itself once all are detected.");
+
+            using (new EditorGUI.DisabledScope(!canContinue))
+            {
+                if (PawlygonEditorUI.DrawPrimaryButton(content, ActionButtonHeight, GUILayout.MinWidth(PrimaryButtonMinWidth)))
+                {
+                    ContinueFromImport(skippedImportWait: false);
+                    GUIUtility.ExitGUI();
+                }
+            }
+        }
+
+        // =====================================================================
+        // Continuing to Replacements
+        // =====================================================================
+
+        /// <summary>
+        /// Generates the patch files and loads the replacements of every avatar that needs it, then opens
+        /// Replacements. Avatars already processed keep their review.
+        /// </summary>
+        private void ContinueFromImport(bool skippedImportWait)
+        {
+            if (!CanLoadImportedAssets())
+            {
+                status.Error("A copied FBX or prefab can't be loaded yet. Wait for Unity to finish importing (check the Console for import errors), then continue.");
+                return;
+            }
+
+            List<AvatarEntry> pending = avatarEntries.Where(entry => entry.needsProcessing).ToList();
+            if (pending.Count == 0)
+            {
+                GoToStep(WizardStep.SelectMeshes);
+                return;
+            }
+
+            ProcessEntriesAndReview(pending, skippedImportWait);
+        }
+
+        /// <summary>
+        /// Generates the patch files of <paramref name="entries"/> (with a cancelable progress bar), reloads
+        /// their replacements and opens Replacements on the first avatar to review. Diff failures don't block
+        /// the review; they are reported with a dialog and a persistent banner.
+        /// </summary>
+        private void ProcessEntriesAndReview(List<AvatarEntry> entries, bool skippedImportWait)
+        {
+            // A copied FBX that still matches the original yields a patch that changes nothing,
+            // usually because the edited FBX was never dropped in.
+            List<string> unchangedEntryNames = GetEntriesWithUnchangedFbx(entries).Select(GetEntryDisplayName).ToList();
+            if (!FTDiffGenerator.ConfirmGenerationForUnchangedModels(unchangedEntryNames))
+            {
+                status.Warning($"Nothing was generated: the FBX is still the original for {string.Join(", ", unchangedEntryNames)}. " +
+                               "Replace the copied FBX with your edited version (or use Choose FBX…), then continue.");
+                Repaint();
+                return;
+            }
+
+            // A queued import transition must not run again after this.
+            EditorApplication.delayCall -= TryContinueAfterImport;
+            pendingImportTransition = false;
+
+            int generatedCount = GenerateDiffFilesForEntries(entries, out int failedCount, out List<AvatarEntry> processed, out bool cancelled);
+
+            foreach (AvatarEntry entry in processed)
+            {
+                LoadMeshSelections(entry);
+                entry.isMeshReviewComplete = false;
+                entry.reviewResultLabel = string.Empty;
+                entry.needsProcessing = false;
+            }
+
+            if (cancelled)
+            {
+                status.Warning($"Stopped after {Plural(processed.Count, "avatar")} of {entries.Count}. Continue again to generate the rest.");
+                Repaint();
+                return;
+            }
+
+            GoToStep(WizardStep.SelectMeshes);
+            if (processed.Count > 0)
+            {
+                selectedEntryIndex = avatarEntries.IndexOf(processed[0]);
+            }
+
+            var message = new List<string>
+            {
+                skippedImportWait ? "Continued without waiting." : "Edited FBX detected.",
+                $"Generated the patch files for {Plural(generatedCount, "avatar")}."
+            };
+
+            if (failedCount > 0)
+            {
+                message.Add($"Patch generation FAILED for {Plural(failedCount, "avatar")} (see the banner above and the Console).");
+            }
+
+            if (unchangedEntryNames.Count > 0)
+            {
+                message.Add($"The FBX is still the original for {string.Join(", ", unchangedEntryNames)}, so its patch doesn't change the model.");
+            }
+
+            message.Add("Review the replacements of each avatar.");
+            string text = string.Join(" ", message);
+
+            if (failedCount > 0) status.Error(text);
+            else if (unchangedEntryNames.Count > 0) status.Warning(text);
+            else status.Info(text);
+
+            if (failedCount > 0)
+            {
+                EditorUtility.DisplayDialog(
+                    "Patch Generation Failed",
+                    $"The face tracking diff files could not be generated for:\n\n{BuildDiffFailureList()}\n\n" +
+                    "No patch config was written for these avatars. Fix the problem shown in the Console, then use " +
+                    "\"Retry\" in the banner at the top of the wizard.",
+                    "OK");
+            }
+        }
+
+        // =====================================================================
+        // Import detection
+        // =====================================================================
 
         private void HandleFbxReimported(string importedAssetPath)
         {
-            if (currentStep != WizardStep.WaitForImport)
+            // The copies made while building the structure are not edited FBXs.
+            if (isBuildingStructure || !IsStructureCreated)
             {
                 return;
             }
@@ -86,13 +256,23 @@ namespace Pawlygon.UnityTools.Editor
                 matchedAny |= TryMarkEntryAsImported(entry, force: false);
             }
 
-            if (matchedAny)
+            if (!matchedAny)
             {
-                QueueMoveToMeshSelection();
+                return;
+            }
+
+            if (currentStep == WizardStep.WaitForImport)
+            {
+                QueueContinueAfterImport();
+            }
+            else
+            {
+                // Later steps show the "out of date" banner.
+                Repaint();
             }
         }
 
-        private void QueueMoveToMeshSelection()
+        private void QueueContinueAfterImport()
         {
             if (pendingImportTransition)
             {
@@ -100,8 +280,8 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             pendingImportTransition = true;
-            EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
-            EditorApplication.delayCall += TryMoveToMeshSelectionAfterImport;
+            EditorApplication.delayCall -= TryContinueAfterImport;
+            EditorApplication.delayCall += TryContinueAfterImport;
         }
 
         /// <summary>
@@ -130,6 +310,7 @@ namespace Pawlygon.UnityTools.Editor
             entry.watchedFbxWriteTimeUtcTicks = currentWriteTimeUtcTicks;
             entry.watchedFbxFileSize = currentFileSize;
             entry.hasImportedModifiedFbx = true;
+            entry.needsProcessing = true;
             return true;
         }
 
@@ -151,7 +332,7 @@ namespace Pawlygon.UnityTools.Editor
                 }
             }
 
-            string selectedPath = EditorUtility.OpenFilePanel("Choose Modified FBX", initialDirectory, "fbx");
+            string selectedPath = EditorUtility.OpenFilePanel("Choose the Edited FBX", initialDirectory, "fbx");
             if (string.IsNullOrEmpty(selectedPath))
             {
                 return;
@@ -167,32 +348,27 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(sourcePath))
-            {
-                statusMessage = "Select a single .fbx file to import.";
-                return;
-            }
-
             string resolvedSourcePath = ResolveAbsoluteFilePath(sourcePath);
             if (string.IsNullOrEmpty(resolvedSourcePath) || !File.Exists(resolvedSourcePath))
             {
-                statusMessage = "The selected FBX file could not be found.";
+                status.Error("The selected FBX file could not be found.");
                 return;
             }
 
             if (!string.Equals(Path.GetExtension(resolvedSourcePath), ".fbx", StringComparison.OrdinalIgnoreCase))
             {
-                statusMessage = "Only .fbx files can be imported here.";
+                status.Error("Only .fbx files can be used here.");
                 return;
             }
 
             if (string.IsNullOrEmpty(entry.copiedFbxPath))
             {
-                statusMessage = $"No copied FBX path is available for '{GetEntryDisplayName(entry)}'.";
+                status.Error($"'{GetEntryDisplayName(entry)}' has no copied FBX yet. Create the avatar structure first.");
                 return;
             }
 
             string targetAbsolutePath = ToAbsolutePath(entry.copiedFbxPath);
+            string fileName = Path.GetFileName(resolvedSourcePath);
 
             try
             {
@@ -205,29 +381,36 @@ namespace Pawlygon.UnityTools.Editor
 
                 if (AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedFbxPath) == null)
                 {
-                    statusMessage = $"Unity could not import '{Path.GetFileName(resolvedSourcePath)}' as an FBX.";
+                    status.Error($"Unity couldn't import '{fileName}' as an FBX. Check the Console for import errors.");
                     return;
                 }
 
                 TryMarkEntryAsImported(entry, force: true);
-                statusMessage = $"Imported '{Path.GetFileName(resolvedSourcePath)}' into '{Path.GetFileName(entry.copiedFbxPath)}'.";
 
                 string sourceFbxAssetPath = entry.sourceFbx != null ? AssetDatabase.GetAssetPath(entry.sourceFbx) : null;
                 if (!string.IsNullOrEmpty(sourceFbxAssetPath) && FTDiffGenerator.AreFilesIdentical(ToAbsolutePath(sourceFbxAssetPath), targetAbsolutePath))
                 {
-                    statusMessage += " Warning: this FBX is identical to the original, so its patch would not change the model.";
+                    status.Warning($"Copied '{fileName}' into '{Path.GetFileName(entry.copiedFbxPath)}', but it is identical to the original FBX, so its patch would not change the model.");
                 }
-                QueueMoveToMeshSelection();
+                else
+                {
+                    status.Info($"Copied '{fileName}' into '{Path.GetFileName(entry.copiedFbxPath)}'.");
+                }
+
+                if (currentStep == WizardStep.WaitForImport)
+                {
+                    QueueContinueAfterImport();
+                }
             }
             catch (Exception exception)
             {
-                statusMessage = $"Failed to import '{Path.GetFileName(resolvedSourcePath)}': {exception.Message}";
+                status.Error($"Couldn't copy '{fileName}': {exception.Message}");
             }
 
             Repaint();
         }
 
-        private string ResolveAbsoluteFilePath(string path)
+        private static string ResolveAbsoluteFilePath(string path)
         {
             if (string.IsNullOrWhiteSpace(path))
             {
@@ -240,21 +423,27 @@ namespace Pawlygon.UnityTools.Editor
                 : ToAbsolutePath(normalizedPath);
         }
 
-        private void TryMoveToMeshSelectionAfterImport()
+        private void TryContinueAfterImport()
         {
             pendingImportTransition = false;
 
-            // A transition queued before the user continued manually (or started over) must not
-            // regenerate diffs and reset the mesh selections of a later step.
-            if (currentStep != WizardStep.WaitForImport)
+            // A transition queued before the user continued manually, went to another step or started
+            // over must not run.
+            if (currentStep != WizardStep.WaitForImport || !IsStructureCreated)
             {
                 return;
             }
 
-            if (!avatarEntries.All(entry => entry.hasImportedModifiedFbx))
+            int waitingCount = avatarEntries.Count(entry => !entry.hasImportedModifiedFbx);
+            if (waitingCount > 0)
             {
-                statusMessage = $"Waiting for {avatarEntries.Count(entry => !entry.hasImportedModifiedFbx)} more modified FBX import(s).";
+                status.Info($"Edited FBX detected. Waiting for {waitingCount} more.");
                 Repaint();
+                return;
+            }
+
+            if (!avatarEntries.Any(entry => entry.needsProcessing))
+            {
                 return;
             }
 
@@ -262,13 +451,13 @@ namespace Pawlygon.UnityTools.Editor
             // has completed, so the assets are loadable now unless the import itself failed.
             if (!CanLoadImportedAssets())
             {
-                Debug.LogWarning("[AvatarSetupWizard] All modified FBXs were detected, but at least one copied FBX or prefab could not be loaded.");
-                statusMessage = "All modified FBXs were detected, but at least one copied FBX or prefab could not be loaded. Check the Console for import errors, then continue manually.";
+                Debug.LogWarning("[AvatarSetupWizard] All edited FBXs were detected, but at least one copied FBX or prefab could not be loaded.");
+                status.Error("Every edited FBX was detected, but a copied FBX or prefab can't be loaded. Check the Console for import errors, then click Continue.");
                 Repaint();
                 return;
             }
 
-            GenerateDiffsAndMoveToMeshSelection(importedOnly: true, skippedImportWait: false);
+            ProcessEntriesAndReview(avatarEntries.Where(entry => entry.needsProcessing).ToList(), skippedImportWait: false);
         }
 
         private bool CanLoadImportedAssets()
@@ -278,68 +467,83 @@ namespace Pawlygon.UnityTools.Editor
                 AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedPrefabPath) != null);
         }
 
-        private bool AreAllEntriesImportedAndLoadable()
-        {
-            return avatarEntries.All(entry => entry.hasImportedModifiedFbx) && CanLoadImportedAssets();
-        }
+        // =====================================================================
+        // Patch files
+        // =====================================================================
 
         /// <summary>
-        /// Regenerates the .hdiff files for the wizard's entries and, when PatcherHub is installed,
-        /// writes a patch config for every entry whose diffs were generated successfully. Each
-        /// entry's <c>diffGenerationFailed</c> flag is updated; returns the number of entries whose
-        /// diffs were generated and reports failures through <paramref name="failedCount"/>.
+        /// Regenerates the .hdiff files of <paramref name="entries"/> with a cancelable progress bar (checked
+        /// between avatars) and, when PatcherHub is installed, writes a patch config for every entry whose
+        /// diffs were generated. Updates each entry's <c>diffGenerationFailed</c> flag. Returns the number
+        /// generated; <paramref name="processed"/> lists the entries that were attempted (all of them unless
+        /// <paramref name="cancelled"/>).
         /// </summary>
-        private int GenerateDiffFilesForEntries(Func<AvatarEntry, bool> shouldGenerate, out int failedCount)
+        private int GenerateDiffFilesForEntries(IReadOnlyList<AvatarEntry> entries, out int failedCount,
+            out List<AvatarEntry> processed, out bool cancelled)
         {
             int generatedCount = 0;
             failedCount = 0;
+            processed = new List<AvatarEntry>();
+            cancelled = false;
 
-            foreach (AvatarEntry entry in avatarEntries)
+            try
             {
-                if (!shouldGenerate(entry))
+                for (int i = 0; i < entries.Count; i++)
                 {
-                    continue;
-                }
-
-                entry.diffGenerationFailed = false;
-                entry.diffGenerationError = string.Empty;
-
-                if (string.IsNullOrEmpty(entry.diffGeneratorAssetPath))
-                {
-                    MarkDiffGenerationFailed(entry, "No diff generator asset was created for this avatar.");
-                    failedCount++;
-                    continue;
-                }
-
-                FTDiffGenerator diffGenerator = AssetDatabase.LoadAssetAtPath<FTDiffGenerator>(entry.diffGeneratorAssetPath);
-                if (diffGenerator == null)
-                {
-                    MarkDiffGenerationFailed(entry, $"Could not load the diff generator asset at '{entry.diffGeneratorAssetPath}'.");
-                    failedCount++;
-                    continue;
-                }
-
-                if (!diffGenerator.GenerateDiffFiles(out string diffError))
-                {
-                    // Never write a patch config that would point at missing or stale diff files.
-                    MarkDiffGenerationFailed(entry, diffError);
-                    failedCount++;
-                    continue;
-                }
-
-                generatedCount++;
-
-                // Generate FTPatchConfig with wizard context if PatcherHub is installed
-                if (FTPatchConfigGenerator.IsPatcherHubAvailable())
-                {
-                    FTPatchConfigGenerator.ConfigContext configContext = BuildPatchConfigContext(entry, diffGenerator);
-                    if (configContext != null)
+                    AvatarEntry entry = entries[i];
+                    string info = $"Generating the patch files for '{GetEntryDisplayName(entry)}' ({i + 1}/{entries.Count})…";
+                    if (EditorUtility.DisplayCancelableProgressBar(ProgressTitle, info, (float)i / entries.Count))
                     {
-                        FTPatchConfigGenerator.GenerateConfig(configContext);
+                        cancelled = true;
+                        break;
+                    }
+
+                    processed.Add(entry);
+                    entry.diffGenerationFailed = false;
+                    entry.diffGenerationError = string.Empty;
+
+                    if (string.IsNullOrEmpty(entry.diffGeneratorAssetPath))
+                    {
+                        MarkDiffGenerationFailed(entry, "No diff generator asset was created for this avatar.");
+                        failedCount++;
+                        continue;
+                    }
+
+                    FTDiffGenerator diffGenerator = AssetDatabase.LoadAssetAtPath<FTDiffGenerator>(entry.diffGeneratorAssetPath);
+                    if (diffGenerator == null)
+                    {
+                        MarkDiffGenerationFailed(entry, $"Could not load the diff generator asset at '{entry.diffGeneratorAssetPath}'.");
+                        failedCount++;
+                        continue;
+                    }
+
+                    if (!diffGenerator.GenerateDiffFiles(out string diffError))
+                    {
+                        // Never write a patch config that would point at missing or stale diff files.
+                        MarkDiffGenerationFailed(entry, diffError);
+                        failedCount++;
+                        continue;
+                    }
+
+                    generatedCount++;
+
+                    // Generate FTPatchConfig with wizard context if PatcherHub is installed
+                    if (FTPatchConfigGenerator.IsPatcherHubAvailable())
+                    {
+                        FTPatchConfigGenerator.ConfigContext configContext = BuildPatchConfigContext(entry, diffGenerator);
+                        if (configContext != null)
+                        {
+                            FTPatchConfigGenerator.GenerateConfig(configContext);
+                        }
                     }
                 }
             }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+            }
 
+            InvalidateProjectCaches();
             return generatedCount;
         }
 
@@ -408,42 +612,6 @@ namespace Pawlygon.UnityTools.Editor
             Debug.LogError($"[AvatarSetupWizard] Diff generation failed for '{GetEntryDisplayName(entry)}': {entry.diffGenerationError}");
         }
 
-        /// <summary>
-        /// Generates the diff files for the wizard's entries, then advances to mesh selection.
-        /// Diff failures do not block mesh review (it does not depend on the diffs), but they are
-        /// always reported with a dialog and a persistent warning instead of a success message.
-        /// </summary>
-        private void GenerateDiffsAndMoveToMeshSelection(bool importedOnly, bool skippedImportWait)
-        {
-            Func<AvatarEntry, bool> shouldGenerate = entry => !importedOnly || entry.hasImportedModifiedFbx;
-
-            // A copied FBX that still matches the original yields a patch that changes nothing,
-            // usually because the edited FBX was never dropped in (e.g. after "Skip Waiting").
-            List<string> unchangedEntryNames = GetEntriesWithUnchangedFbx(shouldGenerate)
-                .Select(GetEntryDisplayName)
-                .ToList();
-            if (!FTDiffGenerator.ConfirmGenerationForUnchangedModels(unchangedEntryNames))
-            {
-                statusMessage = $"Diff generation cancelled. The modified FBX is identical to the original for: {string.Join(", ", unchangedEntryNames)}. " +
-                                "Replace the copied FBX with your edited version (or use \"Choose FBX...\"), then continue.";
-                Repaint();
-                return;
-            }
-
-            int generatedDiffCount = GenerateDiffFilesForEntries(shouldGenerate, out int failedDiffCount);
-            MoveToMeshSelection(generatedDiffCount, failedDiffCount, skippedImportWait, unchangedEntryNames.Count);
-
-            if (failedDiffCount > 0)
-            {
-                EditorUtility.DisplayDialog(
-                    "Diff Generation Failed",
-                    $"The face tracking diff files could not be generated for:\n\n{BuildDiffFailureList()}\n\n" +
-                    "No patch config was written for these avatars. Fix the problem shown in the Console, then use " +
-                    "\"Retry Diff Generation\" at the top of the wizard.",
-                    "OK");
-            }
-        }
-
         private string BuildDiffFailureList()
         {
             return string.Join("\n", avatarEntries
@@ -452,30 +620,25 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Draws a persistent error box listing the entries whose diff generation failed, so the
+        /// Draws a persistent error banner listing the entries whose diff generation failed, so the
         /// problem stays visible after the status message has been replaced.
         /// </summary>
         private void DrawDiffFailureWarning()
         {
-            if (currentStep == WizardStep.Setup || currentStep == WizardStep.WaitForImport)
-            {
-                return;
-            }
-
             if (!avatarEntries.Any(entry => entry.diffGenerationFailed))
             {
                 return;
             }
 
             EditorGUILayout.HelpBox(
-                $"Diff generation failed, so these avatars have no up-to-date patch files:\n{BuildDiffFailureList()}\n\n" +
-                "Fix the problem shown in the Console, then retry.",
+                $"The patch files couldn't be generated for:\n{BuildDiffFailureList()}\n\n" +
+                "Customers can't patch these avatars yet. Fix the problem shown in the Console, then retry.",
                 MessageType.Error);
 
             using (new EditorGUILayout.HorizontalScope())
             {
                 GUILayout.FlexibleSpace();
-                if (GUILayout.Button("Retry Diff Generation", GUILayout.Width(170f), GUILayout.Height(24f)))
+                if (GUILayout.Button(new GUIContent("Retry", "Generate the patch files of these avatars again."), GUILayout.Width(90f), GUILayout.Height(22f)))
                 {
                     RetryFailedDiffGeneration();
                     // Runs hdiffz, refreshes the AssetDatabase and may show a dialog.
@@ -483,42 +646,47 @@ namespace Pawlygon.UnityTools.Editor
                 }
             }
 
-            EditorGUILayout.Space(EditorGUIUtility.standardVerticalSpacing);
+            EditorGUILayout.Space(SectionSpacing);
         }
 
         /// <summary>
         /// Regenerates diffs (and patch configs, if PatcherHub is installed) for the entries whose
-        /// previous diff generation failed, reporting the outcome in the status message.
+        /// previous diff generation failed, reporting the outcome in the status bar.
         /// </summary>
         private void RetryFailedDiffGeneration()
         {
-            int generatedCount = GenerateDiffFilesForEntries(entry => entry.diffGenerationFailed, out int failedCount);
+            List<AvatarEntry> failed = avatarEntries.Where(entry => entry.diffGenerationFailed).ToList();
+            int generatedCount = GenerateDiffFilesForEntries(failed, out int failedCount, out _, out bool cancelled);
 
-            if (failedCount > 0)
+            if (cancelled)
             {
-                statusMessage = $"Diff generation still fails for {failedCount} avatar entr{(failedCount == 1 ? "y" : "ies")}. See the Console for hdiffz's output.";
-                EditorUtility.DisplayDialog("Diff Generation Failed",
+                status.Warning("Retry stopped before every avatar was processed.");
+            }
+            else if (failedCount > 0)
+            {
+                status.Error($"Patch generation still fails for {Plural(failedCount, "avatar")}. See the Console for hdiffz's output.");
+                EditorUtility.DisplayDialog("Patch Generation Failed",
                     $"The face tracking diff files could not be generated for:\n\n{BuildDiffFailureList()}\n\nSee the Console for details.", "OK");
             }
             else
             {
-                statusMessage = $"Regenerated diff files for {generatedCount} avatar entr{(generatedCount == 1 ? "y" : "ies")}.";
+                status.Info($"Generated the patch files for {Plural(generatedCount, "avatar")}.");
             }
 
             Repaint();
         }
 
         /// <summary>
-        /// Returns the entries (among those matching <paramref name="filter"/>) whose copied FBX is
-        /// still byte-identical to the source FBX it was copied from.
+        /// Returns the entries of <paramref name="entries"/> whose copied FBX is still byte-identical to the
+        /// source FBX it was copied from.
         /// </summary>
-        private List<AvatarEntry> GetEntriesWithUnchangedFbx(Func<AvatarEntry, bool> filter)
+        private static List<AvatarEntry> GetEntriesWithUnchangedFbx(IEnumerable<AvatarEntry> entries)
         {
             var result = new List<AvatarEntry>();
 
-            foreach (AvatarEntry entry in avatarEntries)
+            foreach (AvatarEntry entry in entries)
             {
-                if (!filter(entry) || string.IsNullOrEmpty(entry.diffGeneratorAssetPath))
+                if (string.IsNullOrEmpty(entry.diffGeneratorAssetPath))
                 {
                     continue;
                 }
@@ -531,82 +699,6 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             return result;
-        }
-
-        private void MoveToMeshSelection(int generatedDiffCount, int failedDiffCount, bool skippedImportWait, int unchangedFbxCount)
-        {
-            // A queued import transition must not run after we moved on.
-            EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
-            pendingImportTransition = false;
-
-            foreach (AvatarEntry entry in avatarEntries)
-            {
-                LoadMeshSelections(entry);
-                entry.isMeshReviewComplete = false;
-                entry.reviewResultLabel = string.Empty;
-            }
-
-            selectedEntryIndex = Mathf.Clamp(FindNextIncompleteEntryIndex(0), 0, avatarEntries.Count - 1);
-            currentStep = WizardStep.SelectMeshes;
-
-            string prefix = skippedImportWait ? "Skipped the import wait." : "All modified FBXs imported.";
-            string diffSummary = generatedDiffCount > 0
-                ? $" Regenerated diff files for {generatedDiffCount} avatar entr{(generatedDiffCount == 1 ? "y" : "ies")}."
-                : string.Empty;
-            string failureSummary = failedDiffCount > 0
-                ? $" Diff generation FAILED for {failedDiffCount} avatar entr{(failedDiffCount == 1 ? "y" : "ies")} — see the error above and the Console."
-                : string.Empty;
-
-            string unchangedSummary = unchangedFbxCount > 0
-                ? $" Warning: the modified FBX is identical to the original for {unchangedFbxCount} avatar entr{(unchangedFbxCount == 1 ? "y" : "ies")}, so its patch does not change the model."
-                : string.Empty;
-
-            statusMessage = $"{prefix}{diffSummary}{failureSummary}{unchangedSummary} Review each avatar entry and apply the mesh and rig replacements you want.";
-
-            Repaint();
-        }
-
-        private void DrawImportStatusSummary()
-        {
-            using (new EditorGUILayout.VerticalScope(helpBoxPadding10_8))
-            {
-                foreach (AvatarEntry entry in avatarEntries)
-                {
-                    EditorGUILayout.BeginVertical(helpBoxPadding8_6);
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        GUIContent statusIcon = entry.hasImportedModifiedFbx
-                            ? EditorGUIUtility.IconContent("TestPassed")
-                            : EditorGUIUtility.IconContent("console.warnicon.sml");
-
-                        GUILayout.Label(statusIcon, GUILayout.Width(20f), GUILayout.Height(18f));
-
-                        using (new EditorGUILayout.VerticalScope())
-                        {
-                            EditorGUILayout.LabelField(GetEntryDisplayName(entry), EditorStyles.boldLabel);
-                            EditorGUILayout.LabelField(entry.hasImportedModifiedFbx ? "Updated" : "Waiting for updated FBX", PawlygonEditorUI.RichMiniLabelStyle);
-                            if (!string.IsNullOrEmpty(entry.copiedFbxPath))
-                            {
-                                EditorGUILayout.LabelField(entry.copiedFbxPath, PawlygonEditorUI.RichMiniLabelStyle);
-                            }
-                        }
-
-                        GUILayout.FlexibleSpace();
-
-                        if (GUILayout.Button("Choose FBX...", GUILayout.Width(100f), GUILayout.Height(24f)))
-                        {
-                            PromptForModifiedFbx(entry);
-                            // Opens a modal file panel and imports the chosen FBX.
-                            GUIUtility.ExitGUI();
-                        }
-                    }
-
-                    EditorGUILayout.LabelField("Choose an updated FBX to replace this copied file", PawlygonEditorUI.RichMiniLabelStyle);
-                    EditorGUILayout.EndVertical();
-
-                    EditorGUILayout.Space(3f);
-                }
-            }
         }
     }
 }

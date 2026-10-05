@@ -1,16 +1,15 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using UnityEditor;
-using UnityEditor.Animations;
-using UnityEditor.SceneManagement;
 using UnityEngine;
-using UnityEngine.Networking;
-using UnityEngine.SceneManagement;
 
 namespace Pawlygon.UnityTools.Editor
 {
+    /// <summary>
+    /// Step 3: per avatar, which skinned meshes and which humanoid rig the copied prefab takes from the
+    /// edited FBX (matched by path, object name or mesh name; bones remapped by <see cref="BoneMapper"/>).
+    /// </summary>
     public partial class AvatarSetupWizard
     {
         private class RendererInfo
@@ -212,69 +211,357 @@ namespace Pawlygon.UnityTools.Editor
             public int PriorityScore;
         }
 
+        // =====================================================================
+        // Drawing
+        // =====================================================================
+
+        /// <summary>Replacements: the "Files" foldout under the avatar's rows is open.</summary>
+        private bool showReplacementFiles;
+
         private void DrawMeshSelectionStep()
         {
-            AvatarEntry selectedEntry = GetSelectedEntry();
-            if (selectedEntry == null)
+            AvatarEntry entry = GetSelectedEntry();
+            if (entry == null)
             {
-                statusMessage = "No avatar entries are available for mesh review.";
-                currentStep = WizardStep.Setup;
                 return;
             }
 
-            PawlygonEditorUI.DrawSection(
-                "Select Replacements",
-                "Review one avatar at a time. Apply the selected mesh and humanoid rig replacements or explicitly skip that avatar.",
-                () =>
-                {
-                    DrawEntrySelectionToolbar();
-                    EditorGUILayout.Space(EditorGUIUtility.standardVerticalSpacing);
-                    DrawMeshReviewSummary(selectedEntry);
-                    EditorGUILayout.Space(SectionSpacing);
+            int reviewedCount = avatarEntries.Count(item => item.isMeshReviewComplete);
+            if (DrawAvatarList("Avatars", $"{reviewedCount}/{avatarEntries.Count} reviewed", GetReviewBadge))
+            {
+                GUIUtility.ExitGUI();
+            }
 
-                    if (selectedEntry.meshSelections.Count == 0)
+            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField(GetEntryDisplayName(entry), PawlygonEditorUI.SectionTitleStyle);
+                    GUILayout.FlexibleSpace();
+                    var badge = GetReviewBadge(entry);
+                    PawlygonEditorUI.DrawBadge(badge.Text, badge.Kind, badge.Tooltip);
+                }
+
+                EditorGUILayout.Space(2f);
+                EditorGUILayout.LabelField(
+                    "Tick what the copied prefab should take from the edited FBX. Rows that need a look are open; the rest are fine as they are.",
+                    PawlygonEditorUI.SubLabelStyle);
+                EditorGUILayout.Space(6f);
+
+                if (entry.isMeshReviewComplete)
+                {
+                    EditorGUILayout.HelpBox(
+                        entry.reviewResultLabel == "Skipped"
+                            ? "Skipped: the prefab keeps its own meshes and rig. Use Review Again to change that."
+                            : "Applied: the prefab uses the ticked meshes and rig of the edited FBX. Use Review Again to change the selection.",
+                        MessageType.Info);
+                    EditorGUILayout.Space(4f);
+                }
+
+                using (new EditorGUI.DisabledScope(entry.isMeshReviewComplete))
+                {
+                    if (entry.meshSelections.Count == 0)
                     {
-                        EditorGUILayout.HelpBox("No skinned mesh renderer mappings were found between the duplicated FBX and prefab.", MessageType.Warning);
+                        EditorGUILayout.HelpBox("No skinned meshes were found in the edited FBX, so there is nothing to replace.", MessageType.Warning);
                     }
                     else
                     {
-                        DrawMeshSelectionToolbar(selectedEntry);
-                        EditorGUILayout.Space(EditorGUIUtility.standardVerticalSpacing);
-
-                        using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
-                        {
-                            DrawAnimatorReplacementRow(selectedEntry.animatorReplacement);
-
-                            foreach (MeshSelectionState meshSelection in selectedEntry.meshSelections)
-                            {
-                                DrawMeshSelectionRow(meshSelection);
-                            }
-                        }
+                        DrawMeshSelectionToolbar(entry);
                     }
 
-                    EditorGUILayout.Space(SectionSpacing);
+                    DrawAnimatorReplacementRow(entry.animatorReplacement);
 
-                    using (new EditorGUILayout.HorizontalScope())
+                    foreach (MeshSelectionState meshSelection in entry.meshSelections)
                     {
-                        if (GUILayout.Button("Skip This Avatar", GUILayout.Height(34f)))
-                        {
-                            SkipEntryReview(selectedEntry);
-                            // Shows a modal dialog and may change the step.
-                            GUIUtility.ExitGUI();
-                        }
-
-                        using (new EditorGUI.DisabledScope(!HasAnySelectedReplacement(selectedEntry)))
-                        {
-                            if (PawlygonEditorUI.DrawPrimaryButton("Apply Selected Replacements", 34f))
-                            {
-                                ApplySelectedReplacementsToPrefab(selectedEntry);
-                                // Saves the prefab, may show a dialog and may change the step.
-                                GUIUtility.ExitGUI();
-                            }
-                        }
+                        DrawMeshSelectionRow(meshSelection);
                     }
-                });
+                }
+
+                EditorGUILayout.Space(4f);
+
+                // Draw with this event's value so Layout and Repaint match; the change shows on the next event.
+                bool showFiles = showReplacementFiles;
+                bool newShowFiles = EditorGUILayout.Foldout(showFiles, "Files", true);
+                if (showFiles)
+                {
+                    DrawPathRow("Edited FBX", entry.copiedFbxPath);
+                    DrawPathRow("Prefab", entry.copiedPrefabPath);
+                }
+
+                showReplacementFiles = newShowFiles;
+            }
         }
+
+        private void DrawReplacementActions()
+        {
+            DrawBackButton(WizardStep.WaitForImport);
+
+            AvatarEntry entry = GetSelectedEntry();
+            if (entry == null)
+            {
+                return;
+            }
+
+            if (!entry.isMeshReviewComplete)
+            {
+                if (PawlygonEditorUI.DrawSecondaryButton(new GUIContent("Skip This Avatar", "Keep the prefab's own meshes and rig for this avatar."), ActionButtonHeight))
+                {
+                    SkipEntryReview(entry);
+                    GUIUtility.ExitGUI();
+                }
+
+                GUILayout.FlexibleSpace();
+
+                bool anySelected = HasAnySelectedReplacement(entry);
+                string tooltip = entry.needsProcessing
+                    ? "This avatar's FBX changed: update its patch first (banner above)."
+                    : anySelected
+                        ? "Save the ticked meshes and rig into the copied prefab."
+                        : "Tick at least one mesh or the rig, or skip this avatar.";
+
+                using (new EditorGUI.DisabledScope(!anySelected || entry.needsProcessing))
+                {
+                    if (PawlygonEditorUI.DrawPrimaryButton(new GUIContent("Apply Replacements", tooltip), ActionButtonHeight, GUILayout.MinWidth(PrimaryButtonMinWidth)))
+                    {
+                        ApplySelectedReplacementsToPrefab(entry);
+                        // Saves the prefab, may show a dialog and may change the step.
+                        GUIUtility.ExitGUI();
+                    }
+                }
+
+                return;
+            }
+
+            if (PawlygonEditorUI.DrawSecondaryButton(new GUIContent("Review Again", "Change the selection of this avatar and apply it again."), ActionButtonHeight))
+            {
+                entry.isMeshReviewComplete = false;
+                entry.reviewResultLabel = string.Empty;
+                status.Clear();
+                GUIUtility.ExitGUI();
+            }
+
+            GUILayout.FlexibleSpace();
+
+            int nextIndex = FindNextIncompleteEntryIndex(selectedEntryIndex + 1);
+            if (nextIndex < 0)
+            {
+                nextIndex = FindNextIncompleteEntryIndex(0);
+            }
+
+            if (nextIndex >= 0)
+            {
+                if (PawlygonEditorUI.DrawPrimaryButton(new GUIContent("Next Avatar", $"Review '{GetEntryDisplayName(avatarEntries[nextIndex])}'."),
+                        ActionButtonHeight, GUILayout.MinWidth(PrimaryButtonMinWidth)))
+                {
+                    selectedEntryIndex = nextIndex;
+                    scrollPosition = Vector2.zero;
+                    status.Clear();
+                    GUIUtility.ExitGUI();
+                }
+            }
+            else if (PawlygonEditorUI.DrawPrimaryButton("Continue", ActionButtonHeight, GUILayout.MinWidth(PrimaryButtonMinWidth)))
+            {
+                GoToStep(WizardStep.Prefabs);
+                GUIUtility.ExitGUI();
+            }
+        }
+
+        private (string Text, PawlygonEditorUI.BadgeKind Kind, string Tooltip) GetReviewBadge(AvatarEntry entry)
+        {
+            if (entry.needsProcessing)
+            {
+                return ("Out of date", PawlygonEditorUI.BadgeKind.Warning, "The FBX changed after its patch was made. Update it from the banner.");
+            }
+
+            if (entry.isMeshReviewComplete)
+            {
+                return entry.reviewResultLabel == "Skipped"
+                    ? ("Skipped", PawlygonEditorUI.BadgeKind.Neutral, "The prefab keeps its own meshes and rig.")
+                    : ("Applied", PawlygonEditorUI.BadgeKind.Ok, "The replacements were saved into the prefab.");
+            }
+
+            return entry.meshSelections.Any(MeshNeedsAttention)
+                ? ("Needs attention", PawlygonEditorUI.BadgeKind.Warning, "Some meshes have no match, bones that can't be remapped or missing blendshapes.")
+                : ("Pending", PawlygonEditorUI.BadgeKind.Info, "Not reviewed yet.");
+        }
+
+        private static bool MeshNeedsAttention(MeshSelectionState meshSelection)
+        {
+            return !meshSelection.hasMatch || meshSelection.bonesUnresolved || HasMissingUnifiedBlendshapesWarning(meshSelection);
+        }
+
+        private void DrawMeshSelectionToolbar(AvatarEntry entry)
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button(new GUIContent("Select All", "Tick every matched mesh (not those whose bones can't be remapped)."), EditorStyles.miniButtonLeft, GUILayout.Width(80f)))
+                {
+                    SetMeshSelectionState(entry, true);
+                }
+
+                if (GUILayout.Button("Deselect All", EditorStyles.miniButtonRight, GUILayout.Width(80f)))
+                {
+                    SetMeshSelectionState(entry, false);
+                }
+
+                GUILayout.FlexibleSpace();
+                GUILayout.Label($"{GetSelectedReplacementCount(entry)} selected", mutedMiniStyle);
+            }
+
+            EditorGUILayout.Space(2f);
+        }
+
+        private void DrawAnimatorReplacementRow(AnimatorReplacementState animatorReplacement)
+        {
+            animatorReplacement ??= new AnimatorReplacementState();
+            bool available = animatorReplacement.hasPrefabAnimator && animatorReplacement.hasHumanoidAvatar;
+
+            using (new EditorGUILayout.VerticalScope(cardStyle))
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.Space(14f);
+
+                    using (new EditorGUI.DisabledScope(!available))
+                    {
+                        string label = string.IsNullOrEmpty(animatorReplacement.fbxAvatarName)
+                            ? "Humanoid rig"
+                            : $"Humanoid rig ({animatorReplacement.fbxAvatarName})";
+                        animatorReplacement.selected = EditorGUILayout.ToggleLeft(
+                            new GUIContent(label, "Gives the prefab's main Animator the edited FBX's humanoid Avatar (bone mapping)."),
+                            animatorReplacement.selected, GUILayout.MinWidth(60f));
+                    }
+
+                    if (available)
+                    {
+                        PawlygonEditorUI.DrawBadge("Ready", PawlygonEditorUI.BadgeKind.Ok, animatorReplacement.matchReason);
+                    }
+                    else
+                    {
+                        PawlygonEditorUI.DrawBadge("Unavailable", PawlygonEditorUI.BadgeKind.Neutral,
+                            !animatorReplacement.hasPrefabAnimator
+                                ? "The prefab has no Animator to update."
+                                : "The edited FBX has no valid humanoid Avatar. Set its rig to Humanoid in the import settings.");
+                    }
+                }
+            }
+        }
+
+        private void DrawMeshSelectionRow(MeshSelectionState meshSelection)
+        {
+            using (new EditorGUILayout.VerticalScope(cardStyle))
+            {
+                // Draw with this event's value so Layout and Repaint match; the change shows on the next event.
+                bool show = meshSelection.showDetails;
+                bool newShow;
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    Rect foldoutRect = GUILayoutUtility.GetRect(14f, EditorGUIUtility.singleLineHeight, GUILayout.Width(14f));
+                    newShow = EditorGUI.Foldout(foldoutRect, show, GUIContent.none, true);
+
+                    using (new EditorGUI.DisabledScope(!meshSelection.hasMatch))
+                    {
+                        string meshLabel = string.IsNullOrEmpty(meshSelection.fbxMeshName) || meshSelection.fbxMeshName == meshSelection.fbxObjectName
+                            ? meshSelection.fbxObjectName
+                            : $"{meshSelection.fbxObjectName} ({meshSelection.fbxMeshName})";
+                        meshSelection.selected = EditorGUILayout.ToggleLeft(
+                            new GUIContent(meshLabel, meshSelection.fbxRelativePath), meshSelection.selected, GUILayout.MinWidth(60f));
+                    }
+
+                    DrawMeshBadge(meshSelection);
+                }
+
+                if (show)
+                {
+                    DrawMeshDetails(meshSelection);
+                }
+
+                meshSelection.showDetails = newShow;
+            }
+        }
+
+        private static void DrawMeshBadge(MeshSelectionState meshSelection)
+        {
+            if (!meshSelection.hasMatch)
+            {
+                PawlygonEditorUI.DrawBadge("No match", PawlygonEditorUI.BadgeKind.Warning,
+                    "The prefab has no skinned mesh with the same path, object name or mesh name, so there is nothing to replace.");
+            }
+            else if (meshSelection.bonesUnresolved)
+            {
+                PawlygonEditorUI.DrawBadge("Bones differ", PawlygonEditorUI.BadgeKind.Error, meshSelection.boneIssue);
+            }
+            else if (HasMissingUnifiedBlendshapesWarning(meshSelection))
+            {
+                PawlygonEditorUI.DrawBadge($"{meshSelection.missingRequiredUnifiedBlendshapesOnFbx.Length} blendshapes missing", PawlygonEditorUI.BadgeKind.Warning,
+                    "This body mesh lacks Unified Expressions blendshapes that face tracking needs.");
+            }
+            else if (meshSelection.bonesDiffer)
+            {
+                PawlygonEditorUI.DrawBadge("Bones remapped", PawlygonEditorUI.BadgeKind.Info,
+                    "The mesh uses other bones than the prefab's; they are matched by name onto the prefab's armature.");
+            }
+            else
+            {
+                PawlygonEditorUI.DrawBadge("Matched", PawlygonEditorUI.BadgeKind.Ok, $"Matched by {meshSelection.matchReason}.");
+            }
+        }
+
+        private void DrawMeshDetails(MeshSelectionState meshSelection)
+        {
+            EditorGUI.indentLevel++;
+
+            EditorGUILayout.LabelField($"<b>From the FBX:</b> {meshSelection.fbxRelativePath}", PawlygonEditorUI.RichMiniLabelStyle);
+            EditorGUILayout.LabelField(meshSelection.hasMatch
+                    ? $"<b>Replaces on the prefab:</b> {meshSelection.prefabRelativePath} ({meshSelection.prefabMeshName}), matched by {meshSelection.matchReason}"
+                    : "<b>Replaces on the prefab:</b> nothing, no matching skinned mesh was found",
+                PawlygonEditorUI.RichMiniLabelStyle);
+
+            if (meshSelection.hasMatch && meshSelection.bonesDiffer)
+            {
+                DrawBoneStatus(meshSelection);
+            }
+
+            if (HasMissingUnifiedBlendshapesWarning(meshSelection))
+            {
+                bool showList = meshSelection.showUnifiedBlendshapeWarningDetails;
+                bool newShowList = EditorGUILayout.Foldout(showList,
+                    $"Missing Unified Expressions blendshapes ({meshSelection.missingRequiredUnifiedBlendshapesOnFbx.Length})", true);
+
+                if (showList)
+                {
+                    EditorGUILayout.LabelField(string.Join(", ", meshSelection.missingRequiredUnifiedBlendshapesOnFbx), PawlygonEditorUI.RichMiniLabelStyle);
+                }
+
+                meshSelection.showUnifiedBlendshapeWarningDetails = newShowList;
+            }
+            else if (HasCompleteUnifiedBlendshapesInfo(meshSelection))
+            {
+                EditorGUILayout.LabelField("All Unified Expressions blendshapes found.", PawlygonEditorUI.RichMiniLabelStyle);
+            }
+
+            EditorGUI.indentLevel--;
+        }
+
+        private static void DrawBoneStatus(MeshSelectionState meshSelection)
+        {
+            if (meshSelection.bonesUnresolved)
+            {
+                EditorGUILayout.HelpBox(
+                    $"The FBX mesh's bones differ from the prefab's and can't be remapped: {meshSelection.boneIssue}. " +
+                    "Replacing it would keep the prefab's bones and skin it incorrectly, so it isn't ticked " +
+                    "(ticking it asks for confirmation when applying).",
+                    MessageType.Warning);
+                return;
+            }
+
+            EditorGUILayout.LabelField("Its bones differ from the prefab's; they will be matched by name onto the prefab's armature.", PawlygonEditorUI.RichMiniLabelStyle);
+        }
+
+        // =====================================================================
+        // Loading and applying
+        // =====================================================================
 
         private void LoadMeshSelections(AvatarEntry entry)
         {
@@ -310,6 +597,12 @@ namespace Pawlygon.UnityTools.Editor
                 .ToList();
 
             PopulateUnifiedBlendshapeWarnings(entry.meshSelections, fbxMeshSubAssets, PawlygonEditorUtils.RequiredUnifiedExpressionBlendshapes);
+
+            // Rows that need a look start open; the rest collapse to one line.
+            foreach (MeshSelectionState meshSelection in entry.meshSelections)
+            {
+                meshSelection.showDetails = MeshNeedsAttention(meshSelection);
+            }
         }
 
         private void ApplySelectedReplacementsToPrefab(AvatarEntry entry)
@@ -325,14 +618,14 @@ namespace Pawlygon.UnityTools.Editor
 
             if (selectedMappings.Count == 0 && !shouldReplaceAnimator)
             {
-                EditorUtility.DisplayDialog("No Replacements Selected", "Select at least one mapped skinned mesh renderer or the humanoid rig replacement to update on the prefab.", "OK");
+                status.Warning("Tick at least one mesh or the humanoid rig, or skip this avatar.");
                 return;
             }
 
             Dictionary<string, Mesh> fbxMeshSubAssets = LoadMeshSubAssets(entry.copiedFbxPath);
             if (selectedMappings.Count > 0 && fbxMeshSubAssets.Count == 0)
             {
-                EditorUtility.DisplayDialog("FBX Missing Meshes", "No mesh sub-assets could be loaded from the duplicated FBX.", "OK");
+                status.Error($"No meshes could be loaded from '{entry.copiedFbxPath}'. Check that the edited FBX imported correctly.");
                 return;
             }
 
@@ -342,7 +635,7 @@ namespace Pawlygon.UnityTools.Editor
 
             if (shouldReplaceAnimator && !IsValidHumanoidAvatar(replacementAvatar))
             {
-                EditorUtility.DisplayDialog("FBX Missing Humanoid Avatar", "No valid humanoid avatar could be loaded from the duplicated FBX.", "OK");
+                status.Error($"No valid humanoid Avatar could be loaded from '{entry.copiedFbxPath}'. Untick the rig or set the FBX's rig to Humanoid.");
                 return;
             }
 
@@ -372,6 +665,11 @@ namespace Pawlygon.UnityTools.Editor
             GameObject fbxRoot = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedFbxPath);
             GameObject prefabRoot = PrefabUtility.LoadPrefabContents(entry.copiedPrefabPath);
 
+            int replacedCount = 0;
+            int remappedCount = 0;
+            int skippedBoneCount = 0;
+            bool replacedAnimator = false;
+
             try
             {
                 Dictionary<string, SkinnedMeshRenderer> prefabRendererLookup = BuildFirstComponentByPathLookup<SkinnedMeshRenderer>(prefabRoot);
@@ -380,11 +678,6 @@ namespace Pawlygon.UnityTools.Editor
                     ? BuildFirstComponentByPathLookup<SkinnedMeshRenderer>(fbxRoot)
                     : new Dictionary<string, SkinnedMeshRenderer>();
                 var boneMapper = new BoneMapper(prefabRoot);
-
-                int replacedCount = 0;
-                int remappedCount = 0;
-                int skippedBoneCount = 0;
-                bool replacedAnimator = false;
 
                 foreach (MeshSelectionState mapping in selectedMappings)
                 {
@@ -448,23 +741,33 @@ namespace Pawlygon.UnityTools.Editor
                 }
 
                 PrefabUtility.SaveAsPrefabAsset(prefabRoot, entry.copiedPrefabPath);
-                CompleteEntryReview(entry, "Applied");
-                statusMessage = BuildReplacementStatusMessage(entry, replacedCount, replacedAnimator);
-
-                if (remappedCount > 0)
-                {
-                    statusMessage += $" Remapped the bones of {remappedCount} mesh(es) onto the prefab's armature.";
-                }
-
-                if (skippedBoneCount > 0)
-                {
-                    statusMessage += $" Skipped {skippedBoneCount} mesh(es) whose bones could not be remapped (see the Console).";
-                }
             }
             finally
             {
                 PrefabUtility.UnloadPrefabContents(prefabRoot);
             }
+
+            bool movedOn = CompleteEntryReview(entry, "Applied");
+
+            string message = BuildReplacementStatusMessage(entry, replacedCount, replacedAnimator);
+            if (remappedCount > 0)
+            {
+                message += $" Remapped the bones of {Plural(remappedCount, "mesh", "meshes")} onto the prefab's armature.";
+            }
+
+            if (skippedBoneCount > 0)
+            {
+                message += $" Skipped {Plural(skippedBoneCount, "mesh", "meshes")} whose bones couldn't be remapped (see the Console).";
+            }
+
+            if (movedOn)
+            {
+                message += " Every avatar is reviewed.";
+            }
+
+            Action ping = PawlygonStatus.Ping(AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedPrefabPath));
+            if (skippedBoneCount > 0) status.Warning(message, "Ping Prefab", ping);
+            else status.Info(message, "Ping Prefab", ping);
         }
 
         /// <summary>
@@ -492,27 +795,32 @@ namespace Pawlygon.UnityTools.Editor
             return lookup;
         }
 
+        /// <summary>Marks the avatar as skipped (the prefab keeps its meshes and rig). Undone with Review Again.</summary>
         private void SkipEntryReview(AvatarEntry entry)
         {
-            if (!EditorUtility.DisplayDialog("Skip Avatar Review", $"Skip mesh and rig replacement for '{GetEntryDisplayName(entry)}'?", "Skip", "Cancel"))
-            {
-                return;
-            }
-
-            CompleteEntryReview(entry, "Skipped");
-            statusMessage = $"Skipped mesh and rig replacement for '{GetEntryDisplayName(entry)}'.";
+            bool movedOn = CompleteEntryReview(entry, "Skipped");
+            status.Info($"Skipped the replacements of '{GetEntryDisplayName(entry)}': its prefab keeps its own meshes and rig." +
+                        (movedOn ? " Every avatar is reviewed." : string.Empty));
         }
 
-        private void CompleteEntryReview(AvatarEntry entry, string reviewResultLabel)
+        /// <summary>
+        /// Marks an avatar as reviewed and selects the next one to review. The first time every avatar is
+        /// reviewed, moves on to Prefabs and returns true; when revisiting the step, stays put.
+        /// </summary>
+        private bool CompleteEntryReview(AvatarEntry entry, string reviewResultLabel)
         {
             entry.isMeshReviewComplete = true;
             entry.reviewResultLabel = reviewResultLabel;
 
             if (avatarEntries.All(item => item.isMeshReviewComplete))
             {
-                currentStep = WizardStep.Prefabs;
-                statusMessage = string.Empty;
-                return;
+                if (furthestStep == WizardStep.SelectMeshes)
+                {
+                    GoToStep(WizardStep.Prefabs);
+                    return true;
+                }
+
+                return false;
             }
 
             int nextIndex = FindNextIncompleteEntryIndex(selectedEntryIndex + 1);
@@ -524,7 +832,10 @@ namespace Pawlygon.UnityTools.Editor
             if (nextIndex >= 0)
             {
                 selectedEntryIndex = nextIndex;
+                scrollPosition = Vector2.zero;
             }
+
+            return false;
         }
 
         private int FindNextIncompleteEntryIndex(int startIndex)
@@ -538,209 +849,6 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             return -1;
-        }
-
-        private void DrawEntrySelectionToolbar()
-        {
-            string[] labels = avatarEntries
-                .Select(entry =>
-                {
-                    string prefix = entry.isMeshReviewComplete ? $"[{entry.reviewResultLabel}] " : string.Empty;
-                    return prefix + GetEntryDisplayName(entry);
-                })
-                .ToArray();
-
-            selectedEntryIndex = GUILayout.Toolbar(Mathf.Clamp(selectedEntryIndex, 0, labels.Length - 1), labels);
-        }
-
-        private void DrawMeshReviewSummary(AvatarEntry entry)
-        {
-            int matchedCount = entry.meshSelections.Count(selection => selection.hasMatch);
-            int selectedCount = entry.meshSelections.Count(selection => selection.selected && selection.hasMatch);
-            string rigStatus = GetAnimatorSelectionSummary(entry.animatorReplacement);
-            bool hasMissingUnifiedBlendshapes = entry.meshSelections.Any(HasMissingUnifiedBlendshapesWarning);
-            bool hasCompleteUnifiedBlendshapes = entry.meshSelections.Any(HasCompleteUnifiedBlendshapesInfo);
-
-            using (new EditorGUILayout.VerticalScope(helpBoxPadding10_8))
-            {
-                EditorGUILayout.LabelField(GetEntryDisplayName(entry), EditorStyles.boldLabel);
-                EditorGUILayout.LabelField($"{matchedCount} matched renderer{(matchedCount == 1 ? string.Empty : "s")}, {selectedCount} selected", PawlygonEditorUI.RichMiniLabelStyle);
-                EditorGUILayout.LabelField($"Humanoid rig: {rigStatus}", PawlygonEditorUI.RichMiniLabelStyle);
-                if (hasMissingUnifiedBlendshapes)
-                {
-                    EditorGUILayout.LabelField("Warning: Missing Unified Expression Blendshapes", PawlygonEditorUI.RichMiniLabelStyle);
-                }
-                else if (hasCompleteUnifiedBlendshapes)
-                {
-                    EditorGUILayout.LabelField("Unified Expression Blendshapes: Complete", PawlygonEditorUI.RichMiniLabelStyle);
-                }
-
-                DrawReadOnlyPathField("Modified FBX", entry.copiedFbxPath);
-                DrawReadOnlyPathField("Target Prefab", entry.copiedPrefabPath);
-            }
-        }
-
-        private void DrawMeshSelectionToolbar(AvatarEntry entry)
-        {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                if (GUILayout.Button("Select All", GUILayout.Width(90f)))
-                {
-                    SetMeshSelectionState(entry, true);
-                }
-
-                if (GUILayout.Button("Deselect All", GUILayout.Width(90f)))
-                {
-                    SetMeshSelectionState(entry, false);
-                }
-
-                GUILayout.FlexibleSpace();
-                GUILayout.Label($"{GetSelectedReplacementCount(entry)} selected", EditorStyles.miniBoldLabel);
-            }
-        }
-
-        private void DrawAnimatorReplacementRow(AnimatorReplacementState animatorReplacement)
-        {
-            animatorReplacement ??= new AnimatorReplacementState();
-
-            Color originalColor = GUI.backgroundColor;
-            GUI.backgroundColor = animatorReplacement.hasPrefabAnimator && animatorReplacement.hasHumanoidAvatar
-                ? originalColor
-                : new Color(1f, 0.9f, 0.7f, 0.5f);
-
-            using (new EditorGUILayout.VerticalScope(helpBoxPadding8_6))
-            {
-                GUI.backgroundColor = originalColor;
-
-                using (new EditorGUI.DisabledScope(!animatorReplacement.hasPrefabAnimator || !animatorReplacement.hasHumanoidAvatar))
-                {
-                    string label = string.IsNullOrEmpty(animatorReplacement.fbxAvatarName)
-                        ? "Primary Animator Rig"
-                        : $"Primary Animator Rig ({animatorReplacement.fbxAvatarName})";
-                    animatorReplacement.selected = EditorGUILayout.ToggleLeft(label, animatorReplacement.selected, EditorStyles.boldLabel);
-                }
-
-                GUIContent statusIcon = animatorReplacement.hasPrefabAnimator && animatorReplacement.hasHumanoidAvatar
-                    ? EditorGUIUtility.IconContent("TestPassed")
-                    : EditorGUIUtility.IconContent("console.warnicon.sml");
-
-                string matchText;
-                if (!animatorReplacement.hasPrefabAnimator)
-                {
-                    matchText = "No primary Animator found on the prefab";
-                }
-                else if (!animatorReplacement.hasHumanoidAvatar)
-                {
-                    matchText = "No humanoid FBX avatar found";
-                }
-                else
-                {
-                    matchText = "Ready to replace the primary humanoid rig";
-                }
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.Label(statusIcon, GUILayout.Width(18f), GUILayout.Height(16f));
-                    EditorGUILayout.LabelField(matchText, PawlygonEditorUI.RichMiniLabelStyle);
-                }
-
-            }
-
-            EditorGUILayout.Space(2f);
-        }
-
-        private void DrawMeshSelectionRow(MeshSelectionState meshSelection)
-        {
-            Color originalColor = GUI.backgroundColor;
-            GUI.backgroundColor = meshSelection.hasMatch ? originalColor : new Color(1f, 0.9f, 0.7f, 0.5f);
-
-            using (new EditorGUILayout.VerticalScope(helpBoxPadding8_6))
-            {
-                GUI.backgroundColor = originalColor;
-
-                using (new EditorGUI.DisabledScope(!meshSelection.hasMatch))
-                {
-                    string meshLabel = string.IsNullOrEmpty(meshSelection.fbxMeshName)
-                        ? meshSelection.fbxObjectName
-                        : $"{meshSelection.fbxObjectName} ({meshSelection.fbxMeshName})";
-                    meshSelection.selected = EditorGUILayout.ToggleLeft(meshLabel, meshSelection.selected, EditorStyles.boldLabel);
-                }
-
-                EditorGUILayout.LabelField($"FBX: {meshSelection.fbxRelativePath}", PawlygonEditorUI.RichMiniLabelStyle);
-
-                GUIContent statusIcon = meshSelection.hasMatch
-                    ? EditorGUIUtility.IconContent("TestPassed")
-                    : EditorGUIUtility.IconContent("console.warnicon.sml");
-
-                string matchText = meshSelection.hasMatch
-                    ? $"<b>Prefab:</b> {meshSelection.prefabRelativePath} ({meshSelection.prefabMeshName}) [{meshSelection.matchReason}]"
-                    : "<b>Prefab:</b> <color=#c27725>No matching skinned mesh renderer found</color>";
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.Label(statusIcon, GUILayout.Width(18f), GUILayout.Height(16f));
-                    EditorGUILayout.LabelField(matchText, PawlygonEditorUI.RichMiniLabelStyle);
-                }
-
-                if (meshSelection.hasMatch && meshSelection.bonesDiffer)
-                {
-                    DrawBoneStatus(meshSelection);
-                }
-
-                if (HasMissingUnifiedBlendshapesWarning(meshSelection))
-                {
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        GUILayout.Label(EditorGUIUtility.IconContent("console.warnicon.sml"), GUILayout.Width(18f), GUILayout.Height(16f));
-                        EditorGUILayout.LabelField("Missing Unified Expression Blendshapes", PawlygonEditorUI.RichMiniLabelStyle);
-                    }
-
-                    meshSelection.showUnifiedBlendshapeWarningDetails = EditorGUILayout.Foldout(
-                        meshSelection.showUnifiedBlendshapeWarningDetails,
-                        $"Show missing blendshapes ({meshSelection.missingRequiredUnifiedBlendshapesOnFbx.Length})",
-                        true);
-
-                    if (meshSelection.showUnifiedBlendshapeWarningDetails)
-                    {
-                        using (new EditorGUILayout.VerticalScope(helpBoxPadding10_6))
-                        {
-                            foreach (string blendshapeName in meshSelection.missingRequiredUnifiedBlendshapesOnFbx)
-                            {
-                                EditorGUILayout.LabelField($"- {blendshapeName}", PawlygonEditorUI.RichMiniLabelStyle);
-                            }
-                        }
-                    }
-                }
-                else if (HasCompleteUnifiedBlendshapesInfo(meshSelection))
-                {
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        GUILayout.Label(EditorGUIUtility.IconContent("TestPassed"), GUILayout.Width(18f), GUILayout.Height(16f));
-                        EditorGUILayout.LabelField("All Unified Expression Blendshapes found", PawlygonEditorUI.RichMiniLabelStyle);
-                    }
-                }
-            }
-
-            EditorGUILayout.Space(2f);
-        }
-
-        private static void DrawBoneStatus(MeshSelectionState meshSelection)
-        {
-            if (meshSelection.bonesUnresolved)
-            {
-                EditorGUILayout.HelpBox(
-                    $"The FBX mesh's bones differ from the prefab's and cannot be remapped: {meshSelection.boneIssue}. " +
-                    "Replacing this mesh would keep the prefab's bones and skin it incorrectly, so it is not selected by default " +
-                    "(selecting it asks for confirmation when applying).",
-                    MessageType.Warning);
-                return;
-            }
-
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                GUILayout.Label(EditorGUIUtility.IconContent("console.infoicon.sml"), GUILayout.Width(18f), GUILayout.Height(16f));
-                EditorGUILayout.LabelField("Bones differ from the prefab; they will be remapped by name onto the prefab's armature.", PawlygonEditorUI.RichMiniLabelStyle);
-            }
         }
 
         private static void SetMeshSelectionState(AvatarEntry entry, bool selected)
@@ -758,16 +866,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private static bool HasAnySelectedReplacement(AvatarEntry entry)
         {
-            if (entry == null)
-            {
-                return false;
-            }
-
-            return entry.meshSelections.Any(selection => selection.selected && selection.hasMatch) ||
-                   (entry.animatorReplacement != null &&
-                    entry.animatorReplacement.selected &&
-                    entry.animatorReplacement.hasPrefabAnimator &&
-                    entry.animatorReplacement.hasHumanoidAvatar);
+            return GetSelectedReplacementCount(entry) > 0;
         }
 
         private static int GetSelectedReplacementCount(AvatarEntry entry)
@@ -788,43 +887,26 @@ namespace Pawlygon.UnityTools.Editor
             return selectedMeshCount + selectedRigCount;
         }
 
-        private static string GetAnimatorSelectionSummary(AnimatorReplacementState animatorReplacement)
-        {
-            if (animatorReplacement == null || !animatorReplacement.hasPrefabAnimator)
-            {
-                return "unavailable";
-            }
-
-            if (!animatorReplacement.hasHumanoidAvatar)
-            {
-                return "no humanoid FBX avatar found";
-            }
-
-            return animatorReplacement.selected
-                ? $"selected ({animatorReplacement.fbxAvatarName})"
-                : $"available ({animatorReplacement.fbxAvatarName})";
-        }
-
         private static string BuildReplacementStatusMessage(AvatarEntry entry, int replacedMeshCount, bool replacedAnimator)
         {
             string displayName = GetEntryDisplayName(entry);
 
             if (replacedMeshCount > 0 && replacedAnimator)
             {
-                return $"Updated {replacedMeshCount} mesh reference(s) and the primary Animator rig on '{displayName}'.";
+                return $"Updated {Plural(replacedMeshCount, "mesh", "meshes")} and the humanoid rig on '{displayName}'.";
             }
 
             if (replacedMeshCount > 0)
             {
-                return $"Updated {replacedMeshCount} mesh reference(s) on '{displayName}'.";
+                return $"Updated {Plural(replacedMeshCount, "mesh", "meshes")} on '{displayName}'.";
             }
 
             if (replacedAnimator)
             {
-                return $"Updated the primary Animator rig on '{displayName}'.";
+                return $"Updated the humanoid rig on '{displayName}'.";
             }
 
-            return $"No mapped skinned mesh renderers or humanoid rig were updated on '{displayName}'.";
+            return $"No meshes or rig were updated on '{displayName}'.";
         }
 
         private static bool HasMissingUnifiedBlendshapesWarning(MeshSelectionState meshSelection)

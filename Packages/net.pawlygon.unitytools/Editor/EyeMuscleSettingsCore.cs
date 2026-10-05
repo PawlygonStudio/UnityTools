@@ -262,7 +262,7 @@ namespace Pawlygon.UnityTools.Editor
 
             return $"'{System.IO.Path.GetFileName(assetPath)}' is inside the read-only package '{packageName}', " +
                    "so its import settings cannot be changed. Copy the model into the Assets folder, use the copy " +
-                   "on the avatar, then load the eye muscle settings again.";
+                   "on the avatar, then click Reload.";
         }
 
         // =====================================================================
@@ -379,9 +379,10 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Returns the default eye muscle limit values from HumanTrait for the given eye.
+        /// Returns Unity's default eye muscle limits (from HumanTrait) for the given eye: what a model uses
+        /// until its eye limits are customized. In and Down are negative, like the stored values.
         /// </summary>
-        private static EyeMuscleValues GetDefaultEyeMuscleValues(bool isLeftEye)
+        internal static EyeMuscleValues GetDefaultEyeMuscleValues(bool isLeftEye)
         {
             string prefix = isLeftEye ? "Left" : "Right";
             int downUpIdx = FindMuscleIndex($"{prefix} Eye Down-Up");

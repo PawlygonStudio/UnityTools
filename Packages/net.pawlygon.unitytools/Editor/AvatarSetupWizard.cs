@@ -121,6 +121,15 @@ namespace Pawlygon.UnityTools.Editor
             public bool isBodyMeshCandidate;
             public string[] missingRequiredUnifiedBlendshapesOnFbx = Array.Empty<string>();
             public bool showUnifiedBlendshapeWarningDetails;
+
+            /// <summary>The FBX renderer's bones differ from the prefab renderer's (names, order or count).</summary>
+            public bool bonesDiffer;
+
+            /// <summary>The bones differ and cannot all be found on the prefab, so they cannot be remapped.</summary>
+            public bool bonesUnresolved;
+
+            /// <summary>Why the bones cannot be remapped (missing or ambiguous bone names).</summary>
+            public string boneIssue;
         }
 
         private class RendererInfo
@@ -129,6 +138,188 @@ namespace Pawlygon.UnityTools.Editor
             public string ObjectName;
             public string RelativePath;
             public string MeshName;
+        }
+
+        /// <summary>
+        /// Result of matching an FBX renderer's bones against a prefab renderer. When
+        /// <see cref="BonesDiffer"/> is false the prefab's bones can be kept as they are.
+        /// </summary>
+        private class BoneRemap
+        {
+            public bool BonesDiffer;
+            public Transform[] Bones;
+            public Transform RootBone;
+            public Bounds LocalBounds;
+            public string Issue;
+            public bool CanRemap => BonesDiffer && string.IsNullOrEmpty(Issue);
+        }
+
+        /// <summary>
+        /// Maps an FBX renderer's bones onto the transforms of a prefab hierarchy so a mesh whose
+        /// bones were added, removed or reordered still skins correctly after the swap. A bone is
+        /// matched by its path below the root first, then by a name that is unique within the
+        /// prefab renderer's armature (or, failing that, within the whole prefab).
+        /// </summary>
+        private class BoneMapper
+        {
+            private const int MaxListedBones = 5;
+
+            private readonly Dictionary<string, Transform> transformsByPath = new Dictionary<string, Transform>(StringComparer.Ordinal);
+            private readonly Dictionary<string, List<Transform>> transformsByName = new Dictionary<string, List<Transform>>(StringComparer.Ordinal);
+
+            public BoneMapper(GameObject prefabRoot)
+            {
+                foreach (Transform transform in prefabRoot.GetComponentsInChildren<Transform>(true))
+                {
+                    string path = GetRelativeTransformPath(transform);
+                    if (!transformsByPath.ContainsKey(path))
+                    {
+                        transformsByPath.Add(path, transform);
+                    }
+
+                    if (!transformsByName.TryGetValue(transform.name, out List<Transform> sameName))
+                    {
+                        sameName = new List<Transform>();
+                        transformsByName.Add(transform.name, sameName);
+                    }
+
+                    sameName.Add(transform);
+                }
+            }
+
+            public BoneRemap Resolve(SkinnedMeshRenderer fbxRenderer, SkinnedMeshRenderer prefabRenderer)
+            {
+                Transform[] fbxBones = fbxRenderer.bones;
+                Transform[] prefabBones = prefabRenderer.bones;
+                int bindposeCount = fbxRenderer.sharedMesh != null ? fbxRenderer.sharedMesh.bindposes.Length : fbxBones.Length;
+
+                var result = new BoneRemap
+                {
+                    BonesDiffer = prefabBones.Length != bindposeCount || !HaveSameBoneNames(fbxBones, prefabBones)
+                };
+
+                if (!result.BonesDiffer)
+                {
+                    return result;
+                }
+
+                if (fbxBones.Length != bindposeCount)
+                {
+                    result.Issue = $"the FBX renderer has {fbxBones.Length} bones but its mesh has {bindposeCount} bind poses";
+                    return result;
+                }
+
+                Transform armatureScope = GetArmatureScope(prefabRenderer);
+                var unresolvedNames = new List<string>();
+                var bones = new Transform[fbxBones.Length];
+
+                for (int i = 0; i < fbxBones.Length; i++)
+                {
+                    if (fbxBones[i] == null)
+                    {
+                        continue;
+                    }
+
+                    bones[i] = MapTransform(fbxBones[i], armatureScope);
+                    if (bones[i] == null)
+                    {
+                        unresolvedNames.Add(fbxBones[i].name);
+                    }
+                }
+
+                Transform rootBone = prefabRenderer.rootBone;
+                if (fbxRenderer.rootBone != null)
+                {
+                    rootBone = MapTransform(fbxRenderer.rootBone, armatureScope);
+                    if (rootBone == null)
+                    {
+                        unresolvedNames.Add(fbxRenderer.rootBone.name + " (root bone)");
+                    }
+                }
+
+                if (unresolvedNames.Count > 0)
+                {
+                    List<string> distinctNames = unresolvedNames.Distinct().ToList();
+                    string listed = string.Join(", ", distinctNames.Take(MaxListedBones));
+                    int remaining = distinctNames.Count - MaxListedBones;
+                    result.Issue = $"{distinctNames.Count} bone(s) are missing or ambiguous on the prefab: {listed}{(remaining > 0 ? $" and {remaining} more" : string.Empty)}";
+                    return result;
+                }
+
+                result.Bones = bones;
+                result.RootBone = rootBone;
+                result.LocalBounds = fbxRenderer.localBounds;
+                return result;
+            }
+
+            private Transform MapTransform(Transform fbxTransform, Transform armatureScope)
+            {
+                if (transformsByPath.TryGetValue(GetRelativeTransformPath(fbxTransform), out Transform byPath) &&
+                    string.Equals(byPath.name, fbxTransform.name, StringComparison.Ordinal))
+                {
+                    return byPath;
+                }
+
+                if (!transformsByName.TryGetValue(fbxTransform.name, out List<Transform> candidates))
+                {
+                    return null;
+                }
+
+                if (armatureScope != null)
+                {
+                    List<Transform> inScope = candidates.Where(candidate => candidate.IsChildOf(armatureScope)).ToList();
+                    if (inScope.Count > 0)
+                    {
+                        return inScope.Count == 1 ? inScope[0] : null;
+                    }
+                }
+
+                return candidates.Count == 1 ? candidates[0] : null;
+            }
+
+            /// <summary>
+            /// Returns the top-level child of the prefab root that holds the prefab renderer's
+            /// current skeleton (its armature), so outfit armatures with the same bone names are
+            /// not picked by mistake. Returns null when the renderer has no bones.
+            /// </summary>
+            private static Transform GetArmatureScope(SkinnedMeshRenderer prefabRenderer)
+            {
+                Transform anchor = prefabRenderer.rootBone != null
+                    ? prefabRenderer.rootBone
+                    : prefabRenderer.bones.FirstOrDefault(bone => bone != null);
+
+                if (anchor == null || anchor.parent == null)
+                {
+                    return null;
+                }
+
+                while (anchor.parent.parent != null)
+                {
+                    anchor = anchor.parent;
+                }
+
+                return anchor;
+            }
+
+            private static bool HaveSameBoneNames(Transform[] first, Transform[] second)
+            {
+                if (first.Length != second.Length)
+                {
+                    return false;
+                }
+
+                for (int i = 0; i < first.Length; i++)
+                {
+                    string firstName = first[i] != null ? first[i].name : null;
+                    string secondName = second[i] != null ? second[i].name : null;
+                    if (!string.Equals(firstName, secondName, StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
         }
 
         private class AnimatorInfo
@@ -2059,9 +2250,10 @@ namespace Pawlygon.UnityTools.Editor
             List<RendererInfo> fbxRenderers = GetRendererInfos(fbxRoot, fbxMeshSubAssets);
             List<RendererInfo> prefabRenderers = GetRendererInfos(prefabRoot, meshSubAssets: null);
             var usedPrefabPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var boneMapper = new BoneMapper(prefabRoot);
 
             entry.meshSelections = fbxRenderers
-                .Select(fbxRenderer => CreateMeshSelectionState(fbxRenderer, prefabRenderers, usedPrefabPaths))
+                .Select(fbxRenderer => CreateMeshSelectionState(fbxRenderer, prefabRenderers, usedPrefabPaths, boneMapper))
                 .OrderBy(selection => selection.fbxRelativePath, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
@@ -2102,14 +2294,44 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
+            // Meshes whose bones were flagged as not remappable during review were deselected by
+            // default; the user ticked them again, so make the consequence explicit.
+            bool replaceUnresolvedBoneMeshes = false;
+            List<MeshSelectionState> unresolvedBoneMappings = selectedMappings.Where(mapping => mapping.bonesUnresolved).ToList();
+            if (unresolvedBoneMappings.Count > 0)
+            {
+                int choice = EditorUtility.DisplayDialogComplex(
+                    "Bones Cannot Be Remapped",
+                    "These meshes use bones that cannot all be found on the prefab:\n\n" +
+                    string.Join("\n", unresolvedBoneMappings.Select(mapping => $"• {mapping.fbxObjectName}: {mapping.boneIssue}")) +
+                    "\n\nReplacing them anyway keeps the prefab's bones, so they will skin incorrectly.",
+                    "Skip These Meshes",
+                    "Cancel",
+                    "Replace Anyway");
+
+                if (choice == 1)
+                {
+                    return;
+                }
+
+                replaceUnresolvedBoneMeshes = choice == 2;
+            }
+
+            GameObject fbxRoot = AssetDatabase.LoadAssetAtPath<GameObject>(entry.copiedFbxPath);
             GameObject prefabRoot = PrefabUtility.LoadPrefabContents(entry.copiedPrefabPath);
 
             try
             {
                 Dictionary<string, SkinnedMeshRenderer> prefabRendererLookup = BuildFirstComponentByPathLookup<SkinnedMeshRenderer>(prefabRoot);
                 Dictionary<string, Animator> prefabAnimatorLookup = BuildFirstComponentByPathLookup<Animator>(prefabRoot);
+                Dictionary<string, SkinnedMeshRenderer> fbxRendererLookup = fbxRoot != null
+                    ? BuildFirstComponentByPathLookup<SkinnedMeshRenderer>(fbxRoot)
+                    : new Dictionary<string, SkinnedMeshRenderer>();
+                var boneMapper = new BoneMapper(prefabRoot);
 
                 int replacedCount = 0;
+                int remappedCount = 0;
+                int skippedBoneCount = 0;
                 bool replacedAnimator = false;
 
                 foreach (MeshSelectionState mapping in selectedMappings)
@@ -2129,6 +2351,31 @@ namespace Pawlygon.UnityTools.Editor
                     {
                         Debug.LogWarning($"[AvatarSetupWizard] No SkinnedMeshRenderer at relative path '{mapping.prefabRelativePath}' in prefab.");
                         continue;
+                    }
+
+                    // Bones are compared again against the prefab as it is now. When they match,
+                    // only the mesh is swapped, exactly as before.
+                    BoneRemap boneRemap = fbxRendererLookup.TryGetValue(mapping.fbxRelativePath ?? string.Empty, out SkinnedMeshRenderer fbxRenderer)
+                        ? boneMapper.Resolve(fbxRenderer, prefabRenderer)
+                        : null;
+
+                    if (boneRemap != null && boneRemap.CanRemap)
+                    {
+                        prefabRenderer.bones = boneRemap.Bones;
+                        prefabRenderer.rootBone = boneRemap.RootBone;
+                        prefabRenderer.localBounds = boneRemap.LocalBounds;
+                        remappedCount++;
+                    }
+                    else if (boneRemap != null && boneRemap.BonesDiffer)
+                    {
+                        if (!replaceUnresolvedBoneMeshes || !mapping.bonesUnresolved)
+                        {
+                            Debug.LogWarning($"[AvatarSetupWizard] Skipped mesh '{mapping.fbxObjectName}' on '{entry.copiedPrefabPath}': its bones cannot be remapped ({boneRemap.Issue}).");
+                            skippedBoneCount++;
+                            continue;
+                        }
+
+                        Debug.LogWarning($"[AvatarSetupWizard] Replaced mesh '{mapping.fbxObjectName}' on '{entry.copiedPrefabPath}' although its bones cannot be remapped ({boneRemap.Issue}). It will skin incorrectly.");
                     }
 
                     prefabRenderer.sharedMesh = fbxMesh;
@@ -2151,6 +2398,16 @@ namespace Pawlygon.UnityTools.Editor
                 PrefabUtility.SaveAsPrefabAsset(prefabRoot, entry.copiedPrefabPath);
                 CompleteEntryReview(entry, "Applied");
                 statusMessage = BuildReplacementStatusMessage(entry, replacedCount, replacedAnimator);
+
+                if (remappedCount > 0)
+                {
+                    statusMessage += $" Remapped the bones of {remappedCount} mesh(es) onto the prefab's armature.";
+                }
+
+                if (skippedBoneCount > 0)
+                {
+                    statusMessage += $" Skipped {skippedBoneCount} mesh(es) whose bones could not be remapped (see the Console).";
+                }
             }
             finally
             {
@@ -2463,6 +2720,11 @@ namespace Pawlygon.UnityTools.Editor
                     EditorGUILayout.LabelField(matchText, PawlygonEditorUI.RichMiniLabelStyle);
                 }
 
+                if (meshSelection.hasMatch && meshSelection.bonesDiffer)
+                {
+                    DrawBoneStatus(meshSelection);
+                }
+
                 if (HasMissingUnifiedBlendshapesWarning(meshSelection))
                 {
                     using (new EditorGUILayout.HorizontalScope())
@@ -2500,11 +2762,32 @@ namespace Pawlygon.UnityTools.Editor
             EditorGUILayout.Space(2f);
         }
 
+        private static void DrawBoneStatus(MeshSelectionState meshSelection)
+        {
+            if (meshSelection.bonesUnresolved)
+            {
+                EditorGUILayout.HelpBox(
+                    $"The FBX mesh's bones differ from the prefab's and cannot be remapped: {meshSelection.boneIssue}. " +
+                    "Replacing this mesh would keep the prefab's bones and skin it incorrectly, so it is not selected by default " +
+                    "(selecting it asks for confirmation when applying).",
+                    MessageType.Warning);
+                return;
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Label(EditorGUIUtility.IconContent("console.infoicon.sml"), GUILayout.Width(18f), GUILayout.Height(16f));
+                EditorGUILayout.LabelField("Bones differ from the prefab; they will be remapped by name onto the prefab's armature.", PawlygonEditorUI.RichMiniLabelStyle);
+            }
+        }
+
         private static void SetMeshSelectionState(AvatarEntry entry, bool selected)
         {
             foreach (MeshSelectionState meshSelection in entry.meshSelections)
             {
-                if (meshSelection.hasMatch)
+                // "Select All" never picks meshes whose bones cannot be remapped; those must be
+                // ticked individually (and are confirmed when applying).
+                if (meshSelection.hasMatch && (!selected || !meshSelection.bonesUnresolved))
                 {
                     meshSelection.selected = selected;
                 }
@@ -2887,14 +3170,18 @@ namespace Pawlygon.UnityTools.Editor
             return depth;
         }
 
-        private static MeshSelectionState CreateMeshSelectionState(RendererInfo fbxRenderer, List<RendererInfo> prefabRenderers, ISet<string> usedPrefabPaths)
+        private static MeshSelectionState CreateMeshSelectionState(RendererInfo fbxRenderer, List<RendererInfo> prefabRenderers, ISet<string> usedPrefabPaths, BoneMapper boneMapper)
         {
             RendererInfo matchedRenderer = FindBestRendererMatch(fbxRenderer, prefabRenderers, usedPrefabPaths, out string matchReason);
+            BoneRemap boneRemap = null;
 
             if (matchedRenderer != null)
             {
                 usedPrefabPaths.Add(matchedRenderer.RelativePath);
+                boneRemap = boneMapper.Resolve(fbxRenderer.Renderer, matchedRenderer.Renderer);
             }
+
+            bool bonesUnresolved = boneRemap != null && boneRemap.BonesDiffer && !boneRemap.CanRemap;
 
             return new MeshSelectionState
             {
@@ -2906,7 +3193,11 @@ namespace Pawlygon.UnityTools.Editor
                 prefabMeshName = matchedRenderer?.MeshName ?? string.Empty,
                 matchReason = matchReason,
                 hasMatch = matchedRenderer != null,
-                selected = matchedRenderer != null
+                // A mesh whose bones cannot be remapped would skin incorrectly; leave it unticked.
+                selected = matchedRenderer != null && !bonesUnresolved,
+                bonesDiffer = boneRemap != null && boneRemap.BonesDiffer,
+                bonesUnresolved = bonesUnresolved,
+                boneIssue = boneRemap?.Issue ?? string.Empty
             };
         }
 

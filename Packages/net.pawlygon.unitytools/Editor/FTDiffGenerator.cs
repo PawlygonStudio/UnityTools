@@ -263,21 +263,18 @@ namespace Pawlygon.UnityTools.Editor
 
         /// <summary>
         /// Returns the absolute path of the bundled hdiffz binary for the current editor platform,
-        /// or null when the platform is not supported.
+        /// or null when the platform is not supported. The package root is resolved through the
+        /// Package Manager so git-URL and tarball installs (in <c>Library/PackageCache</c>) work too.
         /// </summary>
         private static string GetHdiffzExecutablePath()
         {
-            string basePackagePath = Path.Combine("Packages", "net.pawlygon.unitytools", "hdiff", "hdiffz");
-
-            string relativePath = Application.platform switch
+            return Application.platform switch
             {
-                RuntimePlatform.WindowsEditor => Path.Combine(basePackagePath, "Windows", "hdiffz.exe"),
-                RuntimePlatform.OSXEditor => Path.Combine(basePackagePath, "Mac", "hdiffz"),
-                RuntimePlatform.LinuxEditor => Path.Combine(basePackagePath, "Linux", "hdiffz"),
+                RuntimePlatform.WindowsEditor => PawlygonPackagePaths.GetFullPath("hdiff", "hdiffz", "Windows", "hdiffz.exe"),
+                RuntimePlatform.OSXEditor => PawlygonPackagePaths.GetFullPath("hdiff", "hdiffz", "Mac", "hdiffz"),
+                RuntimePlatform.LinuxEditor => PawlygonPackagePaths.GetFullPath("hdiff", "hdiffz", "Linux", "hdiffz"),
                 _ => null
             };
-
-            return relativePath != null ? Path.GetFullPath(relativePath) : null;
         }
 
         private string GetFBXPath(GameObject model)

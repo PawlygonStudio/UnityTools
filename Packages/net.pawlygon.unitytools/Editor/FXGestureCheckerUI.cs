@@ -28,6 +28,12 @@ namespace Pawlygon.UnityTools.Editor
             "This layer has a blink guard from an older version of this tool. Once EyeTrackingActive " +
             "goes above 0.5, blinking never resumes after eye tracking turns off. Applying repairs the " +
             "existing guard in place instead of adding a second one.";
+        private const string NeutralGuardedTooltip =
+            "This return-to-neutral transition already has a FacialExpressionsDisabled condition " +
+            "(added by hand or by an older version of this tool). While FacialExpressionsDisabled is " +
+            "on it cannot fire, so the face can stay stuck on the current expression. Remove that " +
+            "condition in the Animator window, or apply the layer guard.";
+
         private static GUIStyle confidenceMediumStyle;
         private static GUIStyle confidenceLowStyle;
 
@@ -83,13 +89,17 @@ namespace Pawlygon.UnityTools.Editor
             {
                 bool isExpanded = expandedLayers.Contains(layer.LayerIndex);
                 string gestureCount = $"{layer.GestureTransitions.Count} gesture transition{(layer.GestureTransitions.Count != 1 ? "s" : "")}";
+                if (layer.NeutralTransitions.Count > 0)
+                {
+                    gestureCount += $", {layer.NeutralTransitions.Count} to neutral";
+                }
 
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     bool newExpanded = EditorGUILayout.Foldout(isExpanded, "", true);
                     EditorGUILayout.LabelField($"Layer: {layer.LayerName}", layerHeaderStyle);
                     GUILayout.FlexibleSpace();
-                    EditorGUILayout.LabelField($"({gestureCount})", EditorStyles.miniLabel, GUILayout.Width(150f));
+                    EditorGUILayout.LabelField($"({gestureCount})", EditorStyles.miniLabel, GUILayout.Width(210f));
 
                     if (newExpanded != isExpanded)
                     {
@@ -141,6 +151,11 @@ namespace Pawlygon.UnityTools.Editor
                     DrawTransitionRow(transition);
                 }
 
+                if (layer.NeutralTransitions.Count > 0)
+                {
+                    DrawNeutralTransitions(layer);
+                }
+
                 EditorGUI.indentLevel--;
             }
         }
@@ -173,6 +188,36 @@ namespace Pawlygon.UnityTools.Editor
                 else
                 {
                     transition.SelectedForFix = EditorGUILayout.ToggleLeft(label, transition.SelectedForFix);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Lists the layer's return-to-neutral transitions as read-only rows. They are never
+        /// guarded per transition (see <see cref="FXGestureCheckerCore.ReturnToNeutralRule"/>).
+        /// One that already carries a FacialExpressionsDisabled condition is flagged, unless the
+        /// layer guard is in place (it gates AnyState transitions and clears the face itself).
+        /// </summary>
+        private static void DrawNeutralTransitions(FXGestureCheckerCore.LayerAnalysis layer)
+        {
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField(
+                new GUIContent("Return to neutral (not guarded per transition)  (?)", FXGestureCheckerCore.ReturnToNeutralRule),
+                EditorStyles.miniBoldLabel);
+
+            foreach (FXGestureCheckerCore.TransitionAnalysis transition in layer.NeutralTransitions)
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField(
+                        new GUIContent(GetTransitionLabel(transition), FXGestureCheckerCore.ReturnToNeutralRule),
+                        EditorStyles.miniLabel);
+
+                    if (transition.HasDisabledGuard && !layer.AlreadyHasLayerGuard)
+                    {
+                        EditorGUILayout.LabelField(new GUIContent("[Guarded]", NeutralGuardedTooltip),
+                            outdatedLabelStyle, GUILayout.Width(70f));
+                    }
                 }
             }
         }

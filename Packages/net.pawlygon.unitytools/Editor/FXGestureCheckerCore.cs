@@ -109,7 +109,17 @@ namespace Pawlygon.UnityTools.Editor
         {
             public string LayerName;
             public int LayerIndex;
+
+            /// <summary>Gesture transitions that enter an expression and can be guarded.</summary>
             public List<TransitionAnalysis> GestureTransitions = new List<TransitionAnalysis>();
+
+            /// <summary>
+            /// Gesture transitions that return to neutral (see <see cref="ReturnToNeutralRule"/>).
+            /// Listed for information only: guarding them would freeze the face on the current
+            /// expression, so they are never selected or guarded per transition.
+            /// </summary>
+            public List<TransitionAnalysis> NeutralTransitions = new List<TransitionAnalysis>();
+
             public bool SelectedForLayerDisable;
 
             /// <summary>
@@ -160,10 +170,28 @@ namespace Pawlygon.UnityTools.Editor
             /// </summary>
             public string Key;
 
+            /// <summary>
+            /// True when the transition returns to neutral (see <see cref="ReturnToNeutralRule"/>);
+            /// such transitions are listed in <see cref="LayerAnalysis.NeutralTransitions"/>.
+            /// </summary>
+            public bool IsReturnToNeutral;
+
             public bool HasDisabledGuard;
             public bool SelectedForFix;
             public AnimatorTransitionBase TransitionRef;
         }
+
+        /// <summary>
+        /// Explains which transitions count as "return to neutral" and why they are not guarded.
+        /// Shown as a tooltip in the UI.
+        /// </summary>
+        internal const string ReturnToNeutralRule =
+            "A transition returns to neutral when it goes to the layer's default state or to Exit, " +
+            "or when every gesture condition on it also passes with the hand in Neutral " +
+            "(e.g. Gesture = Neutral, or Gesture != Fist when leaving Fist). " +
+            "These are not guarded per transition: with FacialExpressionsDisabled on, a guarded way " +
+            "back would keep the face stuck on the current expression. To clear an expression that " +
+            "is already showing when FacialExpressionsDisabled turns on, use the layer guard.";
 
         /// <summary>
         /// Aggregated result of analyzing an FX controller, containing all layer analyses,
@@ -442,7 +470,9 @@ namespace Pawlygon.UnityTools.Editor
                 AnimatorControllerLayer layer = controllerLayers[i];
                 LayerAnalysis layerAnalysis = AnalyzeLayer(layer, i);
 
-                if (layerAnalysis.GestureTransitions.Count > 0)
+                // A layer whose gesture transitions all return to neutral is still listed, so its
+                // layer guard can be applied.
+                if (layerAnalysis.GestureTransitions.Count > 0 || layerAnalysis.NeutralTransitions.Count > 0)
                 {
                     analysisResults.Add(layerAnalysis);
                 }
@@ -461,8 +491,13 @@ namespace Pawlygon.UnityTools.Editor
                 int totalTransitions = analysisResults.Sum(l => l.GestureTransitions.Count);
                 int guardedTransitions = analysisResults.Sum(l => l.GestureTransitions.Count(t => t.HasDisabledGuard));
                 int guardedLayers = analysisResults.Count(l => l.AlreadyHasLayerGuard);
+                int neutralTransitions = analysisResults.Sum(l => l.NeutralTransitions.Count);
                 result.StatusMessage = $"Found {totalTransitions} gesture transition(s) across {analysisResults.Count} layer(s). " +
                                        $"{guardedTransitions} transition(s) and {guardedLayers} layer(s) already guarded.";
+                if (neutralTransitions > 0)
+                {
+                    result.StatusMessage += $" {neutralTransitions} return-to-neutral transition(s) are left unguarded on purpose.";
+                }
                 result.StatusMessageType = MessageType.Info;
             }
 
@@ -486,6 +521,9 @@ namespace Pawlygon.UnityTools.Editor
 
             /// <summary>Path-qualified display names of every state and sub-state machine.</summary>
             public Dictionary<UnityEngine.Object, string> Names;
+
+            /// <summary>The layer's default state (the root state machine's default state).</summary>
+            public AnimatorState DefaultState;
 
             public HashSet<AnimatorStateMachine> Visited = new HashSet<AnimatorStateMachine>();
         }
@@ -517,7 +555,8 @@ namespace Pawlygon.UnityTools.Editor
             LayerWalk walk = new LayerWalk
             {
                 Analysis = analysis,
-                Names = BuildPathNames(stateMachine)
+                Names = BuildPathNames(stateMachine),
+                DefaultState = stateMachine.defaultState
             };
 
             foreach (AnimatorStateTransition transition in stateMachine.anyStateTransitions)
@@ -600,18 +639,58 @@ namespace Pawlygon.UnityTools.Editor
                     ? GetPathName(walk.Names, transition.destinationStateMachine)
                     : "(exit)";
 
+            bool returnsToNeutral = IsReturnToNeutral(transition, gestureConditions, walk.DefaultState);
+
             // Listed once per transition even if it has both GestureLeft and GestureRight conditions
-            walk.Analysis.GestureTransitions.Add(new TransitionAnalysis
+            TransitionAnalysis analysis = new TransitionAnalysis
             {
                 SourceName = sourceName,
                 DestinationName = destinationName,
                 GestureParameter = gestureConditions[0].parameter,
                 GestureValue = Mathf.RoundToInt(gestureConditions[0].threshold),
                 ConditionLabel = string.Join(" & ", gestureConditions.Select(FormatGestureCondition)),
+                IsReturnToNeutral = returnsToNeutral,
                 HasDisabledGuard = HasDisabledGuard(transition),
                 SelectedForFix = false,
                 TransitionRef = transition
-            });
+            };
+
+            if (returnsToNeutral)
+            {
+                walk.Analysis.NeutralTransitions.Add(analysis);
+            }
+            else
+            {
+                walk.Analysis.GestureTransitions.Add(analysis);
+            }
+        }
+
+        /// <summary>
+        /// Applies <see cref="ReturnToNeutralRule"/>: the transition goes to the layer's default
+        /// state or to Exit, or every gesture condition on it also passes for gesture 0 (Neutral).
+        /// </summary>
+        private static bool IsReturnToNeutral(AnimatorTransitionBase transition,
+            List<AnimatorCondition> gestureConditions, AnimatorState layerDefaultState)
+        {
+            if (transition.isExit) return true;
+            if (layerDefaultState != null && transition.destinationState == layerDefaultState) return true;
+
+            return gestureConditions.All(AdmitsNeutralGesture);
+        }
+
+        /// <summary>
+        /// Checks whether a gesture condition passes when the gesture is 0 (Neutral).
+        /// </summary>
+        private static bool AdmitsNeutralGesture(AnimatorCondition condition)
+        {
+            switch (condition.mode)
+            {
+                case AnimatorConditionMode.Equals: return Mathf.RoundToInt(condition.threshold) == 0;
+                case AnimatorConditionMode.NotEqual: return Mathf.RoundToInt(condition.threshold) != 0;
+                case AnimatorConditionMode.Greater: return condition.threshold < 0f;
+                case AnimatorConditionMode.Less: return condition.threshold > 0f;
+                default: return false;
+            }
         }
 
         /// <summary>
@@ -639,7 +718,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             Dictionary<string, int> occurrences = new Dictionary<string, int>();
 
-            foreach (TransitionAnalysis transition in analysis.GestureTransitions)
+            foreach (TransitionAnalysis transition in analysis.GestureTransitions.Concat(analysis.NeutralTransitions))
             {
                 string baseKey = $"{analysis.LayerIndex}:{transition.SourceName}->{transition.DestinationName}:{transition.ConditionLabel}";
                 occurrences.TryGetValue(baseKey, out int count);

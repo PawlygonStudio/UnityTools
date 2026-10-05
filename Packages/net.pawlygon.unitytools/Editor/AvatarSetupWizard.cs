@@ -128,10 +128,26 @@ namespace Pawlygon.UnityTools.Editor
             public string reviewResultLabel;
             public AnimatorReplacementState animatorReplacement = new AnimatorReplacementState();
             public List<MeshSelectionState> meshSelections = new List<MeshSelectionState>();
+            /// <summary>The guarded FX controller copy this wizard made and gave to the prefab.</summary>
             public string copiedFxControllerPath;
+
+            /// <summary>The FX controller (or override) the prefab used before the wizard changed it; avatars sharing it share the copy.</summary>
             public string originalFxControllerPath;
+
+            /// <summary>The user skipped the FX Check for this avatar.</summary>
+            public bool fxSkipped;
+
+            /// <summary>How many guards the wizard wrote for this avatar.</summary>
+            public int fxGuardsWritten;
+
+            // FX Check analysis: rebuilt when needed (after a domain reload, an apply or an undo).
+            [NonSerialized] public bool fxAnalyzed;
             [NonSerialized] public FXGestureCheckerCore.AnalysisResult fxAnalysisResult;
-            public bool fxCheckComplete;
+            [NonSerialized] public FXGestureCheckerCore.RecommendedPlan fxPlan;
+            [NonSerialized] public AnimatorOverrideController fxOverrideController;
+            [NonSerialized] public FXGestureCheckerUI.ViewState fxView;
+            [NonSerialized] public string fxProblem;
+            [NonSerialized] public MessageType fxProblemType;
 
             /// <summary>Finish step: the Details foldout is open.</summary>
             [NonSerialized] public bool showFinishDetails;
@@ -196,6 +212,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             titleContent = new GUIContent(WindowTitle);
             FBXImportDetector.FbxReimported += HandleFbxReimported;
+            Undo.undoRedoPerformed += OnUndoRedo;
             EnsureAtLeastOneEntry();
 
             // Windows saved by older versions only knew the current step.
@@ -208,6 +225,7 @@ namespace Pawlygon.UnityTools.Editor
         private void OnDisable()
         {
             FBXImportDetector.FbxReimported -= HandleFbxReimported;
+            Undo.undoRedoPerformed -= OnUndoRedo;
             EditorApplication.delayCall -= TryContinueAfterImport;
         }
 
@@ -215,6 +233,22 @@ namespace Pawlygon.UnityTools.Editor
         {
             InvalidateProjectCaches();
             Repaint();
+        }
+
+        /// <summary>Undo can remove the guards the FX Check added.</summary>
+        private void OnUndoRedo()
+        {
+            RequestFxRefresh();
+            Repaint();
+        }
+
+        /// <summary>The FX controllers may have been edited in the Animator window meanwhile.</summary>
+        private void OnFocus()
+        {
+            if (currentStep == WizardStep.FXCheck)
+            {
+                RequestFxRefresh();
+            }
         }
 
         // =====================================================================
@@ -278,6 +312,12 @@ namespace Pawlygon.UnityTools.Editor
 
         private void RefreshLayoutState()
         {
+            // The step bar, FX Check and Finish show each avatar's FX outcome.
+            if (furthestStep >= WizardStep.FXCheck)
+            {
+                EnsureFxAnalyzed(showProgress: false);
+            }
+
             switch (currentStep)
             {
                 case WizardStep.Setup:

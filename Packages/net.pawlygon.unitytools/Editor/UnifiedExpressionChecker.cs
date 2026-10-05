@@ -148,7 +148,11 @@ namespace Pawlygon.UnityTools.Editor
 
             bool isAsset = EditorUtility.IsPersistent(selectedInput);
 
-            if (isAsset)
+            // Model files store their meshes as sub-assets. Prefab assets (and scene objects) only reference
+            // meshes from their renderers, so they are read through the hierarchy instead.
+            bool isModelAsset = isAsset && AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(selectedInput)) is ModelImporter;
+
+            if (isModelAsset)
             {
                 AnalyzeModelAsset(selectedInput);
             }
@@ -170,7 +174,7 @@ namespace Pawlygon.UnityTools.Editor
             int incompleteCount = relevantCount - completeCount;
             int otherCount = results.Count - relevantCount;
 
-            string source = isAsset ? "model asset" : "scene GameObject";
+            string source = isModelAsset ? "model asset" : isAsset ? "prefab asset" : "scene GameObject";
             statusMessage = $"Checked {results.Count} mesh{(results.Count == 1 ? "" : "es")} from {source}. " +
                 $"{relevantCount} with Unified Expression blendshapes ({completeCount} complete, {incompleteCount} incomplete)" +
                 (otherCount > 0 ? $", {otherCount} without." : ".");

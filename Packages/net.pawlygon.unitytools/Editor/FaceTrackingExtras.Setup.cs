@@ -203,6 +203,40 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawSaveChains()
         {
+            if (ProfileBelongsToAnotherAvatar)
+            {
+                bool ownProfile = profile.HasIdentity && profile.BelongsTo(selectedAvatar);
+                EditorGUILayout.HelpBox(
+                    ownProfile
+                        ? $"Some bones saved in '{profile.name}' are missing from this avatar (renamed or deleted). {sessionError}"
+                        : $"The profile '{profile.name}' was made for '{profile.avatarName}', and its bones are not on this avatar. " +
+                          "Create a new profile for this avatar instead of overwriting that one.",
+                    MessageType.Warning);
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (PawlygonEditorUI.DrawPrimaryButton("Create New Profile", 28f))
+                    {
+                        profile = null;
+                        session = null;
+                        sessionError = null;
+                        SaveChains();
+                        GUIUtility.ExitGUI();
+                    }
+
+                    if (GUILayout.Button("Overwrite That Profile", GUILayout.Height(28f), GUILayout.Width(170f))
+                        && EditorUtility.DisplayDialog(
+                            "Overwrite Profile",
+                            $"Replace the bone chains in '{profile.name}' (made for '{profile.avatarName}') with this avatar's? Its poses for changed chains are cleared.",
+                            "Overwrite", "Cancel"))
+                    {
+                        SaveChains();
+                        GUIUtility.ExitGUI();
+                    }
+                }
+                return;
+            }
+
             if (profile != null && ChainsMatchProfile())
             {
                 EditorGUILayout.LabelField("<color=#6BCB77>✓</color> Chains saved in the profile.", poseLabelStyle);

@@ -349,8 +349,29 @@ namespace Pawlygon.UnityTools.Editor
 
         private bool IsGenerated()
         {
-            return selectedAvatar != null && session != null && IsPrefabOnAvatar();
+            return selectedAvatar != null && session != null && IsPrefabOnAvatar() && !IsGenerationStale();
         }
+
+        /// <summary>
+        /// Poses or settings changed since the last generation. Hashing the profile is cheap but not free, and
+        /// OnGUI runs several times per frame, so the result is reused for a short moment.
+        /// </summary>
+        private bool IsGenerationStale()
+        {
+            if (profile == null) return false;
+            double now = EditorApplication.timeSinceStartup;
+            if (now - staleCheckTime > 0.25 || staleCheckProfile != profile)
+            {
+                staleCheckTime = now;
+                staleCheckProfile = profile;
+                staleCache = profile.IsGenerationStale;
+            }
+            return staleCache;
+        }
+
+        private double staleCheckTime = -1;
+        private FTExtrasProfile staleCheckProfile;
+        private bool staleCache;
 
         private bool IsPrefabOnAvatar()
         {
@@ -428,6 +449,7 @@ namespace Pawlygon.UnityTools.Editor
             {
                 ApplyProfileChains();
                 BindSession();
+                AdoptLegacyProfile();
             }
         }
 
@@ -463,15 +485,41 @@ namespace Pawlygon.UnityTools.Editor
         // Profile
         // =====================================================================
 
+        /// <summary>
+        /// The profile that belongs to <paramref name="avatar"/>. Profiles with an identity (prefab or scene
+        /// object) win over 1.6.0 profiles that only recorded the avatar's name.
+        /// </summary>
         private static FTExtrasProfile FindProfile(GameObject avatar)
         {
+            FTExtrasProfile nameOnlyMatch = null;
             foreach (string guid in AssetDatabase.FindAssets($"t:{nameof(FTExtrasProfile)}"))
             {
                 var candidate = AssetDatabase.LoadAssetAtPath<FTExtrasProfile>(AssetDatabase.GUIDToAssetPath(guid));
-                if (candidate != null && candidate.avatarName == avatar.name) return candidate;
+                if (candidate == null || !candidate.BelongsTo(avatar)) continue;
+
+                if (candidate.HasIdentity) return candidate;
+                if (nameOnlyMatch == null) nameOnlyMatch = candidate;
             }
-            return null;
+            return nameOnlyMatch;
         }
+
+        /// <summary>
+        /// A 1.6.0 profile matched by name adopts this avatar's identity once its bones resolve on it, so it
+        /// can no longer be picked up by a different avatar that happens to share the name.
+        /// </summary>
+        private void AdoptLegacyProfile()
+        {
+            if (profile == null || profile.HasIdentity || session == null || selectedAvatar == null) return;
+
+            profile.SetIdentity(selectedAvatar);
+            SaveProfile();
+        }
+
+        /// <summary>
+        /// The profile was matched (by name or picked by hand) but its bones are not on this avatar, so it
+        /// most likely belongs to a different avatar.
+        /// </summary>
+        private bool ProfileBelongsToAnotherAvatar => profile != null && session == null && sessionError != null;
 
         /// <summary>
         /// Creates the profile in the avatar's output folder (Prefabs/FaceTrackingExtras).
@@ -527,7 +575,7 @@ namespace Pawlygon.UnityTools.Editor
                 foreach (var pose in lost) profile.ClearStoredPose(pose.id);
             }
 
-            profile.avatarName = selectedAvatar.name;
+            profile.SetIdentity(selectedAvatar);
             profile.earLeft = newLeft;
             profile.earRight = newRight;
             profile.tail = newTail;

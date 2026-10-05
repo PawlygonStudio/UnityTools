@@ -9,7 +9,7 @@ namespace Pawlygon.UnityTools.Editor
     /// <summary>
     /// Entry point for the Pawlygon tools: lists them in workflow order (Prepare → Check → Tune → Publish)
     /// with what each one is for, a quick status for the selected avatar where that is cheap to work out,
-    /// and a button to open it. Opens once after the package is installed or updated (can be turned off).
+    /// and a button to open it. Can optionally open once after each package update (off by default).
     /// </summary>
     public class GettingStarted : EditorWindow
     {
@@ -196,7 +196,7 @@ namespace Pawlygon.UnityTools.Editor
                 EditorGUI.BeginChangeCheck();
                 bool showOnUpdate = EditorGUILayout.ToggleLeft(
                     new GUIContent("Show this window when the package updates"),
-                    EditorPrefs.GetBool(ShowOnUpdatePrefKey, true));
+                    EditorPrefs.GetBool(ShowOnUpdatePrefKey, false));
                 if (EditorGUI.EndChangeCheck())
                 {
                     EditorPrefs.SetBool(ShowOnUpdatePrefKey, showOnUpdate);
@@ -269,7 +269,7 @@ namespace Pawlygon.UnityTools.Editor
 
     /// <summary>
     /// Opens <see cref="GettingStarted"/> once after the package is installed or updated to a new version,
-    /// unless the user turned that off in the window.
+    /// when the user turned that on in the window. Off by default.
     /// </summary>
     [InitializeOnLoad]
     internal static class GettingStartedAutoOpen
@@ -279,7 +279,7 @@ namespace Pawlygon.UnityTools.Editor
             EditorApplication.delayCall += () =>
             {
                 if (Application.isBatchMode || EditorApplication.isPlayingOrWillChangePlaymode) return;
-                if (!EditorPrefs.GetBool(GettingStarted.ShowOnUpdatePrefKey, true)) return;
+                if (!EditorPrefs.GetBool(GettingStarted.ShowOnUpdatePrefKey, false)) return;
 
                 string version = PawlygonEditorUI.GetPackageVersion();
                 if (EditorPrefs.GetString(GettingStarted.LastShownVersionPrefKey, string.Empty) == version) return;

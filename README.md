@@ -10,7 +10,7 @@ This package helps you duplicate source avatar assets, prepare a working folder 
 
 ## Main features
 
-- `Getting Started` window from `!Pawlygon/Getting Started` — lists every tool in workflow order (Prepare, Check, Tune, Publish) with what it's for and a quick status for the selected avatar. It opens once after each package update (can be turned off)
+- `Getting Started` window from `!Pawlygon/Getting Started` — lists every tool in workflow order (Prepare, Check, Tune, Publish) with what it's for and a quick status for the selected avatar. It can optionally open once after each package update (off by default)
 - Guided `Avatar Setup Wizard` available from `!Pawlygon/Avatar Setup Wizard`, with a step bar you can go back through and **Resume** when the working folders already exist
 - Batch setup for one or many avatar entries in a single run
 - Shared-folder or separate-folder output layouts depending on your project needs

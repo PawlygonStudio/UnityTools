@@ -21,13 +21,22 @@ namespace Pawlygon.UnityTools.Editor
 
         private const string OutdatedLayerGuardTooltip =
             "This layer has a guard from an older version of this tool. Once FacialExpressionsDisabled " +
-            "turns on, the layer can stay stuck in the empty guard state. Applying repairs the existing " +
-            "guard in place (adds the way back, fixes Write Defaults) instead of adding a second one.";
+            "turns on, the layer can stay stuck in the guard state, or (with Write Defaults off) keep " +
+            "showing the expression that was active. Applying repairs the existing guard in place (adds " +
+            "the way back, fixes Write Defaults and conditions, adds a reset clip on Write Defaults off " +
+            "layers) instead of adding a second one.";
 
         private const string OutdatedBlinkGuardTooltip =
             "This layer has a blink guard from an older version of this tool. Once EyeTrackingActive " +
-            "goes above 0.5, blinking never resumes after eye tracking turns off. Applying repairs the " +
-            "existing guard in place instead of adding a second one.";
+            "goes above 0.5, blinking may never resume after eye tracking turns off, or (with Write " +
+            "Defaults off) the eyes can stay mid-blink. Applying repairs the existing guard in place " +
+            "instead of adding a second one.";
+
+        private const string LayerGuardTooltip =
+            "Adds a guard state entered from Any State while FacialExpressionsDisabled is on, which " +
+            "returns to the layer's default state once it is off. On Write Defaults off layers the guard " +
+            "state plays a reset clip (stored inside the controller) that puts the layer's blendshapes " +
+            "back to their default values, so an active expression does not stay frozen.";
         private const string NeutralGuardedTooltip =
             "This return-to-neutral transition already has a FacialExpressionsDisabled condition " +
             "(added by hand or by an older version of this tool). While FacialExpressionsDisabled is " +
@@ -138,7 +147,7 @@ namespace Pawlygon.UnityTools.Editor
                 else
                 {
                     layer.SelectedForLayerDisable = EditorGUILayout.ToggleLeft(
-                        "Disable entire layer when FacialExpressionsDisabled",
+                        new GUIContent("Disable entire layer when FacialExpressionsDisabled", LayerGuardTooltip),
                         layer.SelectedForLayerDisable);
                 }
 

@@ -1107,7 +1107,8 @@ namespace Pawlygon.UnityTools.Editor
         /// its AnyState transition can re-enter itself, the guard state has no exit transition back
         /// once the parameter clears, its Write Defaults differs from the layer's dominant setting,
         /// another AnyState transition could still pull the layer out of the guard state, or its
-        /// conditions do not fit the parameter's current type.
+        /// conditions do not fit the parameter's current type, or (on a Write Defaults off layer)
+        /// its reset clip is missing or no longer covers what the layer animates.
         /// </summary>
         /// <param name="spec">The guard spec, resolved for the controller's parameter type.</param>
         private static GuardStatus GetGuardStatus(AnimatorStateMachine stateMachine, GuardSpec spec)
@@ -1122,6 +1123,7 @@ namespace Pawlygon.UnityTools.Editor
                 HasClearExit(guardState, spec) &&
                 !guardState.transitions.Any(t => t != null && HasInvalidGuardCondition(t, spec)) &&
                 guardState.writeDefaultValues == GetDominantWriteDefaultValues(stateMachine) &&
+                (guardState.writeDefaultValues || IsResetMotionCurrent(guardState, BuildResetCurves(stateMachine))) &&
                 !HasUngatedSiblingTransitions(stateMachine, guardTransition, spec);
 
             return upToDate ? GuardStatus.Current : GuardStatus.Outdated;
@@ -1264,9 +1266,11 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Creates or repairs the guard described by <paramref name="spec"/> on one layer:
+        /// Creates or repairs the guard described by <paramref name="baseSpec"/> on one layer:
         /// <list type="bullet">
-        /// <item>an empty guard state using the layer's dominant Write Defaults setting;</item>
+        /// <item>a guard state using the layer's dominant Write Defaults setting: empty with
+        /// Write Defaults on, or playing a reset clip (see <see cref="EnsureResetMotion"/>) with
+        /// Write Defaults off;</item>
         /// <item>an AnyState transition into it (highest priority, no exit time, duration 0,
         /// <c>canTransitionToSelf = false</c> so it does not restart the state every frame);</item>
         /// <item>an exit transition from the guard state back to the layer's default state once
@@ -1325,6 +1329,14 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             guardState.writeDefaultValues = writeDefaults;
+
+            // With Write Defaults off an empty state holds the last animated values, so an
+            // expression showing when the guard engages would stay visible. Give the guard state
+            // a clip that puts the layer's properties back to their defaults.
+            if (!writeDefaults)
+            {
+                EnsureResetMotion(controller, controllerLayers[layerIndex].name, stateMachine, guardState, spec);
+            }
 
             guardTransition.hasExitTime = false;
             guardTransition.duration = 0f;
@@ -1457,6 +1469,243 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             return null;
+        }
+
+        // =====================================================================
+        // Reset clip for guards on Write Defaults off layers
+        // =====================================================================
+
+        /// <summary>Length of the generated reset clip (one frame at 60 fps).</summary>
+        private const float ResetClipLength = 1f / 60f;
+
+        /// <summary>
+        /// One property the reset clip writes: a float value or an object reference (e.g. a
+        /// material swap).
+        /// </summary>
+        private sealed class ResetCurve
+        {
+            public EditorCurveBinding Binding;
+            public bool IsObjectReference;
+            public float Value;
+            public UnityEngine.Object ObjectValue;
+        }
+
+        /// <summary>
+        /// Lists the properties a guard state on a Write Defaults off layer must reset: every
+        /// property animated by the layer's own states (guard states excluded, nested sub-state
+        /// machines and blend trees included). The value is taken from the layer's default state
+        /// clip at time 0 when it animates the property (that is the layer's neutral pose);
+        /// otherwise blendshapes reset to 0, and other properties are left out because their
+        /// default value is unknown.
+        /// </summary>
+        private static List<ResetCurve> BuildResetCurves(AnimatorStateMachine stateMachine)
+        {
+            List<ResetCurve> result = new List<ResetCurve>();
+            if (stateMachine == null) return result;
+
+            HashSet<AnimationClip> clips = new HashSet<AnimationClip>();
+            foreach (AnimatorState state in GetAllStates(stateMachine))
+            {
+                if (IsGuardStateName(state.name)) continue;
+                CollectClips(state.motion, clips);
+            }
+
+            SortedDictionary<string, EditorCurveBinding> floatBindings = new SortedDictionary<string, EditorCurveBinding>(StringComparer.Ordinal);
+            SortedDictionary<string, EditorCurveBinding> objectBindings = new SortedDictionary<string, EditorCurveBinding>(StringComparer.Ordinal);
+
+            foreach (AnimationClip clip in clips)
+            {
+                foreach (EditorCurveBinding binding in AnimationUtility.GetCurveBindings(clip))
+                {
+                    floatBindings[GetBindingKey(binding)] = binding;
+                }
+
+                foreach (EditorCurveBinding binding in AnimationUtility.GetObjectReferenceCurveBindings(clip))
+                {
+                    objectBindings[GetBindingKey(binding)] = binding;
+                }
+            }
+
+            AnimatorState defaultState = stateMachine.defaultState;
+            AnimationClip defaultClip = defaultState != null && !IsGuardStateName(defaultState.name)
+                ? defaultState.motion as AnimationClip
+                : null;
+
+            foreach (EditorCurveBinding binding in floatBindings.Values)
+            {
+                AnimationCurve defaultCurve = defaultClip != null ? AnimationUtility.GetEditorCurve(defaultClip, binding) : null;
+
+                float value;
+                if (defaultCurve != null && defaultCurve.length > 0)
+                {
+                    value = defaultCurve.Evaluate(0f);
+                }
+                else if (IsBlendshapeBinding(binding))
+                {
+                    value = 0f;
+                }
+                else
+                {
+                    continue;
+                }
+
+                result.Add(new ResetCurve { Binding = binding, Value = value });
+            }
+
+            foreach (EditorCurveBinding binding in objectBindings.Values)
+            {
+                ObjectReferenceKeyframe[] defaultKeys = defaultClip != null
+                    ? AnimationUtility.GetObjectReferenceCurve(defaultClip, binding)
+                    : null;
+                if (defaultKeys == null || defaultKeys.Length == 0) continue;
+
+                result.Add(new ResetCurve { Binding = binding, IsObjectReference = true, ObjectValue = defaultKeys[0].value });
+            }
+
+            return result;
+        }
+
+        private static void CollectClips(Motion motion, HashSet<AnimationClip> clips)
+        {
+            if (motion is AnimationClip clip)
+            {
+                clips.Add(clip);
+            }
+            else if (motion is BlendTree blendTree)
+            {
+                foreach (ChildMotion child in blendTree.children)
+                {
+                    CollectClips(child.motion, clips);
+                }
+            }
+        }
+
+        private static string GetBindingKey(EditorCurveBinding binding)
+        {
+            return $"{binding.path}|{(binding.type != null ? binding.type.FullName : string.Empty)}|{binding.propertyName}";
+        }
+
+        private static bool IsBlendshapeBinding(EditorCurveBinding binding)
+        {
+            return binding.type == typeof(SkinnedMeshRenderer) &&
+                   binding.propertyName.StartsWith("blendShape.", StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Checks whether the guard state's motion is a clip that writes exactly
+        /// <paramref name="desired"/> (same properties, same values at time 0).
+        /// </summary>
+        private static bool IsResetMotionCurrent(AnimatorState guardState, List<ResetCurve> desired)
+        {
+            if (desired.Count == 0) return true;
+
+            AnimationClip clip = guardState.motion as AnimationClip;
+            if (clip == null) return false;
+
+            int floatCount = desired.Count(c => !c.IsObjectReference);
+            if (AnimationUtility.GetCurveBindings(clip).Length != floatCount ||
+                AnimationUtility.GetObjectReferenceCurveBindings(clip).Length != desired.Count - floatCount)
+            {
+                return false;
+            }
+
+            foreach (ResetCurve curve in desired)
+            {
+                if (curve.IsObjectReference)
+                {
+                    ObjectReferenceKeyframe[] keys = AnimationUtility.GetObjectReferenceCurve(clip, curve.Binding);
+                    if (keys == null || keys.Length == 0 || keys[0].value != curve.ObjectValue) return false;
+                }
+                else
+                {
+                    AnimationCurve existing = AnimationUtility.GetEditorCurve(clip, curve.Binding);
+                    if (existing == null || !Mathf.Approximately(existing.Evaluate(0f), curve.Value)) return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Gives a guard state on a Write Defaults off layer a clip that writes the layer's
+        /// default values (see <see cref="BuildResetCurves"/>), so an expression that is showing
+        /// when the guard engages is cleared instead of frozen. The clip is stored as a sub-asset
+        /// of the controller (so it travels with controller copies) and reused on repair: an
+        /// existing reset clip on the guard state is rewritten in place, never duplicated.
+        /// </summary>
+        private static void EnsureResetMotion(AnimatorController controller, string layerName,
+            AnimatorStateMachine stateMachine, AnimatorState guardState, GuardSpec spec)
+        {
+            List<ResetCurve> curves = BuildResetCurves(stateMachine);
+            if (IsResetMotionCurrent(guardState, curves)) return;
+
+            Undo.RecordObject(guardState, spec.UndoName);
+
+            AnimationClip clip = GetOwnedResetClip(controller, guardState, spec);
+            if (clip == null)
+            {
+                clip = new AnimationClip { name = $"{spec.StateName} Reset ({layerName})" };
+
+                string controllerPath = AssetDatabase.GetAssetPath(controller);
+                if (!string.IsNullOrEmpty(controllerPath))
+                {
+                    AssetDatabase.AddObjectToAsset(clip, controller);
+                }
+
+                Undo.RegisterCreatedObjectUndo(clip, spec.UndoName);
+            }
+            else
+            {
+                Undo.RecordObject(clip, spec.UndoName);
+
+                foreach (EditorCurveBinding binding in AnimationUtility.GetCurveBindings(clip))
+                {
+                    AnimationUtility.SetEditorCurve(clip, binding, null);
+                }
+
+                foreach (EditorCurveBinding binding in AnimationUtility.GetObjectReferenceCurveBindings(clip))
+                {
+                    AnimationUtility.SetObjectReferenceCurve(clip, binding, null);
+                }
+            }
+
+            List<ResetCurve> floatCurves = curves.Where(c => !c.IsObjectReference).ToList();
+            if (floatCurves.Count > 0)
+            {
+                AnimationUtility.SetEditorCurves(clip,
+                    floatCurves.Select(c => c.Binding).ToArray(),
+                    floatCurves.Select(c => AnimationCurve.Constant(0f, ResetClipLength, c.Value)).ToArray());
+            }
+
+            foreach (ResetCurve curve in curves.Where(c => c.IsObjectReference))
+            {
+                AnimationUtility.SetObjectReferenceCurve(clip, curve.Binding, new[]
+                {
+                    new ObjectReferenceKeyframe { time = 0f, value = curve.ObjectValue },
+                    new ObjectReferenceKeyframe { time = ResetClipLength, value = curve.ObjectValue }
+                });
+            }
+
+            guardState.motion = clip;
+
+            EditorUtility.SetDirty(clip);
+            Debug.Log($"{LogPrefix} Layer '{layerName}' uses Write Defaults off: guard state '{spec.StateName}' " +
+                      $"now plays reset clip '{clip.name}' ({curves.Count} propert{(curves.Count == 1 ? "y" : "ies")}).");
+        }
+
+        /// <summary>
+        /// Returns the guard state's current reset clip when this tool created it (a clip named
+        /// after the guard state, stored inside the controller asset), otherwise null.
+        /// </summary>
+        private static AnimationClip GetOwnedResetClip(AnimatorController controller, AnimatorState guardState, GuardSpec spec)
+        {
+            AnimationClip clip = guardState.motion as AnimationClip;
+            if (clip == null || !clip.name.StartsWith(spec.StateName, StringComparison.Ordinal)) return null;
+
+            string controllerPath = AssetDatabase.GetAssetPath(controller);
+            if (string.IsNullOrEmpty(controllerPath) || AssetDatabase.GetAssetPath(clip) != controllerPath) return null;
+
+            return clip;
         }
 
         /// <summary>

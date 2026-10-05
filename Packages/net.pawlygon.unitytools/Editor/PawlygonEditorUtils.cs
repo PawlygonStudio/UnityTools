@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEditor;
@@ -42,6 +43,106 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             return cachedDescriptorType;
+        }
+
+        // =====================================================================
+        // Scene avatars
+        // =====================================================================
+
+        private const string LastAvatarSessionKey = "Pawlygon.UnityTools.LastAvatar";
+
+        private static List<GameObject> cachedSceneAvatars;
+        private static bool hierarchyHooked;
+
+        /// <summary>
+        /// Every avatar in the open scenes: objects with a VRCAvatarDescriptor (inactive ones included), or,
+        /// without the VRChat SDK, root objects with a humanoid Animator. Cached until the hierarchy changes,
+        /// so it is cheap to call from OnGUI.
+        /// </summary>
+        internal static List<GameObject> FindSceneAvatars()
+        {
+            if (!hierarchyHooked)
+            {
+                hierarchyHooked = true;
+                EditorApplication.hierarchyChanged += () => cachedSceneAvatars = null;
+                UnityEditor.SceneManagement.EditorSceneManager.sceneOpened += (scene, mode) => cachedSceneAvatars = null;
+                UnityEditor.SceneManagement.EditorSceneManager.sceneClosed += scene => cachedSceneAvatars = null;
+            }
+
+            if (cachedSceneAvatars != null && cachedSceneAvatars.All(a => a != null)) return cachedSceneAvatars;
+
+            var avatars = new List<GameObject>();
+            Type descriptorType = FindVRCAvatarDescriptorType();
+
+            for (int i = 0; i < UnityEngine.SceneManagement.SceneManager.sceneCount; i++)
+            {
+                UnityEngine.SceneManagement.Scene scene = UnityEngine.SceneManagement.SceneManager.GetSceneAt(i);
+                if (!scene.IsValid() || !scene.isLoaded) continue;
+
+                foreach (GameObject root in scene.GetRootGameObjects())
+                {
+                    if (descriptorType != null)
+                    {
+                        avatars.AddRange(root.GetComponentsInChildren(descriptorType, true).Select(c => c.gameObject));
+                    }
+                    else if (root.TryGetComponent(out Animator animator) && animator.avatar != null && animator.avatar.isHuman)
+                    {
+                        avatars.Add(root);
+                    }
+                }
+            }
+
+            cachedSceneAvatars = avatars.Distinct().ToList();
+            return cachedSceneAvatars;
+        }
+
+        /// <summary>
+        /// The avatar that contains <paramref name="anyObject"/>: the nearest object (itself or a parent) with a
+        /// VRCAvatarDescriptor, or with a humanoid Animator when the SDK is not installed. Null if none.
+        /// </summary>
+        internal static GameObject FindAvatarRoot(GameObject anyObject)
+        {
+            if (anyObject == null) return null;
+            Type descriptorType = FindVRCAvatarDescriptorType();
+
+            for (Transform t = anyObject.transform; t != null; t = t.parent)
+            {
+                if (descriptorType != null)
+                {
+                    if (t.GetComponent(descriptorType) != null) return t.gameObject;
+                }
+                else if (t.TryGetComponent(out Animator animator) && animator.avatar != null && animator.avatar.isHuman)
+                {
+                    return t.gameObject;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// The avatar the tools should open on: the one last picked in any Pawlygon tool this session if it is
+        /// still in an open scene, otherwise the first avatar in the open scenes.
+        /// </summary>
+        internal static GameObject GetPreferredAvatar()
+        {
+            string remembered = SessionState.GetString(LastAvatarSessionKey, string.Empty);
+            if (!string.IsNullOrEmpty(remembered) && GlobalObjectId.TryParse(remembered, out GlobalObjectId id)
+                && GlobalObjectId.GlobalObjectIdentifierToObjectSlow(id) is GameObject last && last != null)
+            {
+                return last;
+            }
+
+            return FindSceneAvatars().FirstOrDefault();
+        }
+
+        /// <summary>
+        /// Remembers <paramref name="avatar"/> for <see cref="GetPreferredAvatar"/>, so every tool opens on it.
+        /// </summary>
+        internal static void RememberAvatar(GameObject avatar)
+        {
+            if (avatar == null || EditorUtility.IsPersistent(avatar)) return;
+            SessionState.SetString(LastAvatarSessionKey, GlobalObjectId.GetGlobalObjectIdSlow(avatar).ToString());
         }
 
         // =====================================================================

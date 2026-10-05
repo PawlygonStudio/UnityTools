@@ -128,49 +128,12 @@ namespace Pawlygon.UnityTools.Editor
         // =====================================================================
 
         /// <summary>
-        /// Finds the first scene root GameObject that has a VRCAvatarDescriptor component.
-        /// Returns null if none found.
+        /// The avatar to open on: the one last picked in any Pawlygon tool this session, otherwise the first
+        /// avatar in the open scenes. See <see cref="PawlygonEditorUtils.GetPreferredAvatar"/>.
         /// </summary>
         internal static GameObject FindFirstAvatarInScene()
         {
-            var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-
-            if (!activeScene.IsValid() || !activeScene.isLoaded)
-            {
-                return null;
-            }
-
-            GameObject[] rootObjects = activeScene.GetRootGameObjects();
-            if (rootObjects == null || rootObjects.Length == 0)
-            {
-                return null;
-            }
-
-            Type descriptorType = PawlygonEditorUtils.FindVRCAvatarDescriptorType();
-
-            // Prefer a root object with a VRCAvatarDescriptor
-            if (descriptorType != null)
-            {
-                foreach (GameObject root in rootObjects)
-                {
-                    if (root.GetComponentInChildren(descriptorType, true) != null)
-                    {
-                        return root;
-                    }
-                }
-            }
-
-            // Fall back to first root with an Animator
-            foreach (GameObject root in rootObjects)
-            {
-                Animator animator = root.GetComponent<Animator>();
-                if (animator != null && animator.avatar != null && animator.avatar.isHuman)
-                {
-                    return root;
-                }
-            }
-
-            return null;
+            return PawlygonEditorUtils.GetPreferredAvatar();
         }
 
         // =====================================================================

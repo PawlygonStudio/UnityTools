@@ -95,7 +95,7 @@ namespace Pawlygon.UnityTools.Editor
         // =====================================================================
 
         /// <summary>
-        /// The 60 blendshape names required for VRChat Unified Expression face tracking.
+        /// The blendshape names required for VRChat Unified Expression face tracking.
         /// </summary>
         internal static readonly string[] RequiredUnifiedExpressionBlendshapes =
         {
@@ -165,7 +165,8 @@ namespace Pawlygon.UnityTools.Editor
 
         /// <summary>
         /// Returns the subset of <see cref="RequiredUnifiedExpressionBlendshapes"/> that
-        /// are missing from the given mesh. If <paramref name="mesh"/> is null every
+        /// are missing from the given mesh. Names are matched case-sensitively, because animation
+        /// bindings are: a "jawopen" blendshape is not driven by a "JawOpen" animation. If <paramref name="mesh"/> is null every
         /// required blendshape is considered missing.
         /// </summary>
         internal static string[] GetMissingRequiredUnifiedBlendshapes(Mesh mesh)
@@ -175,7 +176,7 @@ namespace Pawlygon.UnityTools.Editor
                 return RequiredUnifiedExpressionBlendshapes.ToArray();
             }
 
-            var availableBlendshapes = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var availableBlendshapes = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
 
             for (int i = 0; i < mesh.blendShapeCount; i++)
             {
@@ -201,7 +202,7 @@ namespace Pawlygon.UnityTools.Editor
                 return requiredBlendshapes?.ToArray() ?? Array.Empty<string>();
             }
 
-            var availableBlendshapes = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var availableBlendshapes = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
 
             for (int i = 0; i < mesh.blendShapeCount; i++)
             {

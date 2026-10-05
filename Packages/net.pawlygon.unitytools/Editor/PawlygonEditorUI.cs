@@ -37,6 +37,7 @@ namespace Pawlygon.UnityTools.Editor
         private static GUIStyle primaryButtonStyle;
         private static GUIStyle sectionBoxStyle;
         private static GUIStyle sectionTitleStyle;
+        private static bool stylesBuiltForProSkin;
 
         // =====================================================================
         // Style Initialization
@@ -48,10 +49,13 @@ namespace Pawlygon.UnityTools.Editor
         /// </summary>
         public static void EnsureStyles()
         {
-            if (SectionStyle != null)
+            // Several styles bake in skin-dependent colours, so rebuild them when the editor skin changes.
+            if (SectionStyle != null && stylesBuiltForProSkin == EditorGUIUtility.isProSkin)
             {
                 return;
             }
+
+            stylesBuiltForProSkin = EditorGUIUtility.isProSkin;
 
             SectionStyle = new GUIStyle(EditorStyles.helpBox)
             {

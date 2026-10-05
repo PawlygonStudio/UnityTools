@@ -13,7 +13,7 @@ namespace Pawlygon.UnityTools.Editor
     /// Static utility class containing all non-UI logic for FX gesture analysis and fix application.
     /// Extracted from <see cref="FXGestureChecker"/> to enable headless/programmatic usage and testing.
     /// </summary>
-    internal static class FXGestureCheckerCore
+    internal static partial class FXGestureCheckerCore
     {
         // =====================================================================
         // Constants
@@ -207,6 +207,14 @@ namespace Pawlygon.UnityTools.Editor
             public bool Success;
             public Component Descriptor;
             public Type DescriptorType;
+
+            /// <summary>
+            /// Set (with <see cref="Success"/> false) when the avatar's FX layer uses an
+            /// <see cref="AnimatorOverrideController"/>: guards live in its base controller's state
+            /// machine, which other avatars may share. Callers that work on a copy can analyze the
+            /// base controller themselves and use <see cref="CopyOverrideController"/>.
+            /// </summary>
+            public AnimatorOverrideController OverrideController;
         }
 
         /// <summary>
@@ -564,7 +572,7 @@ namespace Pawlygon.UnityTools.Editor
                 return new AnalysisResult
                 {
                     Success = false,
-                    StatusMessage = "Select a GameObject in the scene that has a VRCAvatarDescriptor.",
+                    StatusMessage = "Pick your avatar (the object with the VRC Avatar Descriptor) to check its FX controller.",
                     StatusMessageType = MessageType.Warning
                 };
             }
@@ -575,7 +583,7 @@ namespace Pawlygon.UnityTools.Editor
                 return new AnalysisResult
                 {
                     Success = false,
-                    StatusMessage = "VRChat SDK not detected. Install the VRChat Avatars SDK to use this tool.",
+                    StatusMessage = "The VRChat Avatars SDK isn't installed. Add it with the VRChat Creator Companion to use this check.",
                     StatusMessageType = MessageType.Error
                 };
             }
@@ -586,7 +594,8 @@ namespace Pawlygon.UnityTools.Editor
                 return new AnalysisResult
                 {
                     Success = false,
-                    StatusMessage = $"No VRCAvatarDescriptor found on '{avatar.name}'.",
+                    StatusMessage = $"'{avatar.name}' isn't a VRChat avatar root: it has no VRC Avatar Descriptor. " +
+                                    "Pick the avatar's top object (the one with the Avatar Descriptor).",
                     StatusMessageType = MessageType.Warning
                 };
             }
@@ -604,11 +613,11 @@ namespace Pawlygon.UnityTools.Editor
                     Success = false,
                     Descriptor = descriptor,
                     DescriptorType = descriptorType,
+                    OverrideController = overrideController,
                     StatusMessage = $"The FX layer uses the Animator Override Controller '{overrideController.name}'{baseName}. " +
-                                    "Guards are part of the state machine, which the override takes from its base controller, " +
-                                    "so they cannot be added through the override. To guard it, assign the base controller " +
-                                    "to the FX layer temporarily, apply the guards with 'Work on a copy' off, then assign " +
-                                    "the override again (this changes every avatar that uses the base controller).",
+                                    "Guards belong in the base controller, which other avatars may share, so don't edit it in place. " +
+                                    "Use !Pawlygon/Tools/FX Gesture Checker with 'Work on a copy' on: it copies the base controller, " +
+                                    "adds the guards to the copy and gives this avatar a copy of the override that uses it.",
                     StatusMessageType = MessageType.Warning
                 };
             }
@@ -621,7 +630,8 @@ namespace Pawlygon.UnityTools.Editor
                     Success = false,
                     Descriptor = descriptor,
                     DescriptorType = descriptorType,
-                    StatusMessage = "No custom FX controller assigned on the VRCAvatarDescriptor.",
+                    StatusMessage = "This avatar has no custom FX controller (the FX slot under Playable Layers in the " +
+                                    "Avatar Descriptor is empty or default), so there are no gesture expressions to protect.",
                     StatusMessageType = MessageType.Warning
                 };
             }
@@ -664,7 +674,11 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             result.Layers = analysisResults;
-            result.BlinkLayers = AnalyzeBlinkLayers(controller);
+
+            // Most likely blink layer first (OrderBy is stable, so equal scores keep the layer order).
+            result.BlinkLayers = AnalyzeBlinkLayers(controller)
+                .OrderByDescending(b => b.ConfidenceScore)
+                .ToList();
 
             if (analysisResults.Count == 0)
             {
@@ -1847,10 +1861,7 @@ namespace Pawlygon.UnityTools.Editor
             string folder = string.IsNullOrEmpty(outputFolder) ? "Assets" : outputFolder;
             PawlygonEditorUtils.EnsureFolderExists(folder);
 
-            // Copying a copy yields "X_Modified 1", not "X_Modified_Modified"
-            string fileName = StripModifiedSuffix(Path.GetFileNameWithoutExtension(sourcePath));
-            string extension = Path.GetExtension(sourcePath);
-            string destinationPath = AssetDatabase.GenerateUniqueAssetPath($"{folder}/{fileName}_Modified{extension}");
+            string destinationPath = GetCopyPath(source, folder);
 
             if (!AssetDatabase.CopyAsset(sourcePath, destinationPath))
             {
@@ -1868,6 +1879,84 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             Debug.Log($"{LogPrefix} Created FX controller copy at '{destinationPath}'.");
+            return copy;
+        }
+
+        /// <summary>
+        /// The asset path <see cref="CopyFXController"/> (or <see cref="CopyOverrideController"/>) would
+        /// write a copy of <paramref name="source"/> to in <paramref name="outputFolder"/>:
+        /// "&lt;name&gt;_Modified", numbered if that file already exists. Copying a copy yields
+        /// "X_Modified 1", not "X_Modified_Modified". Null when the source is not an asset.
+        /// </summary>
+        internal static string GetCopyPath(UnityEngine.Object source, string outputFolder)
+        {
+            string sourcePath = source != null ? AssetDatabase.GetAssetPath(source) : null;
+            if (string.IsNullOrEmpty(sourcePath)) return null;
+
+            string folder = string.IsNullOrEmpty(outputFolder) ? "Assets" : outputFolder.TrimEnd('/');
+            string fileName = StripModifiedSuffix(Path.GetFileNameWithoutExtension(sourcePath));
+            string extension = Path.GetExtension(sourcePath);
+            return AssetDatabase.GenerateUniqueAssetPath($"{folder}/{fileName}_Modified{extension}");
+        }
+
+        /// <summary>
+        /// Default folder for copies of <paramref name="source"/>: the folder it lives in when that is
+        /// inside Assets, otherwise (e.g. a controller inside a package) "Assets".
+        /// </summary>
+        internal static string GetDefaultCopyFolder(UnityEngine.Object source)
+        {
+            string sourcePath = source != null ? AssetDatabase.GetAssetPath(source) : null;
+            if (string.IsNullOrEmpty(sourcePath) || !sourcePath.StartsWith("Assets/", StringComparison.Ordinal)) return "Assets";
+
+            string folder = Path.GetDirectoryName(sourcePath)?.Replace('\\', '/');
+            return string.IsNullOrEmpty(folder) ? "Assets" : folder;
+        }
+
+        /// <summary>
+        /// Duplicates an <see cref="AnimatorOverrideController"/> into <paramref name="outputFolder"/> and
+        /// points the duplicate at <paramref name="newBase"/> (a guarded copy of its base controller),
+        /// keeping every clip override. Returns null on failure (with <paramref name="errorMessage"/> set).
+        /// </summary>
+        internal static AnimatorOverrideController CopyOverrideController(AnimatorOverrideController source,
+            AnimatorController newBase, string outputFolder, out string errorMessage)
+        {
+            errorMessage = null;
+
+            string sourcePath = source != null ? AssetDatabase.GetAssetPath(source) : null;
+            if (string.IsNullOrEmpty(sourcePath) || newBase == null)
+            {
+                errorMessage = "Cannot determine the asset path of the override controller.";
+                return null;
+            }
+
+            string folder = string.IsNullOrEmpty(outputFolder) ? "Assets" : outputFolder;
+            PawlygonEditorUtils.EnsureFolderExists(folder);
+
+            string destinationPath = GetCopyPath(source, folder);
+            if (!AssetDatabase.CopyAsset(sourcePath, destinationPath))
+            {
+                errorMessage = $"Failed to copy the override controller to '{destinationPath}'.";
+                return null;
+            }
+
+            AnimatorOverrideController copy = AssetDatabase.LoadAssetAtPath<AnimatorOverrideController>(destinationPath);
+            if (copy == null)
+            {
+                errorMessage = $"Copied asset at '{destinationPath}' could not be loaded as an Animator Override Controller.";
+                return null;
+            }
+
+            // The copied base plays the same clips, so the overrides map one to one. Re-apply them
+            // explicitly in case switching the controller resets the list.
+            var overrides = new List<KeyValuePair<AnimationClip, AnimationClip>>(copy.overridesCount);
+            copy.GetOverrides(overrides);
+            copy.runtimeAnimatorController = newBase;
+            copy.ApplyOverrides(overrides);
+
+            EditorUtility.SetDirty(copy);
+            AssetDatabase.SaveAssets();
+
+            Debug.Log($"{LogPrefix} Created override controller copy at '{destinationPath}' based on '{newBase.name}'.");
             return copy;
         }
 
@@ -1909,6 +1998,15 @@ namespace Pawlygon.UnityTools.Editor
         /// <param name="newController">The new AnimatorController to assign.</param>
         /// <returns>True if assignment succeeded, false otherwise.</returns>
         internal static bool AssignFXControllerToDescriptor(Component descriptor, Type descriptorType, AnimatorController newController)
+        {
+            return AssignFXRuntimeControllerToDescriptor(descriptor, descriptorType, newController);
+        }
+
+        /// <summary>
+        /// Like <see cref="AssignFXControllerToDescriptor"/>, but also accepts an
+        /// <see cref="AnimatorOverrideController"/>.
+        /// </summary>
+        internal static bool AssignFXRuntimeControllerToDescriptor(Component descriptor, Type descriptorType, RuntimeAnimatorController newController)
         {
             if (descriptor == null || descriptorType == null)
             {

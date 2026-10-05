@@ -15,7 +15,6 @@ namespace Pawlygon.UnityTools.Editor
     {
         private const string DefaultMainFolderName = "!Pawlygon";
         private const string DefaultAvatarName = "Avatar Name";
-        private const int MaxImportLoadAttempts = 10;
         private const float SectionSpacing = 10f;
         private const float StepBadgeHeight = 28f;
         private const int SharedSceneGridColumns = 3;
@@ -41,7 +40,6 @@ namespace Pawlygon.UnityTools.Editor
         private Vector2 mainContentScrollPosition;
         private string statusMessage = string.Empty;
         private bool pendingImportTransition;
-        private int importLoadAttempts;
         private string vrcftSetupStatusMessage = string.Empty;
         private string patcherHubImportStatusMessage = string.Empty;
         private bool patcherHubImportedThisSession;
@@ -82,6 +80,7 @@ namespace Pawlygon.UnityTools.Editor
             public bool diffGenerationFailed;
             public string diffGenerationError;
             public long watchedFbxWriteTimeUtcTicks;
+            public long watchedFbxFileSize;
             public bool hasImportedModifiedFbx;
             public bool isMeshReviewComplete;
             public string reviewResultLabel;
@@ -789,6 +788,7 @@ namespace Pawlygon.UnityTools.Editor
             foreach (AvatarEntry entry in avatarEntries)
             {
                 entry.watchedFbxWriteTimeUtcTicks = GetAssetWriteTimeUtcTicks(entry.copiedFbxPath);
+                entry.watchedFbxFileSize = GetAssetFileSize(entry.copiedFbxPath);
                 entry.hasImportedModifiedFbx = false;
                 entry.diffGenerationFailed = false;
                 entry.diffGenerationError = string.Empty;
@@ -1556,11 +1556,17 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             pendingImportTransition = true;
-            importLoadAttempts = 0;
             EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
             EditorApplication.delayCall += TryMoveToMeshSelectionAfterImport;
         }
 
+        /// <summary>
+        /// Marks an entry's copied FBX as replaced when its write time or file size differs from
+        /// the last recorded one (or always, with <paramref name="force"/>). Any difference counts,
+        /// not only a newer write time: copying a file in Explorer keeps its original write time,
+        /// so an edit exported before setup can be older than the copy it replaces. Reimports that
+        /// leave the file untouched (e.g. changing import settings) are ignored.
+        /// </summary>
         private bool TryMarkEntryAsImported(AvatarEntry entry, bool force)
         {
             if (entry == null || string.IsNullOrEmpty(entry.copiedFbxPath))
@@ -1569,12 +1575,16 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             long currentWriteTimeUtcTicks = GetAssetWriteTimeUtcTicks(entry.copiedFbxPath);
-            if (!force && currentWriteTimeUtcTicks <= entry.watchedFbxWriteTimeUtcTicks)
+            long currentFileSize = GetAssetFileSize(entry.copiedFbxPath);
+            bool fileChanged = currentWriteTimeUtcTicks != entry.watchedFbxWriteTimeUtcTicks ||
+                               currentFileSize != entry.watchedFbxFileSize;
+            if (!force && !fileChanged)
             {
                 return false;
             }
 
             entry.watchedFbxWriteTimeUtcTicks = currentWriteTimeUtcTicks;
+            entry.watchedFbxFileSize = currentFileSize;
             entry.hasImportedModifiedFbx = true;
             return true;
         }
@@ -1684,7 +1694,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             pendingImportTransition = false;
 
-            // A retry queued before the user continued manually (or started over) must not
+            // A transition queued before the user continued manually (or started over) must not
             // regenerate diffs and reset the mesh selections of a later step.
             if (currentStep != WizardStep.WaitForImport)
             {
@@ -1698,26 +1708,17 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
-            importLoadAttempts++;
-
-            if (CanLoadImportedAssets())
+            // FBXImportDetector reports imports from OnPostprocessAllAssets, after the import batch
+            // has completed, so the assets are loadable now unless the import itself failed.
+            if (!CanLoadImportedAssets())
             {
-                GenerateDiffsAndMoveToMeshSelection(importedOnly: true, skippedImportWait: false);
-                return;
-            }
-
-            if (importLoadAttempts >= MaxImportLoadAttempts)
-            {
-                Debug.LogWarning("[AvatarSetupWizard] Imported FBXs are still unavailable after delayed load attempts.");
-                statusMessage = "All modified FBXs were detected, but Unity has not finished making them loadable yet. Wait a moment, then continue manually if needed.";
+                Debug.LogWarning("[AvatarSetupWizard] All modified FBXs were detected, but at least one copied FBX or prefab could not be loaded.");
+                statusMessage = "All modified FBXs were detected, but at least one copied FBX or prefab could not be loaded. Check the Console for import errors, then continue manually.";
                 Repaint();
                 return;
             }
 
-            pendingImportTransition = true;
-            Debug.Log($"[AvatarSetupWizard] FBX assets not ready yet, retrying delayed load attempt {importLoadAttempts + 1}/{MaxImportLoadAttempts}.");
-            EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
-            EditorApplication.delayCall += TryMoveToMeshSelectionAfterImport;
+            GenerateDiffsAndMoveToMeshSelection(importedOnly: true, skippedImportWait: false);
         }
 
         private bool CanLoadImportedAssets()
@@ -1985,7 +1986,7 @@ namespace Pawlygon.UnityTools.Editor
 
         private void MoveToMeshSelection(int generatedDiffCount, int failedDiffCount, bool skippedImportWait)
         {
-            // A delayed import retry may still be queued; it must not run again after we moved on.
+            // A queued import transition must not run after we moved on.
             EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
             pendingImportTransition = false;
 
@@ -2624,6 +2625,12 @@ namespace Pawlygon.UnityTools.Editor
         {
             string absolutePath = ToAbsolutePath(assetPath);
             return File.Exists(absolutePath) ? File.GetLastWriteTimeUtc(absolutePath).Ticks : 0L;
+        }
+
+        private static long GetAssetFileSize(string assetPath)
+        {
+            string absolutePath = ToAbsolutePath(assetPath);
+            return File.Exists(absolutePath) ? new FileInfo(absolutePath).Length : 0L;
         }
 
         private static Dictionary<string, Mesh> LoadMeshSubAssets(string fbxAssetPath)
@@ -3638,7 +3645,6 @@ namespace Pawlygon.UnityTools.Editor
             patcherHubImportedThisSession = false;
             EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
             pendingImportTransition = false;
-            importLoadAttempts = 0;
             fxCheckAnalyzed = false;
             fxExpandedLayers.Clear();
             fxExpandedBlinkLayers.Clear();

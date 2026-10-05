@@ -91,7 +91,8 @@ namespace Pawlygon.UnityTools.Editor
 
                 if (isEditing)
                 {
-                    if (PawlygonEditorUI.DrawPrimaryButton("Save", 20f))
+                    // The same Save is the action bar's primary button, which stays in view while scrolling.
+                    if (GUILayout.Button("Save", GUILayout.Width(60f)))
                     {
                         SaveActivePose();
                         GUIUtility.ExitGUI();
@@ -188,6 +189,33 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
+        /// <summary>
+        /// While a pose is being edited, its Save and Cancel are pinned in the action bar so they stay in view.
+        /// </summary>
+        private void DrawPoseActions()
+        {
+            if (mode != Mode.Editing || session == null) return;
+
+            string label = FTExtrasPoses.Get(activePose).Label;
+            PawlygonEditorUI.BeginActionBar();
+
+            if (PawlygonEditorUI.DrawSecondaryButton(new GUIContent("Cancel", "Put the bones back without saving."), 28f, GUILayout.Width(90f)))
+            {
+                StopMode();
+                GUIUtility.ExitGUI();
+            }
+
+            GUILayout.FlexibleSpace();
+
+            if (PawlygonEditorUI.DrawPrimaryButton($"Save {label}", 28f, GUILayout.MinWidth(150f)))
+            {
+                SaveActivePose();
+                GUIUtility.ExitGUI();
+            }
+
+            PawlygonEditorUI.EndActionBar();
+        }
+
         // =====================================================================
         // Drawing: Preview
         // =====================================================================
@@ -264,8 +292,8 @@ namespace Pawlygon.UnityTools.Editor
             EditorGUILayout.LabelField("Loop Settings", EditorStyles.boldLabel);
 
             EditorGUI.BeginChangeCheck();
-            float flickPeriod = EditorGUILayout.Slider(new GUIContent("Ear Flick Speed (s)", "Seconds for one Happy \u2192 Happy Flick \u2192 Happy cycle."), profile.earFlickPeriod, 0.2f, 2f);
-            float wagPeriod = EditorGUILayout.Slider(new GUIContent("Tail Wag Speed (s)", "Seconds for one full wag, right \u2192 left \u2192 right."), profile.tailWagPeriod, 0.2f, 2f);
+            float flickPeriod = EditorGUILayout.Slider(new GUIContent("Ear Flick Cycle (s)", "Seconds for one Happy \u2192 Happy Flick \u2192 Happy cycle. Lower values flick faster."), profile.earFlickPeriod, 0.2f, 2f);
+            float wagPeriod = EditorGUILayout.Slider(new GUIContent("Tail Wag Cycle (s)", "Seconds for one full wag, right \u2192 left \u2192 right. Lower values wag faster."), profile.tailWagPeriod, 0.2f, 2f);
             float wagAmount = EditorGUILayout.Slider(new GUIContent("Tail Wag Amount", "How far the wag swings, as a fraction of the Tail Right / Tail Left poses."), profile.tailWagAmount, 0f, 1f);
             float wagDelay = EditorGUILayout.Slider(new GUIContent("Tail Wag Delay", "How much each bone down the tail lags the one before it, as a fraction of a wag. Higher values make the wag ripple more."), profile.tailWagDelay, 0f, 0.5f);
             if (EditorGUI.EndChangeCheck())

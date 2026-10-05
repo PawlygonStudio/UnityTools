@@ -4,8 +4,8 @@ using UnityEngine;
 namespace Pawlygon.UnityTools.Editor
 {
     /// <summary>
-    /// Generate tab: a summary of what will be generated, parameter settings, generating the animator and
-    /// adding the prefab to the avatar.
+    /// Generate tab: a summary of what will be generated and the parameter settings. Generating the animator
+    /// and adding the prefab to the avatar are in the action bar.
     /// </summary>
     public partial class FaceTrackingExtras
     {
@@ -52,27 +52,6 @@ namespace Pawlygon.UnityTools.Editor
                 }
                 EditorGUILayout.Space(4f);
                 EditorGUILayout.LabelField($"<b>Output:</b> {FTExtrasGenerator.GetOutputFolder(selectedAvatar)}", PawlygonEditorUI.RichMiniLabelStyle);
-                EditorGUILayout.Space(8f);
-
-                if (PawlygonEditorUI.DrawPrimaryButton("Generate Animations", 32f))
-                {
-                    GenerateAnimations();
-                    GUIUtility.ExitGUI();
-                }
-
-                bool hasPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(FTExtrasGenerator.GetPrefabPath(selectedAvatar)) != null;
-                bool onAvatar = hasPrefab && IsPrefabOnAvatar();
-                using (new EditorGUI.DisabledScope(!hasPrefab || onAvatar))
-                {
-                    string label = onAvatar ? "✓ Prefab is on the avatar" : "Add Prefab to Avatar";
-                    if (GUILayout.Button(label, GUILayout.Height(24f)))
-                    {
-                        FTExtrasGenerator.AddPrefabToAvatar(selectedAvatar);
-                        prefabOnAvatarCache = null;
-                        SetStatus($"Added {FTExtrasGenerator.PrefabName} to {selectedAvatar.name}.", MessageType.Info);
-                        GUIUtility.ExitGUI();
-                    }
-                }
 
                 if (lastResult != null)
                 {
@@ -95,6 +74,43 @@ namespace Pawlygon.UnityTools.Editor
                 EditorGUILayout.Space(4f);
                 DrawGenerationFields(ParameterFields);
             }
+        }
+
+        /// <summary>
+        /// Generate's action bar: adding the generated prefab to the avatar, and generating (the main action).
+        /// </summary>
+        private void DrawGenerateActions()
+        {
+            if (session == null || profile == null) return;
+
+            bool hasPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(FTExtrasGenerator.GetPrefabPath(selectedAvatar)) != null;
+            bool onAvatar = hasPrefab && IsPrefabOnAvatar();
+
+            PawlygonEditorUI.BeginActionBar();
+
+            using (new EditorGUI.DisabledScope(!hasPrefab || onAvatar))
+            {
+                var addContent = new GUIContent(
+                    onAvatar ? "✓ Prefab Is on the Avatar" : "Add Prefab to Avatar",
+                    !hasPrefab ? "Generate first: this adds the generated prefab to the avatar." : $"Adds {FTExtrasGenerator.PrefabName} to {selectedAvatar.name}.");
+                if (PawlygonEditorUI.DrawSecondaryButton(addContent, 28f))
+                {
+                    // The button turns into "Prefab Is on the Avatar", so no status message is needed.
+                    FTExtrasGenerator.AddPrefabToAvatar(selectedAvatar);
+                    prefabOnAvatarCache = null;
+                    GUIUtility.ExitGUI();
+                }
+            }
+
+            GUILayout.FlexibleSpace();
+
+            if (PawlygonEditorUI.DrawPrimaryButton("Generate Animations", 28f, GUILayout.Width(170f)))
+            {
+                GenerateAnimations();
+                GUIUtility.ExitGUI();
+            }
+
+            PawlygonEditorUI.EndActionBar();
         }
 
         /// <summary>
@@ -156,7 +172,11 @@ namespace Pawlygon.UnityTools.Editor
                 MessageType type = !lastResult.Success ? MessageType.Error
                     : lastResult.Warnings.Count > 0 ? MessageType.Warning
                     : MessageType.Info;
-                SetStatus(lastResult.Message, type);
+                GameObject prefab = lastResult.Success && !string.IsNullOrEmpty(lastResult.PrefabPath)
+                    ? AssetDatabase.LoadAssetAtPath<GameObject>(lastResult.PrefabPath)
+                    : null;
+                if (prefab != null) SetStatus(lastResult.Message, type, "Ping", PawlygonStatus.Ping(prefab));
+                else SetStatus(lastResult.Message, type);
                 if (lastResult.Success) Debug.Log($"{FaceTrackingExtrasCore.LogPrefix} {lastResult.Message}");
                 else Debug.LogError($"{FaceTrackingExtrasCore.LogPrefix} {lastResult.Message}");
                 foreach (string warning in lastResult.Warnings)

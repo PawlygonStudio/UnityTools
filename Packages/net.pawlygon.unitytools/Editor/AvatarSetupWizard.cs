@@ -1667,6 +1667,12 @@ namespace Pawlygon.UnityTools.Editor
 
                 TryMarkEntryAsImported(entry, force: true);
                 statusMessage = $"Imported '{Path.GetFileName(resolvedSourcePath)}' into '{Path.GetFileName(entry.copiedFbxPath)}'.";
+
+                string sourceFbxAssetPath = entry.sourceFbx != null ? AssetDatabase.GetAssetPath(entry.sourceFbx) : null;
+                if (!string.IsNullOrEmpty(sourceFbxAssetPath) && FTDiffGenerator.AreFilesIdentical(ToAbsolutePath(sourceFbxAssetPath), targetAbsolutePath))
+                {
+                    statusMessage += " Warning: this FBX is identical to the original, so its patch would not change the model.";
+                }
                 QueueMoveToMeshSelection();
             }
             catch (Exception exception)
@@ -1893,10 +1899,23 @@ namespace Pawlygon.UnityTools.Editor
         /// </summary>
         private void GenerateDiffsAndMoveToMeshSelection(bool importedOnly, bool skippedImportWait)
         {
-            int generatedDiffCount = GenerateDiffFilesForEntries(
-                entry => !importedOnly || entry.hasImportedModifiedFbx,
-                out int failedDiffCount);
-            MoveToMeshSelection(generatedDiffCount, failedDiffCount, skippedImportWait);
+            Func<AvatarEntry, bool> shouldGenerate = entry => !importedOnly || entry.hasImportedModifiedFbx;
+
+            // A copied FBX that still matches the original yields a patch that changes nothing,
+            // usually because the edited FBX was never dropped in (e.g. after "Skip Waiting").
+            List<string> unchangedEntryNames = GetEntriesWithUnchangedFbx(shouldGenerate)
+                .Select(GetEntryDisplayName)
+                .ToList();
+            if (!FTDiffGenerator.ConfirmGenerationForUnchangedModels(unchangedEntryNames))
+            {
+                statusMessage = $"Diff generation cancelled. The modified FBX is identical to the original for: {string.Join(", ", unchangedEntryNames)}. " +
+                                "Replace the copied FBX with your edited version (or use \"Choose FBX...\"), then continue.";
+                Repaint();
+                return;
+            }
+
+            int generatedDiffCount = GenerateDiffFilesForEntries(shouldGenerate, out int failedDiffCount);
+            MoveToMeshSelection(generatedDiffCount, failedDiffCount, skippedImportWait, unchangedEntryNames.Count);
 
             if (failedDiffCount > 0)
             {
@@ -1984,7 +2003,32 @@ namespace Pawlygon.UnityTools.Editor
             Repaint();
         }
 
-        private void MoveToMeshSelection(int generatedDiffCount, int failedDiffCount, bool skippedImportWait)
+        /// <summary>
+        /// Returns the entries (among those matching <paramref name="filter"/>) whose copied FBX is
+        /// still byte-identical to the source FBX it was copied from.
+        /// </summary>
+        private List<AvatarEntry> GetEntriesWithUnchangedFbx(Func<AvatarEntry, bool> filter)
+        {
+            var result = new List<AvatarEntry>();
+
+            foreach (AvatarEntry entry in avatarEntries)
+            {
+                if (!filter(entry) || string.IsNullOrEmpty(entry.diffGeneratorAssetPath))
+                {
+                    continue;
+                }
+
+                FTDiffGenerator diffGenerator = AssetDatabase.LoadAssetAtPath<FTDiffGenerator>(entry.diffGeneratorAssetPath);
+                if (diffGenerator != null && diffGenerator.IsModifiedFbxIdenticalToOriginal())
+                {
+                    result.Add(entry);
+                }
+            }
+
+            return result;
+        }
+
+        private void MoveToMeshSelection(int generatedDiffCount, int failedDiffCount, bool skippedImportWait, int unchangedFbxCount)
         {
             // A queued import transition must not run after we moved on.
             EditorApplication.delayCall -= TryMoveToMeshSelectionAfterImport;
@@ -2008,7 +2052,11 @@ namespace Pawlygon.UnityTools.Editor
                 ? $" Diff generation FAILED for {failedDiffCount} avatar entr{(failedDiffCount == 1 ? "y" : "ies")} — see the error above and the Console."
                 : string.Empty;
 
-            statusMessage = $"{prefix}{diffSummary}{failureSummary} Review each avatar entry and apply the mesh and rig replacements you want.";
+            string unchangedSummary = unchangedFbxCount > 0
+                ? $" Warning: the modified FBX is identical to the original for {unchangedFbxCount} avatar entr{(unchangedFbxCount == 1 ? "y" : "ies")}, so its patch does not change the model."
+                : string.Empty;
+
+            statusMessage = $"{prefix}{diffSummary}{failureSummary}{unchangedSummary} Review each avatar entry and apply the mesh and rig replacements you want.";
 
             Repaint();
         }

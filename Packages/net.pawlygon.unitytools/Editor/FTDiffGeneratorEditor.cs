@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -82,14 +83,21 @@ namespace Pawlygon.UnityTools.Editor
         private void GenerateForTargets()
         {
             var failures = new List<string>();
+            List<FTDiffGenerator> generators = targets.OfType<FTDiffGenerator>().ToList();
 
-            foreach (Object targetObject in targets)
+            // An unchanged FBX produces a patch that does nothing; that is almost always a
+            // forgotten FBX replacement, so ask before generating.
+            List<string> unchangedNames = generators
+                .Where(generator => generator.IsModifiedFbxIdenticalToOriginal())
+                .Select(generator => generator.name)
+                .ToList();
+            if (!FTDiffGenerator.ConfirmGenerationForUnchangedModels(unchangedNames))
             {
-                if (targetObject is not FTDiffGenerator generator)
-                {
-                    continue;
-                }
+                return;
+            }
 
+            foreach (FTDiffGenerator generator in generators)
+            {
                 if (!generator.GenerateDiffFiles(out string errorMessage))
                 {
                     failures.Add($"{generator.name}: {errorMessage}");

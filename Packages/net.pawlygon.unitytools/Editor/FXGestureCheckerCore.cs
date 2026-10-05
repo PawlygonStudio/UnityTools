@@ -477,8 +477,20 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Extracts the FX AnimatorController from a VRCAvatarDescriptor component using reflection.
         /// Reads baseAnimationLayers array and finds the entry where type == AnimLayerType.FX (5).
+        /// Returns null when the FX layer uses the default controller, has none, or uses an
+        /// <see cref="AnimatorOverrideController"/> (see <see cref="GetFXRuntimeController"/>).
         /// </summary>
         internal static AnimatorController GetFXController(Component descriptor, Type descriptorType)
+        {
+            return GetFXRuntimeController(descriptor, descriptorType) as AnimatorController;
+        }
+
+        /// <summary>
+        /// Returns the custom controller assigned to the FX layer of a VRCAvatarDescriptor (an
+        /// <see cref="AnimatorController"/> or an <see cref="AnimatorOverrideController"/>), or
+        /// null when the FX layer uses the SDK default or has no controller.
+        /// </summary>
+        internal static RuntimeAnimatorController GetFXRuntimeController(Component descriptor, Type descriptorType)
         {
             // VRCAvatarDescriptor has a field: CustomAnimLayer[] baseAnimationLayers
             FieldInfo layersField = descriptorType.GetField("baseAnimationLayers",
@@ -528,10 +540,7 @@ namespace Pawlygon.UnityTools.Editor
                 }
 
                 object controllerValue = controllerField.GetValue(layerEntry);
-                RuntimeAnimatorController runtimeController = controllerValue as RuntimeAnimatorController;
-                if (runtimeController == null) return null;
-
-                return runtimeController as AnimatorController;
+                return controllerValue as RuntimeAnimatorController;
             }
 
             return null;
@@ -582,7 +591,29 @@ namespace Pawlygon.UnityTools.Editor
                 };
             }
 
-            AnimatorController controller = GetFXController(descriptor, descriptorType);
+            RuntimeAnimatorController runtimeController = GetFXRuntimeController(descriptor, descriptorType);
+            if (runtimeController is AnimatorOverrideController overrideController)
+            {
+                // Guards live in the state machine, which an override controller borrows from its
+                // base controller. Writing to the base would change every avatar using it, and
+                // replacing the override with a copy of the base would drop the clip overrides.
+                RuntimeAnimatorController baseController = overrideController.runtimeAnimatorController;
+                string baseName = baseController != null ? $" (based on '{baseController.name}')" : string.Empty;
+                return new AnalysisResult
+                {
+                    Success = false,
+                    Descriptor = descriptor,
+                    DescriptorType = descriptorType,
+                    StatusMessage = $"The FX layer uses the Animator Override Controller '{overrideController.name}'{baseName}. " +
+                                    "Guards are part of the state machine, which the override takes from its base controller, " +
+                                    "so they cannot be added through the override. To guard it, assign the base controller " +
+                                    "to the FX layer temporarily, apply the guards with 'Work on a copy' off, then assign " +
+                                    "the override again (this changes every avatar that uses the base controller).",
+                    StatusMessageType = MessageType.Warning
+                };
+            }
+
+            AnimatorController controller = runtimeController as AnimatorController;
             if (controller == null)
             {
                 return new AnalysisResult
@@ -1814,7 +1845,8 @@ namespace Pawlygon.UnityTools.Editor
             string folder = string.IsNullOrEmpty(outputFolder) ? "Assets" : outputFolder;
             PawlygonEditorUtils.EnsureFolderExists(folder);
 
-            string fileName = Path.GetFileNameWithoutExtension(sourcePath);
+            // Copying a copy yields "X_Modified 1", not "X_Modified_Modified"
+            string fileName = StripModifiedSuffix(Path.GetFileNameWithoutExtension(sourcePath));
             string extension = Path.GetExtension(sourcePath);
             string destinationPath = AssetDatabase.GenerateUniqueAssetPath($"{folder}/{fileName}_Modified{extension}");
 
@@ -1835,6 +1867,15 @@ namespace Pawlygon.UnityTools.Editor
 
             Debug.Log($"{LogPrefix} Created FX controller copy at '{destinationPath}'.");
             return copy;
+        }
+
+        /// <summary>
+        /// Removes a "_Modified" suffix (optionally followed by the " N" that
+        /// <see cref="AssetDatabase.GenerateUniqueAssetPath"/> appends) from a controller file name.
+        /// </summary>
+        private static string StripModifiedSuffix(string fileName)
+        {
+            return System.Text.RegularExpressions.Regex.Replace(fileName, @"_Modified(?: \d+)?$", string.Empty);
         }
 
         /// <summary>

@@ -37,6 +37,13 @@ namespace Pawlygon.UnityTools.Editor
         private Component cachedDescriptor;
         private Type cachedDescriptorTypeInstance;
 
+        /// <summary>
+        /// The controller copy this window created and assigned to the analyzed avatar. Later
+        /// applies in copy mode (e.g. blink guards after gesture guards) reuse it instead of
+        /// copying the copy. Forgotten when the avatar changes.
+        /// </summary>
+        private AnimatorController sessionCopy;
+
         // =====================================================================
         // Window lifecycle
         // =====================================================================
@@ -132,6 +139,7 @@ namespace Pawlygon.UnityTools.Editor
                     // The results (and cached descriptor) belong to the previously analyzed avatar.
                     // Drop them so an apply can never write into another avatar's controller.
                     ClearAnalysis();
+                    sessionCopy = null;
                     GUIUtility.ExitGUI();
                 }
 
@@ -274,7 +282,7 @@ namespace Pawlygon.UnityTools.Editor
 
             using (new EditorGUI.DisabledScope(!anySelected || readOnlyReason != null || parameterError != null))
             {
-                string buttonLabel = workOnCopy
+                string buttonLabel = WillCreateCopy()
                     ? "Copy FX Controller & Apply Selected Fixes"
                     : "Apply Selected Fixes";
 
@@ -297,13 +305,29 @@ namespace Pawlygon.UnityTools.Editor
 
             if (workOnCopy && anySelected)
             {
-                string folder = string.IsNullOrEmpty(copyOutputFolder) ? "Assets" : copyOutputFolder;
-                EditorGUILayout.HelpBox($"A copy of the FX controller will be saved to '{folder}' and assigned to the avatar.", MessageType.Info);
+                DrawCopyTargetInfo();
             }
 
             if (!anySelected)
             {
                 EditorGUILayout.HelpBox("Select transitions or layers to apply the FacialExpressionsDisabled guard.", MessageType.Info);
+            }
+        }
+
+        /// <summary>
+        /// Tells the user where copy-mode fixes will go: a new copy, or the copy this window
+        /// already created in this session.
+        /// </summary>
+        private void DrawCopyTargetInfo()
+        {
+            if (WillCreateCopy())
+            {
+                string folder = string.IsNullOrEmpty(copyOutputFolder) ? "Assets" : copyOutputFolder;
+                EditorGUILayout.HelpBox($"A copy of the FX controller will be saved to '{folder}' and assigned to the avatar.", MessageType.Info);
+            }
+            else
+            {
+                EditorGUILayout.HelpBox($"The fixes will be applied to '{fxController.name}', the copy created earlier in this session.", MessageType.Info);
             }
         }
 
@@ -355,7 +379,7 @@ namespace Pawlygon.UnityTools.Editor
 
             using (new EditorGUI.DisabledScope(!anySelected || readOnlyReason != null || parameterError != null))
             {
-                string buttonLabel = workOnCopy
+                string buttonLabel = WillCreateCopy()
                     ? "Copy FX Controller & Apply Blink Guards"
                     : "Apply Blink Guards";
 
@@ -378,8 +402,7 @@ namespace Pawlygon.UnityTools.Editor
 
             if (workOnCopy && anySelected)
             {
-                string folder = string.IsNullOrEmpty(copyOutputFolder) ? "Assets" : copyOutputFolder;
-                EditorGUILayout.HelpBox($"A copy of the FX controller will be saved to '{folder}' and assigned to the avatar.", MessageType.Info);
+                DrawCopyTargetInfo();
             }
 
             if (!anySelected)
@@ -475,6 +498,15 @@ namespace Pawlygon.UnityTools.Editor
         /// Evaluated on every draw and again at apply time, so toggling the copy option after the
         /// analysis is always respected.
         /// </summary>
+        /// <summary>
+        /// True when applying in copy mode will create a new copy, false when copy mode is off or
+        /// the analyzed controller already is the copy this window created for the avatar.
+        /// </summary>
+        private bool WillCreateCopy()
+        {
+            return workOnCopy && (fxController == null || fxController != sessionCopy);
+        }
+
         private string GetReadOnlyBlockReason()
         {
             if (workOnCopy || fxController == null) return null;
@@ -522,7 +554,7 @@ namespace Pawlygon.UnityTools.Editor
             if (!CanApply(FXGestureCheckerCore.GetLayerGuardParameterError(fxController))) return;
 
             // --- Copy mode: duplicate the controller and switch to the copy ---
-            if (workOnCopy && !SwitchToCopy()) return;
+            if (WillCreateCopy() && !SwitchToCopy()) return;
 
             if (layers == null)
             {
@@ -547,7 +579,7 @@ namespace Pawlygon.UnityTools.Editor
             if (!CanApply(FXGestureCheckerCore.GetBlinkGuardParameterError(fxController))) return;
 
             // --- Copy mode: duplicate the controller and switch to the copy ---
-            if (workOnCopy && !SwitchToCopy()) return;
+            if (WillCreateCopy() && !SwitchToCopy()) return;
 
             if (blinkLayers == null)
             {
@@ -631,6 +663,8 @@ namespace Pawlygon.UnityTools.Editor
                 SetStatus("Failed to assign the copied FX controller to the VRCAvatarDescriptor.", MessageType.Error);
                 return false;
             }
+
+            sessionCopy = copy;
 
             // Analyze the copy itself so transition references point to the new asset
             FXGestureCheckerCore.AnalysisResult copyResult = FXGestureCheckerCore.Analyze(copy);

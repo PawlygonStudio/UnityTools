@@ -3779,8 +3779,7 @@ namespace Pawlygon.UnityTools.Editor
                     foreach (FXGestureCheckerCore.TransitionAnalysis t in layer.GestureTransitions)
                     {
                         if (t.SelectedForFix)
-                            selectedTransitionKeys.Add(
-                                $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}");
+                            selectedTransitionKeys.Add(t.Key);
                     }
                 }
             }
@@ -3824,8 +3823,8 @@ namespace Pawlygon.UnityTools.Editor
                     layer.SelectedForLayerDisable = selectedLayerIndices.Contains(layer.LayerIndex);
                     foreach (FXGestureCheckerCore.TransitionAnalysis t in layer.GestureTransitions)
                     {
-                        string key = $"{layer.LayerIndex}:{t.SourceName}->{t.DestinationName}:{t.GestureParameter}";
-                        t.SelectedForFix = selectedTransitionKeys.Contains(key);
+                        // Key is unique per transition and stable across the controller copy.
+                        t.SelectedForFix = selectedTransitionKeys.Contains(t.Key);
                     }
                 }
             }

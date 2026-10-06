@@ -34,7 +34,7 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>What the window is currently doing to the avatar's bones.</summary>
         private enum Mode { Idle, Editing, Showing, Previewing }
 
-        private enum Tab { Setup, EarsAndTail, Pupils, Generate }
+        private enum Tab { Setup, EarsAndTail, Pupils, Custom, Generate }
 
         // --- State ---
         [SerializeField] private Vector2 scrollPosition;
@@ -110,6 +110,7 @@ namespace Pawlygon.UnityTools.Editor
             Undo.undoRedoPerformed -= OnUndoRedo;
             StopMode();
             StopPupilPreview();
+            StopCustomPreview();
         }
 
         /// <summary>
@@ -118,6 +119,7 @@ namespace Pawlygon.UnityTools.Editor
         /// </summary>
         private void OnHierarchyChange()
         {
+            FTExtrasParameterCatalog.Invalidate();
             if (selectedAvatar == null && (analysis != null || session != null || profile != null))
             {
                 selectedAvatar = EyeMuscleSettingsCore.FindFirstAvatarInScene();
@@ -170,6 +172,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             UpdateBoneModes();
             UpdatePupilPreview();
+            UpdateCustomPreview();
         }
 
         private void UpdateBoneModes()
@@ -211,7 +214,7 @@ namespace Pawlygon.UnityTools.Editor
 
             PawlygonEditorUI.DrawHeader(
                 WindowTitle,
-                "Ear, tail and pupil animations driven by face tracking.",
+                "Ears, tail, pupils and your own animations, driven by face tracking.",
                 PawlygonEditorUI.DocumentationUrl);
 
             DrawAvatarBar();
@@ -229,6 +232,7 @@ namespace Pawlygon.UnityTools.Editor
                 case Tab.Setup: DrawSetupTab(); break;
                 case Tab.EarsAndTail: DrawEarsAndTailTab(); break;
                 case Tab.Pupils: DrawPupilsTab(); break;
+                case Tab.Custom: DrawCustomTab(); break;
                 case Tab.Generate: DrawGenerateTab(); break;
             }
 
@@ -251,6 +255,7 @@ namespace Pawlygon.UnityTools.Editor
             {
                 case Tab.Setup: DrawSetupActions(); break;
                 case Tab.EarsAndTail: DrawPoseActions(); break;
+                case Tab.Custom: DrawCustomActions(); break;
                 case Tab.Generate: DrawGenerateActions(); break;
             }
         }
@@ -290,6 +295,7 @@ namespace Pawlygon.UnityTools.Editor
                 Spec(Tab.Setup, "Setup", IsSetupDone()),
                 Spec(Tab.EarsAndTail, EarsAndTailTabLabel(), session != null && AreRequiredPosesSet()),
                 Spec(Tab.Pupils, profile != null && !profile.generation.fakeDilation ? "Pupils (off)" : "Pupils", IsPupilsReady()),
+                Spec(Tab.Custom, CustomTabLabel(), AreCustomAnimationsValid()),
                 Spec(Tab.Generate, "Generate", IsGenerated()),
             };
 
@@ -305,6 +311,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             StopMode();
             StopPupilPreview();
+            StopCustomPreview();
             currentTab = tab;
             scrollPosition = Vector2.zero;
             if (clearStatus) status.Clear();
@@ -406,6 +413,8 @@ namespace Pawlygon.UnityTools.Editor
                 if (EditorGUI.EndChangeCheck())
                 {
                     StopPupilPreview();
+                    StopCustomPreview();
+                    selectedCustomIndex = -1;
                     status.Clear();
                     profile = newProfile;
                     if (profile != null && analysis != null && analysis.Success) ApplyProfileChains();
@@ -426,6 +435,8 @@ namespace Pawlygon.UnityTools.Editor
         {
             StopMode();
             StopPupilPreview();
+            StopCustomPreview();
+            selectedCustomIndex = -1;
             pupilPreview = null;
             selectedAvatar = avatar;
             RefreshHierarchyCaches();

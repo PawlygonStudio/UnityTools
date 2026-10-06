@@ -165,6 +165,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             StopMode();
             StopPupilPreview();
+            StopCustomPreview();
             try
             {
                 lastResult = FTExtrasGenerator.Generate(profile, selectedAvatar);

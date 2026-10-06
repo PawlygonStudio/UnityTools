@@ -170,6 +170,12 @@ namespace Pawlygon.UnityTools.Editor
                 if (first != null)
                 {
                     animation.followParameter = first.Name;
+
+                    // Left/right pairs are usually followed together.
+                    string otherSide = MatchingSide(first.Name, catalog);
+                    animation.followAverage = otherSide != first.Name;
+                    animation.followParameterB = animation.followAverage ? otherSide : null;
+
                     animation.fromValue = Mathf.Max(0f, first.Min);
                     animation.toValue = first.Max;
                 }
@@ -330,7 +336,31 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawFollowSettings(FTExtrasCustomAnimation animation, List<FTExtrasParameterCatalog.Entry> catalog)
         {
+            string previous = animation.followParameter;
             animation.followParameter = DrawParameterField("Parameter", animation.followParameter, catalog);
+
+            // Keep a left/right pair together when the first parameter changes.
+            if (animation.followParameter != previous && animation.followParameterB == MatchingSide(previous, catalog))
+            {
+                animation.followParameterB = MatchingSide(animation.followParameter, catalog);
+            }
+
+            bool average = EditorGUILayout.Toggle(
+                new GUIContent("Average with", "Follow the average of two parameters, e.g. the left and right brow."), animation.followAverage);
+            if (average && !animation.followAverage && string.IsNullOrEmpty(animation.followParameterB))
+            {
+                animation.followParameterB = MatchingSide(animation.followParameter, catalog);
+            }
+            animation.followAverage = average;
+            if (average)
+            {
+                animation.followParameterB = DrawParameterField(" ", animation.followParameterB, catalog);
+                if (animation.followParameterB == animation.followParameter)
+                {
+                    EditorGUILayout.HelpBox("Both parameters are the same; pick the other one to average.", MessageType.Info);
+                }
+            }
+
             FTExtrasParameterCatalog.Entry info = FTExtrasParameterCatalog.Describe(animation.followParameter);
 
             animation.followStyle = (FTExtrasFollowStyle)EditorGUILayout.Popup("Style", (int)animation.followStyle, FollowStyleLabels);
@@ -503,7 +533,10 @@ namespace Pawlygon.UnityTools.Editor
             if (animation.mode == FTExtrasCustomMode.Follow)
             {
                 string style = FollowStyleLabels[(int)animation.followStyle].Split(' ')[0].ToLowerInvariant();
-                return $"{clip} follows {ParameterLabel(animation.followParameter)} ({style}, {animation.fromValue:0.##} → {animation.toValue:0.##})";
+                string source = animation.IsAveraged
+                    ? $"the average of {ParameterLabel(animation.followParameter)} and {ParameterLabel(animation.followParameterB)}"
+                    : ParameterLabel(animation.followParameter);
+                return $"{clip} follows {source} ({style}, {animation.fromValue:0.##} → {animation.toValue:0.##})";
             }
 
             string joiner = animation.combine == FTExtrasConditionCombine.All ? " and " : " or ";
@@ -521,6 +554,7 @@ namespace Pawlygon.UnityTools.Editor
             if (animation.mode == FTExtrasCustomMode.Follow)
             {
                 if (string.IsNullOrWhiteSpace(animation.followParameter)) return "no parameter is set.";
+                if (animation.followAverage && string.IsNullOrWhiteSpace(animation.followParameterB)) return "the parameter to average with is not set.";
                 if (Mathf.Approximately(animation.fromValue, animation.toValue)) return "'From' and 'To' are the same value.";
             }
             else
@@ -658,7 +692,7 @@ namespace Pawlygon.UnityTools.Editor
 
             if (animation.mode == FTExtrasCustomMode.Follow)
             {
-                float value = ValueOf(animation.followParameter);
+                float value = animation.FollowValue(ValueOf);
                 switch (animation.followStyle)
                 {
                     case FTExtrasFollowStyle.FadeIn:

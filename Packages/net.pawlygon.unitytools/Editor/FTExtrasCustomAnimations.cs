@@ -91,6 +91,9 @@ namespace Pawlygon.UnityTools.Editor
 
         // --- Follow ---
         public string followParameter;
+        [Tooltip("Follow the average of Follow Parameter and this one (e.g. left and right brow).")]
+        public bool followAverage;
+        public string followParameterB;
         public FTExtrasFollowStyle followStyle = FTExtrasFollowStyle.FadeIn;
         public float fromValue;
         public float toValue = 1f;
@@ -119,8 +122,18 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>Every parameter this animation reads.</summary>
         public IEnumerable<string> UsedParameters =>
             mode == FTExtrasCustomMode.Follow
-                ? new[] { followParameter }.Where(p => !string.IsNullOrEmpty(p))
+                ? new[] { followParameter, IsAveraged ? followParameterB : null }.Where(p => !string.IsNullOrEmpty(p)).Distinct()
                 : conditions.Select(c => c.parameter).Where(p => !string.IsNullOrEmpty(p)).Distinct();
+
+        /// <summary>Follow: whether the value is the average of two parameters.</summary>
+        public bool IsAveraged => followAverage && !string.IsNullOrEmpty(followParameterB);
+
+        /// <summary>Follow: the value that drives the animation (one parameter, or the average of two).</summary>
+        public float FollowValue(Func<string, float> valueOf)
+        {
+            float a = string.IsNullOrEmpty(followParameter) ? 0f : valueOf(followParameter);
+            return IsAveraged ? (a + valueOf(followParameterB)) * 0.5f : a;
+        }
 
         /// <summary>
         /// Whether the conditions start the animation (All: every one met; Any: at least one).

@@ -478,7 +478,9 @@ namespace Pawlygon.UnityTools.Editor
         /// </summary>
         private static BlendTree InputsTree(ControllerBuilder builder, ClipStore clips, FTExtrasGenerationSettings settings, CustomAnimationPlan customs, bool includeJaw)
         {
-            var outputs = new[] { ParamGazeLeftX, ParamGazeRightX, ParamGazeY, ParamMood, ParamJaw };
+            var outputs = new[] { ParamGazeLeftX, ParamGazeRightX, ParamGazeY, ParamMood, ParamJaw }
+                .Concat(customs.Animations.Where(a => a.HasComputedDriver).Select(a => a.Driver))
+                .ToArray();
             AnimationClip zero = clips.Parameters("Inputs - Zero", outputs.Select(p => (p, 0f)).ToArray());
 
             BlendTree root = builder.NewTree(includeJaw ? "Inputs (Jaw On)" : "Inputs (Jaw Off)", BlendTreeType.Direct, null);
@@ -497,6 +499,13 @@ namespace Pawlygon.UnityTools.Editor
                 children.Add(Direct(RangeTree(builder, clips, settings.jawX, settings.jawFullAt, ParamJaw, 1f), settings.lipTrackingActive));
             }
 
+            // Followed averages: each parameter adds half of its value.
+            foreach (CustomAnimationSpec spec in customs.Animations.Where(a => a.HasComputedDriver))
+            {
+                children.Add(Direct(HalfTree(builder, clips, spec.Animation.followParameter, spec.Driver, $"{spec.SafeName} A"), ParamOne));
+                children.Add(Direct(HalfTree(builder, clips, spec.Animation.followParameterB, spec.Driver, $"{spec.SafeName} B"), ParamOne));
+            }
+
             // Scrubbed custom animations: map the parameter's from..to range onto a 0..1 playback position.
             foreach (CustomAnimationSpec spec in customs.Animations.Where(a => a.ScrubParameter != null))
             {
@@ -508,7 +517,23 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// 1D tree mapping the Follow parameter's from..to range to a 0..1 playback position (clamped outside).
+        /// 1D tree writing half of the input into the output, linear over the parameter's range (at least
+        /// -1..1); two of them in the Direct tree make the average.
+        /// </summary>
+        private static BlendTree HalfTree(ControllerBuilder builder, ClipStore clips, string input, string output, string label)
+        {
+            FTExtrasParameterCatalog.Entry info = FTExtrasParameterCatalog.Describe(input);
+            float low = Mathf.Min(-1f, info.Min);
+            float high = Mathf.Max(1f, info.Max);
+
+            BlendTree tree = builder.NewTree($"Custom - {label} half of {input}", BlendTreeType.Simple1D, input);
+            tree.AddChild(clips.Parameters($"Custom - {label} - Low", (output, low * 0.5f)), low);
+            tree.AddChild(clips.Parameters($"Custom - {label} - High", (output, high * 0.5f)), high);
+            return tree;
+        }
+
+        /// <summary>
+        /// 1D tree mapping the Follow value's from..to range to a 0..1 playback position (clamped outside).
         /// </summary>
         private static BlendTree PositionTree(ControllerBuilder builder, ClipStore clips, CustomAnimationSpec spec)
         {
@@ -516,7 +541,7 @@ namespace Pawlygon.UnityTools.Editor
             AnimationClip start = clips.Parameters($"Custom - {spec.SafeName} - Position 0", (spec.ScrubParameter, 0f));
             AnimationClip end = clips.Parameters($"Custom - {spec.SafeName} - Position 1", (spec.ScrubParameter, 1f));
 
-            BlendTree tree = builder.NewTree($"{animation.name} position from {animation.followParameter}", BlendTreeType.Simple1D, animation.followParameter);
+            BlendTree tree = builder.NewTree($"{animation.name} position from {spec.Driver}", BlendTreeType.Simple1D, spec.Driver);
             AddSorted(tree, (animation.fromValue, start), (animation.toValue, end));
             return tree;
         }
@@ -771,6 +796,10 @@ namespace Pawlygon.UnityTools.Editor
             public List<string> Gates = new List<string>();
             public string Toggle;
             public string ScrubParameter;
+
+            /// <summary>Follow: the parameter the layer reads; a computed average when following two.</summary>
+            public string Driver;
+            public bool HasComputedDriver => Driver != null && Driver != Animation.followParameter;
         }
 
         /// <summary>
@@ -819,6 +848,11 @@ namespace Pawlygon.UnityTools.Editor
                         Toggles.Add(new CustomToggle { Label = animation.name, Parameter = spec.Toggle, DefaultOn = animation.toggleDefaultOn });
                     }
 
+                    if (animation.mode == FTExtrasCustomMode.Follow)
+                    {
+                        spec.Driver = animation.IsAveraged ? CustomParamPrefix + safeName + "/Value" : animation.followParameter;
+                    }
+
                     if (animation.mode == FTExtrasCustomMode.Follow && animation.followStyle == FTExtrasFollowStyle.Scrub)
                     {
                         spec.ScrubParameter = CustomParamPrefix + safeName + "/Position";
@@ -836,6 +870,7 @@ namespace Pawlygon.UnityTools.Editor
                     foreach (string gate in spec.Gates) builder.AddFloat(gate, 0f);
                     if (spec.Toggle != null) builder.AddBool(spec.Toggle, spec.Animation.toggleDefaultOn);
                     if (spec.ScrubParameter != null) builder.AddFloat(spec.ScrubParameter, 0f);
+                    if (spec.HasComputedDriver) builder.AddFloat(spec.Driver, 0f);
                 }
             }
 
@@ -845,6 +880,7 @@ namespace Pawlygon.UnityTools.Editor
                 if (animation.mode == FTExtrasCustomMode.Follow)
                 {
                     if (string.IsNullOrWhiteSpace(animation.followParameter)) return "no parameter is set.";
+                    if (animation.followAverage && string.IsNullOrWhiteSpace(animation.followParameterB)) return "the parameter to average with is not set.";
                     if (Mathf.Approximately(animation.fromValue, animation.toValue)) return "'From' and 'To' are the same value.";
                 }
                 else
@@ -901,14 +937,14 @@ namespace Pawlygon.UnityTools.Editor
             {
                 case FTExtrasFollowStyle.FadeIn:
                 {
-                    BlendTree tree = builder.NewTree($"{animation.name} (fade in)", BlendTreeType.Simple1D, animation.followParameter);
+                    BlendTree tree = builder.NewTree($"{animation.name} (fade in)", BlendTreeType.Simple1D, spec.Driver);
                     AddSorted(tree, (animation.fromValue, empty), (animation.toValue, animation.clip));
                     active.motion = tree;
                     break;
                 }
                 case FTExtrasFollowStyle.TwoSided:
                 {
-                    BlendTree tree = builder.NewTree($"{animation.name} (two-sided)", BlendTreeType.Simple1D, animation.followParameter);
+                    BlendTree tree = builder.NewTree($"{animation.name} (two-sided)", BlendTreeType.Simple1D, spec.Driver);
                     float middle = (animation.fromValue + animation.toValue) * 0.5f;
                     AddSorted(tree, (animation.fromValue, animation.negativeClip != null ? (Motion)animation.negativeClip : empty), (middle, empty), (animation.toValue, animation.clip));
                     active.motion = tree;
@@ -947,8 +983,8 @@ namespace Pawlygon.UnityTools.Editor
                 float span = Mathf.Abs(animation.toValue - animation.fromValue);
                 float enter = animation.fromValue + direction * span * 0.02f;
                 float leave = animation.fromValue + direction * span * 0.01f;
-                start.AddCondition(direction > 0f ? AnimatorConditionMode.Greater : AnimatorConditionMode.Less, enter, animation.followParameter);
-                Transition(active, off, Blend).AddCondition(direction > 0f ? AnimatorConditionMode.Less : AnimatorConditionMode.Greater, leave, animation.followParameter);
+                start.AddCondition(direction > 0f ? AnimatorConditionMode.Greater : AnimatorConditionMode.Less, enter, spec.Driver);
+                Transition(active, off, Blend).AddCondition(direction > 0f ? AnimatorConditionMode.Less : AnimatorConditionMode.Greater, leave, spec.Driver);
             }
 
             AddStopTransitions(sm, off, spec, Blend);

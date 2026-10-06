@@ -146,6 +146,9 @@ namespace Pawlygon.UnityTools.Editor
 
         public FTExtrasGenerationSettings generation = new FTExtrasGenerationSettings();
 
+        [Tooltip("The user's own clips driven by face tracking parameters.")]
+        public List<FTExtrasCustomAnimation> customAnimations = new List<FTExtrasCustomAnimation>();
+
         [Tooltip("Hash of the poses and settings at the last successful generation. Used to show when the output is out of date.")]
         public string lastGeneratedHash;
 
@@ -192,6 +195,8 @@ namespace Pawlygon.UnityTools.Editor
             public float tailWagAmount;
             public float tailWagDelay;
             public FTExtrasGenerationSettings generation;
+            public List<FTExtrasCustomAnimation> customAnimations;
+            public List<string> customClipGuids;
         }
 
         /// <summary>
@@ -207,6 +212,12 @@ namespace Pawlygon.UnityTools.Editor
                 earFlickPeriod = earFlickPeriod, tailWagPeriod = tailWagPeriod,
                 tailWagAmount = tailWagAmount, tailWagDelay = tailWagDelay,
                 generation = generation,
+                customAnimations = customAnimations,
+                // Clip references serialise as instance IDs; add the assets' GUIDs so swapping a clip counts.
+                customClipGuids = customAnimations
+                    .SelectMany(a => new[] { a.clip, a.negativeClip })
+                    .Select(c => c != null ? AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(c)) : string.Empty)
+                    .ToList(),
             };
             return Hash128.Compute(JsonUtility.ToJson(snapshot)).ToString();
         }

@@ -220,6 +220,16 @@ namespace Pawlygon.UnityTools.Editor
             if (animation.clip != null)
             {
                 EditorGUILayout.LabelField(" ", $"{animation.clip.length:0.##} s{(animation.clip.isLooping ? ", loops" : string.Empty)}", EditorStyles.miniLabel);
+
+                int missing = FTExtrasBaseline.CountMissingBindings(animation.clip, selectedAvatar)
+                    + FTExtrasBaseline.CountMissingBindings(animation.negativeClip, selectedAvatar);
+                if (missing > 0)
+                {
+                    EditorGUILayout.HelpBox(
+                        $"{missing} animated propert{(missing == 1 ? "y is" : "ies are")} on objects this avatar doesn't have (different names or paths, e.g. a clip made for another avatar). " +
+                        "Those parts won't play; duplicate the clip and fix its paths for this avatar.",
+                        MessageType.Warning);
+                }
             }
 
             EditorGUILayout.Space(4f);

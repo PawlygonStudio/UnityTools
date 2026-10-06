@@ -39,6 +39,12 @@ namespace Pawlygon.UnityTools.Editor
             using (new EditorGUI.DisabledScope(mode != Mode.Idle))
             {
                 DrawRigSection();
+
+                if (profile != null && !ProfileBelongsToAnotherAvatar && ChainsMatchProfile())
+                {
+                    EditorGUILayout.Space(SectionSpacing);
+                    DrawBaselineSection();
+                }
             }
 
             EditorGUILayout.Space(SectionSpacing);
@@ -212,6 +218,11 @@ namespace Pawlygon.UnityTools.Editor
                         : $"The profile '{profile.name}' was made for '{profile.avatarName}', and its bones are not on this avatar. " +
                           "Click Create New Profile below for this avatar instead of overwriting that one.",
                     MessageType.Warning);
+                if (!ownProfile)
+                {
+                    EditorGUILayout.Space(4f);
+                    DrawNewProfileBaseline();
+                }
                 return;
             }
 
@@ -233,6 +244,12 @@ namespace Pawlygon.UnityTools.Editor
                     ? "Click Create Profile to save these chains as this avatar's Face Tracking Extras profile. The bones' current rotations are stored as the rest pose."
                     : "The chains differ from the saved profile. Click Update Profile to save them.",
                 MessageType.Info);
+
+            if (profile == null)
+            {
+                EditorGUILayout.Space(4f);
+                DrawNewProfileBaseline();
+            }
         }
 
         /// <summary>

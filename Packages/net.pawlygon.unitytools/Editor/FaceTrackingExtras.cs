@@ -560,7 +560,8 @@ namespace Pawlygon.UnityTools.Editor
             var newRight = Capture(SlotEarRight);
             var newTail = Capture(SlotTail);
 
-            if (profile == null)
+            bool created = profile == null;
+            if (created)
             {
                 profile = CreateProfile();
             }
@@ -590,8 +591,9 @@ namespace Pawlygon.UnityTools.Editor
             profile.tail = newTail;
             SaveProfile();
 
+            string baselineNote = created ? ApplyBaselineToNewProfile() : null;
             BindSession();
-            SetStatus($"Saved the bone chains to '{profile.name}'.", MessageType.Info, "Ping", PawlygonStatus.Ping(profile));
+            SetStatus(baselineNote ?? $"Saved the bone chains to '{profile.name}'.", MessageType.Info, "Ping", PawlygonStatus.Ping(profile));
         }
 
         private void SaveProfile()

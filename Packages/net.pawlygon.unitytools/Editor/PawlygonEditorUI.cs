@@ -614,7 +614,7 @@ namespace Pawlygon.UnityTools.Editor
                 using (new EditorGUI.DisabledScope(sceneAvatars.Count == 0 || owner == null))
                 {
                     var dropdown = new GUIContent("Scene ▾", sceneAvatars.Count == 0 ? "No avatars in the open scenes." : "Pick one of the avatars in the open scenes.");
-                    if (GUILayout.Button(dropdown, EditorStyles.miniButton, GUILayout.Width(58f)))
+                    if (GUILayout.Button(dropdown, EditorStyles.miniButton, GUILayout.Width(EditorStyles.miniButton.CalcSize(dropdown).x + 4f)))
                     {
                         ShowSceneAvatarMenu(owner, sceneAvatars, avatar);
                     }
@@ -626,7 +626,7 @@ namespace Pawlygon.UnityTools.Editor
                     var useSelection = new GUIContent("Use Selection", fromSelection != null
                         ? $"Use '{fromSelection.name}', the avatar containing the selected object."
                         : "Select an avatar (or any object inside it) in the Hierarchy.");
-                    if (GUILayout.Button(useSelection, EditorStyles.miniButton, GUILayout.Width(88f)))
+                    if (GUILayout.Button(useSelection, EditorStyles.miniButton, GUILayout.Width(EditorStyles.miniButton.CalcSize(useSelection).x + 4f)))
                     {
                         avatar = fromSelection;
                         changed = true;

@@ -72,31 +72,82 @@ namespace Pawlygon.UnityTools.Editor
 
                 if (profile.customAnimations.Count == 0)
                 {
-                    EditorGUILayout.LabelField("No custom animations yet. Add one below.", PawlygonEditorUI.SubLabelStyle);
+                    EditorGUILayout.Space(8f);
+                    DrawAddChoices();
                 }
             }
+
+            if (profile.customAnimations.Count == 0) return;
 
             for (int i = 0; i < profile.customAnimations.Count; i++)
             {
                 EditorGUILayout.Space(6f);
                 DrawCustomAnimationCard(i, catalog);
             }
+
+            EditorGUILayout.Space(6f);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button(new GUIContent("+ Follow a Parameter", FollowChoiceHint), GUILayout.Height(24f)))
+                {
+                    AddCustomAnimation(FTExtrasCustomMode.Follow);
+                    GUIUtility.ExitGUI();
+                }
+                if (GUILayout.Button(new GUIContent("+ Play When…", TriggerChoiceHint), GUILayout.Height(24f)))
+                {
+                    AddCustomAnimation(FTExtrasCustomMode.Trigger);
+                    GUIUtility.ExitGUI();
+                }
+            }
+        }
+
+        private const string FollowChoiceHint = "The parameter's value drives the animation, e.g. a blush that fades in with cheek puff.";
+        private const string TriggerChoiceHint = "Plays when conditions are met, e.g. an eye shine when both brows stay up for a second.";
+
+        private GUIStyle choiceCardStyle;
+
+        /// <summary>
+        /// Empty state: the two kinds of custom animation as large cards, so the first step is in the content
+        /// rather than at the bottom of a tall window.
+        /// </summary>
+        private void DrawAddChoices()
+        {
+            if (choiceCardStyle == null)
+            {
+                choiceCardStyle = new GUIStyle(GUI.skin.button)
+                {
+                    richText = true,
+                    wordWrap = true,
+                    alignment = TextAnchor.UpperLeft,
+                    padding = new RectOffset(10, 10, 8, 8),
+                };
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button($"<b>+ Follow a Parameter</b>\n<size=11>{FollowChoiceHint}</size>", choiceCardStyle, GUILayout.MinHeight(58f), GUILayout.ExpandWidth(true)))
+                {
+                    AddCustomAnimation(FTExtrasCustomMode.Follow);
+                    GUIUtility.ExitGUI();
+                }
+                GUILayout.Space(6f);
+                if (GUILayout.Button($"<b>+ Play When…</b>\n<size=11>{TriggerChoiceHint}</size>", choiceCardStyle, GUILayout.MinHeight(58f), GUILayout.ExpandWidth(true)))
+                {
+                    AddCustomAnimation(FTExtrasCustomMode.Trigger);
+                    GUIUtility.ExitGUI();
+                }
+            }
         }
 
         private void DrawCustomActions()
         {
             PawlygonEditorUI.BeginActionBar();
-            if (PawlygonEditorUI.DrawSecondaryButton("+ Follow a Parameter"))
-            {
-                AddCustomAnimation(FTExtrasCustomMode.Follow);
-                GUIUtility.ExitGUI();
-            }
-            if (PawlygonEditorUI.DrawSecondaryButton("+ Play When…"))
-            {
-                AddCustomAnimation(FTExtrasCustomMode.Trigger);
-                GUIUtility.ExitGUI();
-            }
             GUILayout.FlexibleSpace();
+            if (PawlygonEditorUI.DrawPrimaryButton("Next: Generate", 28f, GUILayout.Width(170f)))
+            {
+                SwitchTab(Tab.Generate);
+                GUIUtility.ExitGUI();
+            }
             PawlygonEditorUI.EndActionBar();
         }
 

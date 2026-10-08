@@ -8,28 +8,47 @@ namespace Pawlygon.UnityTools.Editor
 {
     /// <summary>
     /// Editor window for adjusting humanoid eye muscle limit settings on an avatar.
-    /// Auto-selects the first VRChat avatar in the scene and reads the current eye muscle values
-    /// from the model's <see cref="ModelImporter"/>. Provides sliders to adjust In/Out/Up/Down
-    /// for both eyes and a preview to visualize eye rotation at Face Tracking animation values.
-    /// Delegates read/write logic to <see cref="EyeMuscleSettingsCore"/>.
+    /// Opens on the avatar last used in any Pawlygon tool (or the first one in the scene) and reads its eye
+    /// muscle limits from the model's <see cref="ModelImporter"/> straight away. Sliders adjust In/Out/Up/Down
+    /// for both eyes (or each eye separately), showing the saved value and Unity's default, and a preview turns
+    /// the eyes in the Scene view the way face tracking will. Delegates read/write logic to
+    /// <see cref="EyeMuscleSettingsCore"/>.
     /// </summary>
     public class EyeMuscleSettings : EditorWindow
     {
         private const string MenuPath = "!Pawlygon/Tools/Eye Muscle Settings";
+        private const string WindowTitle = "Eye Muscle Settings";
         private const float SectionSpacing = 10f;
         private const float SliderMin = 0f;
         private const float SliderMax = 50f;
+        private const float RowLabelWidth = 76f;
+        private const float RowButtonWidth = 78f;
 
         // --- State ---
         [SerializeField] private Vector2 scrollPosition;
         private GameObject selectedAvatar;
         private EyeMuscleSettingsCore.AnalysisResult analysisResult;
+
+        /// <summary>The values being edited. Written to the model only by "Apply to Model".</summary>
         private EyeMuscleSettingsCore.EyeMuscleValues leftEye;
         private EyeMuscleSettingsCore.EyeMuscleValues rightEye;
-        private string statusMessage;
-        private MessageType statusMessageType;
-        private bool hasUnsavedChanges;
+
+        /// <summary>Unity's built-in limits, what a model uses until its eye limits are customized.</summary>
+        private EyeMuscleSettingsCore.EyeMuscleValues defaultLeftEye;
+        private EyeMuscleSettingsCore.EyeMuscleValues defaultRightEye;
+
         private bool splitLeftRight;
+        private readonly PawlygonStatus status = new PawlygonStatus();
+
+        /// <summary>Set while this window writes the model, so its own reimport doesn't trigger a reload.</summary>
+        private bool isWritingModel;
+
+        /// <summary>
+        /// The model's eye limits as they were before this window first applied changes to it in
+        /// this session; "Revert" writes them back. Unity cannot undo import settings, so this is
+        /// the way back. Only offered while the same model is loaded.
+        /// </summary>
+        private EyeMuscleSettingsCore.EyeLimitSnapshot revertSnapshot;
 
         // --- Preview ---
         private enum PreviewDirection { None, In, Out, Up, Down }
@@ -61,26 +80,44 @@ namespace Pawlygon.UnityTools.Editor
 
         // --- Styles ---
         private GUIStyle previewButtonActiveStyle;
+        private GUIStyle changedLabelStyle;
+
+        private static readonly (PreviewDirection Direction, string Label, string Tooltip)[] Directions =
+        {
+            (PreviewDirection.In, "In", "How far each eye can turn toward the nose."),
+            (PreviewDirection.Out, "Out", "How far each eye can turn away from the nose, toward the ear."),
+            (PreviewDirection.Up, "Up", "How far the eyes can look up."),
+            (PreviewDirection.Down, "Down", "How far the eyes can look down."),
+        };
+
+        private bool IsLoaded => analysisResult != null && analysisResult.Success && leftEye != null && rightEye != null;
+
+        /// <summary>The sliders differ from what is saved in the model.</summary>
+        private bool HasUnsavedChanges => IsLoaded &&
+            (!leftEye.Equals(analysisResult.LeftEye) || !rightEye.Equals(analysisResult.RightEye));
 
         // =====================================================================
         // Window lifecycle
         // =====================================================================
 
-        [MenuItem(MenuPath)]
+        [MenuItem(MenuPath, priority = 40)] // Tools: Tune
         public static void ShowWindow()
         {
             EyeMuscleSettings window = GetWindow<EyeMuscleSettings>();
-            window.titleContent = new GUIContent("Eye Muscle Settings");
-            window.minSize = new Vector2(520f, 400f);
+            window.titleContent = new GUIContent(WindowTitle);
+            window.minSize = new Vector2(520f, 460f);
         }
 
         private void OnEnable()
         {
             AutoSelectFirstSceneAvatar();
+            LoadSettings();
+
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             EditorSceneManager.sceneSaving += OnSceneSaving;
             EditorSceneManager.sceneClosing += OnSceneClosing;
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
+            FBXImportDetector.FbxReimported += OnFbxReimported;
         }
 
         private void OnDisable()
@@ -89,11 +126,49 @@ namespace Pawlygon.UnityTools.Editor
             EditorSceneManager.sceneSaving -= OnSceneSaving;
             EditorSceneManager.sceneClosing -= OnSceneClosing;
             AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeAssemblyReload;
+            FBXImportDetector.FbxReimported -= OnFbxReimported;
             StopPreview();
         }
 
         private void OnSelectionChange()
         {
+            Repaint();
+        }
+
+        /// <summary>
+        /// The avatar was deleted or its scene closed: open on whichever avatar is in the scene now.
+        /// </summary>
+        private void OnHierarchyChange()
+        {
+            if (selectedAvatar == null && analysisResult != null)
+            {
+                selectedAvatar = EyeMuscleSettingsCore.FindFirstAvatarInScene();
+                status.Clear();
+                LoadSettings();
+            }
+
+            Repaint();
+        }
+
+        /// <summary>
+        /// The loaded model was reimported outside this window (e.g. its import settings were edited in the
+        /// Inspector): re-read the limits, or offer to when that would throw away slider changes.
+        /// </summary>
+        private void OnFbxReimported(string assetPath)
+        {
+            if (isWritingModel || !IsLoaded || assetPath != analysisResult.ModelAssetPath) return;
+
+            if (HasUnsavedChanges)
+            {
+                status.Warning(
+                    $"'{System.IO.Path.GetFileName(assetPath)}' was reimported, so the saved values may have changed. Reload to see them (this discards your slider changes).",
+                    "Reload", LoadSettings);
+            }
+            else
+            {
+                LoadSettings();
+            }
+
             Repaint();
         }
 
@@ -142,80 +217,137 @@ namespace Pawlygon.UnityTools.Editor
             PawlygonEditorUI.EnsureStyles();
             EnsureStyles();
 
+            // Read once per event: controls drawn after a slider must not appear or disappear in the
+            // same event the slider changes a value, or IMGUI's layout gets out of step.
+            bool loaded = IsLoaded;
+            bool unsaved = HasUnsavedChanges;
+
             PawlygonEditorUI.DrawHeader(
-                "Eye Muscle Settings",
-                "Adjust humanoid eye muscle limits for face tracking compatibility.");
-            EditorGUILayout.Space(SectionSpacing);
+                WindowTitle,
+                "Set how far the eyes can turn, so face tracking looks natural.",
+                PawlygonEditorUI.DocumentationUrl);
+
+            if (PawlygonEditorUI.DrawAvatarBar(this, ref selectedAvatar, "Avatar"))
+            {
+                status.Clear();
+                LoadSettings();
+                GUIUtility.ExitGUI();
+            }
+
+            EditorGUILayout.Space(6f);
 
             scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition, GUILayout.ExpandHeight(true));
 
-            DrawAvatarSelection();
-            EditorGUILayout.Space(SectionSpacing);
-
-            if (analysisResult != null && analysisResult.Success && leftEye != null && rightEye != null)
+            if (selectedAvatar == null)
             {
+                DrawNoAvatar();
+            }
+            else if (!loaded)
+            {
+                DrawLoadProblem();
+            }
+            else
+            {
+                DrawModelSection();
+                EditorGUILayout.Space(SectionSpacing);
                 DrawMuscleSettings();
                 EditorGUILayout.Space(SectionSpacing);
                 DrawPreviewSection();
-                EditorGUILayout.Space(SectionSpacing);
-                DrawApplySection();
-            }
-
-            if (!string.IsNullOrEmpty(statusMessage))
-            {
-                EditorGUILayout.Space();
-                EditorGUILayout.HelpBox(statusMessage, statusMessageType);
             }
 
             EditorGUILayout.EndScrollView();
 
-            EditorGUILayout.Space(8f);
+            PawlygonEditorUI.DrawStatusBar(status);
+            if (loaded)
+            {
+                DrawActionBar(unsaved);
+            }
+
             PawlygonEditorUI.DrawFooter();
         }
 
         // =====================================================================
-        // Drawing: Avatar selection
+        // Drawing: Empty states
         // =====================================================================
 
-        private void DrawAvatarSelection()
+        private void DrawNoAvatar()
         {
             using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
-                EditorGUILayout.LabelField("Avatar Selection", EditorStyles.boldLabel);
+                PawlygonEditorUI.DrawSectionHeader(
+                    "Pick an Avatar",
+                    "Choose your avatar above: drag it from the Hierarchy, pick it from the Scene list, or select it and click Use Selection. It needs a Humanoid rig.");
+            }
+        }
+
+        private void DrawLoadProblem()
+        {
+            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
+            {
+                PawlygonEditorUI.DrawSectionHeader("Can't Read the Eye Limits");
+
+                string message = analysisResult?.StatusMessage ?? "The eye muscle settings could not be read.";
+                MessageType type = analysisResult?.StatusMessageType ?? MessageType.Error;
+                EditorGUILayout.HelpBox(message, type == MessageType.None ? MessageType.Info : type);
+
                 EditorGUILayout.Space(4f);
-
-                EditorGUI.BeginChangeCheck();
-                selectedAvatar = (GameObject)EditorGUILayout.ObjectField("Selected Avatar", selectedAvatar, typeof(GameObject), true);
-                if (EditorGUI.EndChangeCheck())
+                using (new EditorGUILayout.HorizontalScope())
                 {
-                    // Clear results when avatar changes
-                    analysisResult = null;
-                    leftEye = null;
-                    rightEye = null;
-                    hasUnsavedChanges = false;
-                    splitLeftRight = false;
-                    StopPreview();
+                    GUILayout.FlexibleSpace();
+                    if (PawlygonEditorUI.DrawSecondaryButton("Try Again", 24f, GUILayout.Width(100f)))
+                    {
+                        LoadSettings();
+                        GUIUtility.ExitGUI();
+                    }
+                }
+            }
+        }
 
-                    // The sections below disappear for the new avatar; restart the event
-                    // so IMGUI does not draw against the previous layout.
-                    GUIUtility.ExitGUI();
+        // =====================================================================
+        // Drawing: Model
+        // =====================================================================
+
+        private void DrawModelSection()
+        {
+            string modelPath = analysisResult.ModelAssetPath;
+            string modelName = System.IO.Path.GetFileName(modelPath);
+            string readOnlyReason = analysisResult.ReadOnlyReason;
+
+            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    string muted = ColorUtility.ToHtmlStringRGB(PawlygonEditorUI.MutedColor);
+                    EditorGUILayout.LabelField(
+                        new GUIContent($"Model: <b>{modelName}</b>  <color=#{muted}>— shared by every prefab that uses it</color>", modelPath),
+                        PawlygonEditorUI.RichLabelStyle);
+
+                    if (readOnlyReason != null)
+                    {
+                        PawlygonEditorUI.DrawBadge("Read-only", PawlygonEditorUI.BadgeKind.Error, "This model's import settings can't be changed.");
+                    }
+
+                    if (GUILayout.Button(new GUIContent("Ping", "Show the model in the Project window."), EditorStyles.miniButton, GUILayout.Width(44f)))
+                    {
+                        PawlygonStatus.Ping(AssetDatabase.LoadMainAssetAtPath(modelPath))();
+                    }
+
+                    if (GUILayout.Button(new GUIContent("Reload", "Read the eye limits from the model again."), EditorStyles.miniButton, GUILayout.Width(56f)))
+                    {
+                        ReloadFromModel();
+                        GUIUtility.ExitGUI();
+                    }
                 }
 
                 EditorGUILayout.Space(2f);
-                EditorGUILayout.LabelField("Select an avatar from the scene with a Humanoid rig.", PawlygonEditorUI.SubLabelStyle);
+                EditorGUILayout.LabelField(
+                    "Eye limits are stored in the model's import settings, not on the avatar, so applying changes them for every prefab and scene avatar made from this model.",
+                    PawlygonEditorUI.SubLabelStyle);
 
-                EditorGUILayout.Space(8f);
-
-                using (new EditorGUI.DisabledScope(selectedAvatar == null))
+                if (readOnlyReason != null)
                 {
-                    if (PawlygonEditorUI.DrawPrimaryButton("Load Eye Muscle Settings", 32f))
-                    {
-                        LoadSettings();
-
-                        // Loading adds/removes whole sections; restart the event so IMGUI
-                        // re-lays out instead of reporting control position errors.
-                        GUIUtility.ExitGUI();
-                    }
+                    EditorGUILayout.Space(4f);
+                    EditorGUILayout.HelpBox(readOnlyReason + " You can still try values with the preview.", MessageType.Warning);
                 }
             }
         }
@@ -228,113 +360,184 @@ namespace Pawlygon.UnityTools.Editor
         {
             using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
-                EditorGUILayout.LabelField("Eye Muscle Limits", new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 });
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField("Eye Limits", PawlygonEditorUI.SectionTitleStyle);
+                    GUILayout.FlexibleSpace();
+
+                    bool newSplit = GUILayout.Toggle(splitLeftRight,
+                        new GUIContent(" Separate left / right", "Give each eye its own limits."), GUILayout.ExpandWidth(false));
+                    if (newSplit != splitLeftRight)
+                    {
+                        SetSplit(newSplit);
+                        GUIUtility.ExitGUI();
+                    }
+
+                    GUILayout.Space(8f);
+                    if (GUILayout.Button(new GUIContent("Reset to Unity Defaults",
+                            $"Set the sliders to Unity's built-in limits ({DescribeValues(defaultLeftEye)}). Nothing is saved until you apply."),
+                            EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
+                    {
+                        leftEye = defaultLeftEye.Clone();
+                        rightEye = splitLeftRight ? defaultRightEye.Clone() : defaultLeftEye.Clone();
+                        OnValuesChanged();
+                    }
+                }
+
                 EditorGUILayout.Space(2f);
                 EditorGUILayout.LabelField(
-                    "Adjust the muscle range limits for each eye direction.",
+                    "How far the eyes can turn from looking straight ahead, in degrees. In is toward the nose, Out toward the ears. " +
+                    "A <b>•</b> marks a value that differs from the one saved in the model.",
                     PawlygonEditorUI.SubLabelStyle);
                 EditorGUILayout.Space(8f);
 
-                // Split toggle
-                using (new EditorGUILayout.HorizontalScope())
+                bool changed = false;
+                foreach (var direction in Directions)
                 {
-                    GUILayout.FlexibleSpace();
-
-                    EditorGUI.BeginChangeCheck();
-                    splitLeftRight = GUILayout.Toggle(splitLeftRight, " Split Left / Right", GUILayout.Height(24f));
-                    if (EditorGUI.EndChangeCheck() && !splitLeftRight)
+                    if (splitLeftRight)
                     {
-                        // Snap right eye to left when disabling split
-                        rightEye.In = leftEye.In;
-                        rightEye.Out = leftEye.Out;
-                        rightEye.Up = leftEye.Up;
-                        rightEye.Down = leftEye.Down;
-                        hasUnsavedChanges = true;
+                        EditorGUILayout.LabelField(new GUIContent(direction.Label, direction.Tooltip), EditorStyles.boldLabel);
+                        changed |= DrawLimitRow(new GUIContent("   Left eye", direction.Tooltip), direction.Direction, true, false);
+                        changed |= DrawLimitRow(new GUIContent("   Right eye", direction.Tooltip), direction.Direction, false, true);
+                        EditorGUILayout.Space(4f);
+                    }
+                    else
+                    {
+                        changed |= DrawLimitRow(new GUIContent(direction.Label, direction.Tooltip), direction.Direction, true, true);
+                        EditorGUILayout.Space(2f);
                     }
                 }
 
-                EditorGUILayout.Space(4f);
-                PawlygonEditorUI.DrawSeparator();
-                EditorGUILayout.Space(8f);
-
-                // Muscle sliders
-                // In and Down are stored as negative values internally but
-                // displayed as positive magnitudes in the UI for clarity.
-                EditorGUI.BeginChangeCheck();
-
-                DrawMuscleRow("In", ref leftEye.In, ref rightEye.In, true);
-                DrawMuscleRow("Out", ref leftEye.Out, ref rightEye.Out, false);
-                DrawMuscleRow("Up", ref leftEye.Up, ref rightEye.Up, false);
-                DrawMuscleRow("Down", ref leftEye.Down, ref rightEye.Down, true);
-
-                if (EditorGUI.EndChangeCheck())
+                if (changed)
                 {
-                    hasUnsavedChanges = true;
-
-                    if (isPreviewActive)
-                    {
-                        UpdatePreview();
-                    }
+                    OnValuesChanged();
                 }
             }
         }
 
         /// <summary>
-        /// Draws a single muscle direction row. In synced mode, a single slider
-        /// controls both eyes. In split mode, Left/Right sub-sliders are shown.
-        /// When <paramref name="negated"/> is true, the stored value is negative
-        /// but the slider displays the positive magnitude.
+        /// Draws one limit slider (as a positive number of degrees) for the left eye, the right eye or both,
+        /// with buttons to go back to the saved value or to Unity's default. Returns true when a value changed.
         /// </summary>
-        private void DrawMuscleRow(string label, ref float leftValue, ref float rightValue, bool negated)
+        private bool DrawLimitRow(GUIContent label, PreviewDirection direction, bool left, bool right)
         {
-            if (splitLeftRight)
+            EyeMuscleSettingsCore.EyeMuscleValues eye = left ? leftEye : rightEye;
+            EyeMuscleSettingsCore.EyeMuscleValues saved = left ? analysisResult.LeftEye : analysisResult.RightEye;
+            EyeMuscleSettingsCore.EyeMuscleValues defaults = left ? defaultLeftEye : defaultRightEye;
+
+            float current = GetMuscleValueForDirection(eye, direction);
+            float savedValue = GetMuscleValueForDirection(saved, direction);
+            float defaultValue = GetMuscleValueForDirection(defaults, direction);
+
+            bool differsFromSaved =
+                (left && !Mathf.Approximately(GetMuscleValueForDirection(leftEye, direction), GetMuscleValueForDirection(analysisResult.LeftEye, direction))) ||
+                (right && !Mathf.Approximately(GetMuscleValueForDirection(rightEye, direction), GetMuscleValueForDirection(analysisResult.RightEye, direction)));
+
+            float? newValue = null;
+            using (new EditorGUILayout.HorizontalScope())
             {
-                // Split mode: direction label, then Left/Right sub-sliders
-                EditorGUILayout.LabelField(label, EditorStyles.boldLabel);
+                var rowLabel = new GUIContent(differsFromSaved ? $"{label.text} •" : label.text,
+                    differsFromSaved ? $"{label.tooltip} Changed: not applied to the model yet." : label.tooltip);
+                EditorGUILayout.LabelField(rowLabel, differsFromSaved ? changedLabelStyle : EditorStyles.label, GUILayout.Width(RowLabelWidth));
 
-                using (new EditorGUI.IndentLevelScope())
+                float display = Magnitude(current, direction);
+                float newDisplay = EditorGUILayout.Slider(display, SliderMin, SliderMax);
+                if (!Mathf.Approximately(newDisplay, display))
                 {
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        EditorGUILayout.LabelField("Left", GUILayout.Width(60f));
-                        leftValue = DrawMagnitudeSlider(leftValue, negated);
-                    }
+                    newValue = FromMagnitude(newDisplay, direction);
+                }
 
-                    using (new EditorGUILayout.HorizontalScope())
+                using (new EditorGUI.DisabledScope(!differsFromSaved))
+                {
+                    var savedContent = new GUIContent($"Saved {Magnitude(savedValue, direction):0.#}°",
+                        "Go back to the value saved in the model.");
+                    if (GUILayout.Button(savedContent, EditorStyles.miniButton, GUILayout.Width(RowButtonWidth)))
                     {
-                        EditorGUILayout.LabelField("Right", GUILayout.Width(60f));
-                        rightValue = DrawMagnitudeSlider(rightValue, negated);
+                        newValue = savedValue;
                     }
                 }
 
-                EditorGUILayout.Space(4f);
-            }
-            else
-            {
-                // Synced mode: single slider controls both eyes
-                using (new EditorGUILayout.HorizontalScope())
+                using (new EditorGUI.DisabledScope(Mathf.Approximately(current, defaultValue)))
                 {
-                    EditorGUILayout.LabelField(label, EditorStyles.boldLabel, GUILayout.Width(50f));
-                    leftValue = DrawMagnitudeSlider(leftValue, negated);
+                    var defaultContent = new GUIContent($"Default {Magnitude(defaultValue, direction):0.#}°",
+                        "Use Unity's built-in limit for this direction.");
+                    if (GUILayout.Button(defaultContent, EditorStyles.miniButton, GUILayout.Width(RowButtonWidth)))
+                    {
+                        newValue = defaultValue;
+                    }
                 }
-
-                rightValue = leftValue;
-
-                EditorGUILayout.Space(2f);
             }
+
+            if (!newValue.HasValue) return false;
+
+            if (left) SetMuscleValueForDirection(leftEye, direction, newValue.Value);
+            if (right) SetMuscleValueForDirection(rightEye, direction, newValue.Value);
+            return true;
         }
 
         /// <summary>
-        /// Draws a slider that shows the magnitude (0..50) of a value.
-        /// If <paramref name="negated"/> is true, the stored value is negative
-        /// but displayed/edited as positive. Returns the signed value.
+        /// Turns split mode on or off. Turning it off makes both eyes share one set of limits, so when they
+        /// differ the user chooses which eye's values to keep instead of the right eye being silently overwritten.
         /// </summary>
-        private float DrawMagnitudeSlider(float signedValue, bool negated)
+        private void SetSplit(bool split)
         {
-            float display = negated ? -signedValue : signedValue;
-            display = Mathf.Max(0f, display); // Clamp to non-negative for display
-            float newDisplay = EditorGUILayout.Slider(display, SliderMin, SliderMax);
-            return negated ? -newDisplay : newDisplay;
+            if (split || leftEye.Equals(rightEye))
+            {
+                splitLeftRight = split;
+                return;
+            }
+
+            int choice = EditorUtility.DisplayDialogComplex(
+                "Use the Same Limits for Both Eyes",
+                "The eyes have different limits:\n\n" +
+                $"Left eye:  {DescribeValues(leftEye)}\n" +
+                $"Right eye: {DescribeValues(rightEye)}\n\n" +
+                "Which eye's limits should both eyes use?",
+                "Use Left Eye's",
+                "Keep Separate",
+                "Use Right Eye's");
+
+            switch (choice)
+            {
+                case 0:
+                    rightEye = leftEye.Clone();
+                    break;
+                case 2:
+                    leftEye = rightEye.Clone();
+                    break;
+                default:
+                    return;
+            }
+
+            splitLeftRight = false;
+            OnValuesChanged();
+        }
+
+        private void OnValuesChanged()
+        {
+            if (isPreviewActive)
+            {
+                UpdatePreview();
+            }
+
+            Repaint();
+        }
+
+        private static float Magnitude(float signedValue, PreviewDirection direction)
+        {
+            // In and Down are stored as negative values but shown as positive degrees.
+            float display = IsNegated(direction) ? -signedValue : signedValue;
+            return Mathf.Max(0f, display);
+        }
+
+        private static float FromMagnitude(float magnitude, PreviewDirection direction)
+        {
+            return IsNegated(direction) ? -magnitude : magnitude;
+        }
+
+        private static bool IsNegated(PreviewDirection direction)
+        {
+            return direction == PreviewDirection.In || direction == PreviewDirection.Down;
         }
 
         // =====================================================================
@@ -345,18 +548,14 @@ namespace Pawlygon.UnityTools.Editor
         {
             using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
-                EditorGUILayout.LabelField("Preview", new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 });
-                EditorGUILayout.Space(2f);
-                EditorGUILayout.LabelField(
-                    "Preview the effective eye rotation with Face Tracking animation values applied " +
-                    "to the current muscle limits. Click a direction to see the result in the Scene view.",
-                    PawlygonEditorUI.SubLabelStyle);
-                EditorGUILayout.Space(8f);
+                PawlygonEditorUI.DrawSectionHeader(
+                    "Preview",
+                    "Turns the eyes in the Scene view as far as face tracking will at full input, using the slider values. Nothing is saved; the eyes go back when you stop.");
 
                 if (!CanPreview())
                 {
                     EditorGUILayout.HelpBox(
-                        "Preview requires the avatar to be in the scene with valid eye bones in the humanoid rig.",
+                        "Preview needs the avatar in the scene with eye bones set in its Humanoid rig.",
                         MessageType.Info);
                     return;
                 }
@@ -377,7 +576,7 @@ namespace Pawlygon.UnityTools.Editor
 
                     using (new EditorGUI.DisabledScope(!isPreviewActive))
                     {
-                        if (GUILayout.Button("Reset", GUILayout.Height(28f), GUILayout.Width(70f)))
+                        if (GUILayout.Button("Stop", GUILayout.Height(28f), GUILayout.Width(70f)))
                         {
                             StopPreview();
                             GUIUtility.ExitGUI();
@@ -390,18 +589,36 @@ namespace Pawlygon.UnityTools.Editor
                 if (isPreviewActive)
                 {
                     EditorGUILayout.Space(4f);
-
-                    string directionLabel = activePreview.ToString();
-                    float leftVal = GetMuscleValueForDirection(leftEye, activePreview);
-                    float rightVal = GetMuscleValueForDirection(rightEye, activePreview);
-                    float ftAnimValue = GetFTAnimValueForDirection(activePreview);
-                    EditorGUILayout.HelpBox(
-                        $"Previewing: {directionLabel}  (FT Anim Value: {ftAnimValue:F1})\n" +
-                        $"Left Eye: {leftVal:F1} x {ftAnimValue:F1} = {leftVal * ftAnimValue:F1} deg  |  " +
-                        $"Right Eye: {rightVal:F1} x {ftAnimValue:F1} = {rightVal * ftAnimValue:F1} deg",
-                        MessageType.Info);
+                    EditorGUILayout.HelpBox(DescribePreview(), MessageType.Info);
                 }
             }
+        }
+
+        /// <summary>
+        /// Plain-language readout of the previewed direction: how many degrees each eye turns at full face
+        /// tracking input (always positive), and how that follows from the limit.
+        /// </summary>
+        private string DescribePreview()
+        {
+            float multiplier = Mathf.Abs(GetFTAnimValueForDirection(activePreview));
+            float leftLimit = Magnitude(GetMuscleValueForDirection(leftEye, activePreview), activePreview);
+            float rightLimit = Magnitude(GetMuscleValueForDirection(rightEye, activePreview), activePreview);
+
+            string where;
+            switch (activePreview)
+            {
+                case PreviewDirection.In: where = "in, toward the nose"; break;
+                case PreviewDirection.Out: where = "out, toward the ears"; break;
+                case PreviewDirection.Up: where = "up"; break;
+                default: where = "down"; break;
+            }
+
+            string turn = Mathf.Approximately(leftLimit, rightLimit)
+                ? $"both eyes turn {leftLimit * multiplier:0.#}°"
+                : $"the left eye turns {leftLimit * multiplier:0.#}° and the right eye {rightLimit * multiplier:0.#}°";
+
+            return $"Looking {where}: {turn}.\n" +
+                   $"Face tracking drives this direction to {multiplier:0.#}× the limit at full input.";
         }
 
         private void DrawPreviewButton(string label, PreviewDirection direction)
@@ -426,52 +643,88 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         // =====================================================================
-        // Drawing: Apply section
+        // Drawing: Action bar
         // =====================================================================
 
-        private void DrawApplySection()
+        private void DrawActionBar(bool unsaved)
         {
-            using (new EditorGUI.DisabledScope(!hasUnsavedChanges))
-            {
-                if (PawlygonEditorUI.DrawPrimaryButton("Apply Eye Muscle Settings"))
-                {
-                    ApplySettings();
+            bool readOnly = analysisResult.ReadOnlyReason != null;
 
-                    // Applying reimports the model and hides the unsaved-changes box below.
+            PawlygonEditorUI.BeginActionBar();
+
+            if (CanRevert())
+            {
+                var revertContent = new GUIContent("Restore Previous",
+                    "Write back the eye limits this model had before you first applied changes in this window, and reimport it.");
+                if (PawlygonEditorUI.DrawSecondaryButton(revertContent, 28f))
+                {
+                    RevertSettings();
+
+                    // Reverting reimports the model and removes this button.
                     GUIUtility.ExitGUI();
                 }
             }
 
-            if (hasUnsavedChanges)
+            using (new EditorGUI.DisabledScope(!unsaved))
             {
-                EditorGUILayout.Space(2f);
-                EditorGUILayout.HelpBox(
-                    "You have unsaved changes. Click 'Apply Eye Muscle Settings' to write them to the model and reimport.",
-                    MessageType.Warning);
+                var discardContent = new GUIContent("Discard Changes", "Set the sliders back to the values saved in the model.");
+                if (PawlygonEditorUI.DrawSecondaryButton(discardContent, 28f))
+                {
+                    DiscardSliderChanges();
+                    GUIUtility.ExitGUI();
+                }
             }
+
+            GUILayout.FlexibleSpace();
+
+            if (unsaved)
+            {
+                using (new EditorGUILayout.VerticalScope())
+                {
+                    GUILayout.Space(6f);
+                    PawlygonEditorUI.DrawBadge("Unsaved", PawlygonEditorUI.BadgeKind.Warning, "The sliders differ from the values saved in the model.");
+                }
+            }
+
+            using (new EditorGUI.DisabledScope(!unsaved || readOnly))
+            {
+                if (PawlygonEditorUI.DrawPrimaryButton("Apply to Model", 28f, GUILayout.Width(140f)))
+                {
+                    ApplySettings();
+
+                    // Applying reimports the model and changes what the action bar shows.
+                    GUIUtility.ExitGUI();
+                }
+            }
+
+            PawlygonEditorUI.EndActionBar();
         }
 
         // =====================================================================
         // Load / Apply
         // =====================================================================
 
+        /// <summary>
+        /// Reads the selected avatar's eye limits from its model. Runs on open, when the avatar changes and
+        /// after this window writes the model; discards slider changes.
+        /// </summary>
         private void LoadSettings()
         {
             StopPreview();
             analysisResult = null;
             leftEye = null;
             rightEye = null;
-            statusMessage = null;
-            hasUnsavedChanges = false;
+
+            if (selectedAvatar == null) return;
 
             analysisResult = EyeMuscleSettingsCore.Analyze(selectedAvatar);
-            statusMessage = analysisResult.StatusMessage;
-            statusMessageType = analysisResult.StatusMessageType;
 
             if (analysisResult.Success)
             {
                 leftEye = analysisResult.LeftEye.Clone();
                 rightEye = analysisResult.RightEye.Clone();
+                defaultLeftEye = EyeMuscleSettingsCore.GetDefaultEyeMuscleValues(true);
+                defaultRightEye = EyeMuscleSettingsCore.GetDefaultEyeMuscleValues(false);
 
                 // Auto-enable split mode if loaded values differ between eyes
                 splitLeftRight = !leftEye.Equals(rightEye);
@@ -482,36 +735,165 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
+        /// <summary>"Reload": re-reads the model, asking first when that would discard slider changes.</summary>
+        private void ReloadFromModel()
+        {
+            if (HasUnsavedChanges && !EditorUtility.DisplayDialog(
+                    "Reload Eye Limits",
+                    "Read the eye limits from the model again? Your slider changes that haven't been applied will be lost.",
+                    "Reload", "Cancel"))
+            {
+                return;
+            }
+
+            status.Clear();
+            LoadSettings();
+        }
+
+        private void DiscardSliderChanges()
+        {
+            if (!IsLoaded) return;
+
+            leftEye = analysisResult.LeftEye.Clone();
+            rightEye = analysisResult.RightEye.Clone();
+            splitLeftRight = splitLeftRight || !leftEye.Equals(rightEye);
+            OnValuesChanged();
+        }
+
         private void ApplySettings()
         {
             if (analysisResult == null || !analysisResult.Success || analysisResult.Importer == null)
             {
-                SetStatus("No model loaded. Load eye muscle settings first.", MessageType.Error);
+                status.Error("No model loaded. Pick an avatar with a Humanoid rig first.");
                 return;
             }
 
+            if (analysisResult.ReadOnlyReason != null)
+            {
+                status.Error(analysisResult.ReadOnlyReason);
+                return;
+            }
+
+            string modelName = System.IO.Path.GetFileName(analysisResult.ModelAssetPath);
+            bool confirmed = EditorUtility.DisplayDialog(
+                "Apply Eye Limits to Model",
+                $"Write these eye limits to the import settings of '{modelName}' and reimport it?\n\n" +
+                $"Left eye:  {DescribeValues(leftEye)}\n" +
+                $"Right eye: {DescribeValues(rightEye)}\n\n" +
+                "Every prefab and scene avatar made from this model gets the new limits.\n\n" +
+                "Unity can't undo import settings. 'Restore Previous' in this window puts back the values " +
+                "the model had before your first apply.",
+                "Apply and Reimport",
+                "Cancel");
+            if (!confirmed) return;
+
             StopPreview();
 
-            bool success = EyeMuscleSettingsCore.ApplyEyeMuscleValues(analysisResult.Importer, leftEye, rightEye);
+            // Keep the model's values from before the first apply in this session for Revert
+            if (revertSnapshot == null || revertSnapshot.ModelAssetPath != analysisResult.ModelAssetPath)
+            {
+                revertSnapshot = EyeMuscleSettingsCore.CaptureEyeLimits(analysisResult.Importer);
+            }
+
+            UnityEngine.Object model = AssetDatabase.LoadMainAssetAtPath(analysisResult.ModelAssetPath);
+            bool success;
+            isWritingModel = true;
+            try
+            {
+                success = EyeMuscleSettingsCore.ApplyEyeMuscleValues(analysisResult.Importer, leftEye, rightEye);
+            }
+            finally
+            {
+                isWritingModel = false;
+            }
 
             if (success)
             {
-                hasUnsavedChanges = false;
-                SetStatus("Eye muscle settings applied and model reimported successfully.", MessageType.Info);
-
-                // Reload to reflect the reimported values
-                analysisResult = EyeMuscleSettingsCore.Analyze(selectedAvatar);
-                if (analysisResult.Success)
-                {
-                    leftEye = analysisResult.LeftEye.Clone();
-                    rightEye = analysisResult.RightEye.Clone();
-                }
+                status.Info($"Applied the eye limits to '{modelName}'.", "Ping", PawlygonStatus.Ping(model));
+                ReloadAfterReimport();
             }
             else
             {
-                SetStatus("Failed to apply eye muscle settings. Check the Console for details.", MessageType.Error);
+                status.Error("Couldn't apply the eye limits. Check the Console for details.");
             }
         }
+
+        /// <summary>
+        /// True when the loaded model has a snapshot from before this window's first apply.
+        /// </summary>
+        private bool CanRevert()
+        {
+            return revertSnapshot != null &&
+                   analysisResult != null &&
+                   analysisResult.Success &&
+                   analysisResult.ReadOnlyReason == null &&
+                   revertSnapshot.ModelAssetPath == analysisResult.ModelAssetPath;
+        }
+
+        /// <summary>
+        /// Writes the snapshot taken before the first apply back to the model (after confirming)
+        /// and reimports it. Discards unsaved slider edits.
+        /// </summary>
+        private void RevertSettings()
+        {
+            if (!CanRevert() || analysisResult.Importer == null) return;
+
+            string modelName = System.IO.Path.GetFileName(analysisResult.ModelAssetPath);
+            bool confirmed = EditorUtility.DisplayDialog(
+                "Restore Previous Eye Limits",
+                $"Restore the eye limits '{modelName}' had before you first applied changes in this window, " +
+                "and reimport it? Every prefab made from this model gets them back." +
+                (HasUnsavedChanges ? "\n\nYour slider changes that haven't been applied will be discarded." : string.Empty),
+                "Restore and Reimport",
+                "Cancel");
+            if (!confirmed) return;
+
+            StopPreview();
+
+            UnityEngine.Object model = AssetDatabase.LoadMainAssetAtPath(analysisResult.ModelAssetPath);
+            bool success;
+            isWritingModel = true;
+            try
+            {
+                success = EyeMuscleSettingsCore.RestoreEyeLimits(analysisResult.Importer, revertSnapshot);
+            }
+            finally
+            {
+                isWritingModel = false;
+            }
+
+            if (success)
+            {
+                revertSnapshot = null;
+                status.Info($"Restored the previous eye limits of '{modelName}'.", "Ping", PawlygonStatus.Ping(model));
+                ReloadAfterReimport();
+            }
+            else
+            {
+                status.Error("Couldn't restore the previous eye limits. Check the Console for details.");
+            }
+        }
+
+        /// <summary>
+        /// Re-reads the values from the reimported model so the sliders show what was written.
+        /// </summary>
+        private void ReloadAfterReimport()
+        {
+            EyeMuscleSettingsCore.AnalysisResult reloaded = EyeMuscleSettingsCore.Analyze(selectedAvatar);
+            if (!reloaded.Success) return;
+
+            analysisResult = reloaded;
+            leftEye = reloaded.LeftEye.Clone();
+            rightEye = reloaded.RightEye.Clone();
+            splitLeftRight = splitLeftRight || !leftEye.Equals(rightEye);
+        }
+
+        private static string DescribeValues(EyeMuscleSettingsCore.EyeMuscleValues values)
+        {
+            // In and Down are stored negative; show magnitudes like the sliders do
+            return $"In {-values.In:0.#}°, Out {values.Out:0.#}°, Up {values.Up:0.#}°, Down {-values.Down:0.#}°";
+        }
+
 
         // =====================================================================
         // Preview
@@ -690,20 +1072,37 @@ namespace Pawlygon.UnityTools.Editor
             Quaternion leftRotation = EyeMuscleSettingsCore.GetEyeRotation(directionName, leftValue, true);
             Quaternion rightRotation = EyeMuscleSettingsCore.GetEyeRotation(directionName, rightValue, false);
 
-            if (leftEyeBone != null)
-            {
-                leftEyeBone.localRotation = leftEyeOriginalRotation * leftRotation;
-            }
-
-            if (rightEyeBone != null)
-            {
-                rightEyeBone.localRotation = rightEyeOriginalRotation * rightRotation;
-            }
+            ApplyAvatarSpaceRotation(leftEyeBone, leftEyeOriginalRotation, leftRotation);
+            ApplyAvatarSpaceRotation(rightEyeBone, rightEyeOriginalRotation, rightRotation);
 
             // Apply blendshapes: set active direction's shapes to 100, restore all others
             ApplyBlendshapesForDirection(activePreview);
 
             SceneView.RepaintAll();
+        }
+
+        /// <summary>
+        /// Turns an eye bone from its pre-preview pose by <paramref name="avatarSpaceRotation"/>
+        /// (pitch about the avatar's right axis, yaw about its up axis). Working in the avatar
+        /// root's space instead of the bone's local axes gives the right direction whatever the
+        /// bone's orientation (Blender-style rigs often point the bone's local Y forward, which
+        /// would turn a local-Y "yaw" into a roll). Only the bone's rotation is written, and
+        /// <see cref="StopPreview"/> restores its original local rotation exactly.
+        /// </summary>
+        private void ApplyAvatarSpaceRotation(Transform eyeBone, Quaternion originalLocalRotation, Quaternion avatarSpaceRotation)
+        {
+            if (eyeBone == null) return;
+
+            Quaternion avatarRotation = previewAnimator != null ? previewAnimator.transform.rotation : Quaternion.identity;
+            Quaternion worldOffset = avatarRotation * avatarSpaceRotation * Quaternion.Inverse(avatarRotation);
+
+            // The pre-preview world rotation, rebuilt from the parent so it stays valid if the
+            // head moved since the preview started
+            Quaternion originalWorldRotation = eyeBone.parent != null
+                ? eyeBone.parent.rotation * originalLocalRotation
+                : originalLocalRotation;
+
+            eyeBone.rotation = worldOffset * originalWorldRotation;
         }
 
         /// <summary>
@@ -792,6 +1191,17 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
+        private static void SetMuscleValueForDirection(EyeMuscleSettingsCore.EyeMuscleValues eye, PreviewDirection direction, float value)
+        {
+            switch (direction)
+            {
+                case PreviewDirection.In: eye.In = value; break;
+                case PreviewDirection.Out: eye.Out = value; break;
+                case PreviewDirection.Up: eye.Up = value; break;
+                case PreviewDirection.Down: eye.Down = value; break;
+            }
+        }
+
         private static float GetFTAnimValueForDirection(PreviewDirection direction)
         {
             switch (direction)
@@ -808,15 +1218,9 @@ namespace Pawlygon.UnityTools.Editor
         // UI utilities
         // =====================================================================
 
-        private void SetStatus(string message, MessageType type)
-        {
-            statusMessage = message;
-            statusMessageType = type;
-        }
-
         private void EnsureStyles()
         {
-            if (previewButtonActiveStyle != null) return;
+            if (previewButtonActiveStyle != null && changedLabelStyle != null) return;
 
             previewButtonActiveStyle = new GUIStyle(GUI.skin.button)
             {
@@ -825,6 +1229,9 @@ namespace Pawlygon.UnityTools.Editor
 
             previewButtonActiveStyle.normal.textColor = new Color(0.3f, 0.85f, 0.3f);
             previewButtonActiveStyle.hover.textColor = new Color(0.3f, 0.85f, 0.3f);
+
+            changedLabelStyle = new GUIStyle(EditorStyles.label) { fontStyle = FontStyle.Bold };
+            changedLabelStyle.normal.textColor = PawlygonEditorUI.WarningColor;
         }
 
         private void AutoSelectFirstSceneAvatar()

@@ -34,6 +34,15 @@ namespace Pawlygon.UnityTools.Editor
         internal const string OutputFolderName = "FaceTrackingExtras";
         internal const string PrefabName = "!Pawlygon - Face Tracking Extras";
         private const string ControllerName = "FX - Face Tracking Extras";
+
+        /// <summary>Name of the generated controller asset (other tools skip it when reading the avatar's parameters).</summary>
+        internal const string ControllerAssetName = ControllerName;
+        private const string BuildControllerName = "_Building - FX - Face Tracking Extras";
+
+        /// <summary>Menu icon for the Tail follows Jaw toggle, copied into each output folder.</summary>
+        internal const string TailJawIconFileName = "Icon - Tail Follows Jaw.png";
+        private const string BundledTailJawIconPath = "Editor/Icons/TailFollowsJaw.png";
+        private const int MenuIconMaxSize = 256;
         private const string AnimationsFolderName = "Animations";
 
         private const string ParamPrefix = "Pawlygon/FTExtras/";
@@ -43,6 +52,11 @@ namespace Pawlygon.UnityTools.Editor
         private const string ParamGazeY = ParamPrefix + "GazeY";
         private const string ParamMood = ParamPrefix + "Mood";
         private const string ParamJaw = ParamPrefix + "Jaw";
+        private const string ParamTimer = ParamPrefix + "Timer";
+        private const string CustomParamPrefix = ParamPrefix + "Custom/";
+
+        /// <summary>VRChat expression menus hold at most eight controls.</summary>
+        private const int MaxMenuControls = 8;
 
         private const float SampleRate = 30f;
         private const float StaticClipLength = 1f / 60f;
@@ -128,11 +142,34 @@ namespace Pawlygon.UnityTools.Editor
                 return result;
             }
 
+            FTExtrasProfile folderOwner = FindOtherProfileInFolder(profile, GetOutputFolder(avatar));
+            if (folderOwner != null)
+            {
+                result.Message = $"Nothing was generated: {GetOutputFolder(avatar)} already holds the profile '{folderOwner.name}' " +
+                                 $"for '{folderOwner.avatarName}'. Rename one of the avatars or make it a prefab so each gets its own folder.";
+                return result;
+            }
+
+            var customs = new CustomAnimationPlan(profile, settings);
+
             Type layerControlType = null;
-            if (settings.fakeDilation)
+            if (settings.fakeDilation || customs.Animations.Count > 0)
             {
                 layerControlType = FindLayerControlType(out string layerControlProblem);
-                if (layerControlType == null) result.Warnings.Add($"{layerControlProblem} The fake pupil dilation was skipped.");
+                if (layerControlType == null)
+                {
+                    if (settings.fakeDilation) result.Warnings.Add($"{layerControlProblem} The fake pupil dilation was skipped.");
+                    if (customs.Animations.Count > 0) result.Warnings.Add($"{layerControlProblem} The custom animations were skipped.");
+                }
+            }
+            result.Warnings.AddRange(customs.Problems);
+
+            // Profiles created before the VRCFT/Extra default still carry an old default submenu name.
+            if (FTExtrasGenerationSettings.LegacyMenuNames.Contains(settings.menuName))
+            {
+                Undo.RecordObject(profile, "Update Face Tracking Extras Menu");
+                settings.menuName = FTExtrasGenerationSettings.DefaultMenuName;
+                EditorUtility.SetDirty(profile);
             }
 
             string moveError = MoveProfileToOutputFolder(profile, avatar);
@@ -145,34 +182,57 @@ namespace Pawlygon.UnityTools.Editor
             var clips = new ClipStore(clipFolder);
 
             // --- Controller ---
-            // An existing controller is emptied and rebuilt in place, so its GUID (and every reference to it,
-            // such as the prefab's VRCFury component or a hand-made merge) stays valid.
+            // The controller is built into a temporary asset first. Only when that succeeds is its content moved
+            // into the real controller, which keeps its GUID (so the prefab's VRCFury component and any hand-made
+            // reference stay valid) and is never left half-built by a failure.
             string controllerPath = PawlygonEditorUtils.CombineAssetPath(folder, ControllerName + ".controller");
-            AnimatorController controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(controllerPath);
-            if (controller != null)
+            string buildPath = PawlygonEditorUtils.CombineAssetPath(folder, BuildControllerName + ".controller");
+            if (AssetDatabase.LoadMainAssetAtPath(buildPath) != null) AssetDatabase.DeleteAsset(buildPath);
+
+            AnimatorController building = AnimatorController.CreateAnimatorControllerAtPath(buildPath);
+            try
             {
-                ClearController(controller);
+                var builder = new ControllerBuilder(building);
+
+                AddParameters(builder, settings);
+                customs.AddParameters(builder);
+
+                BuildInputsLayer(builder, clips, settings, customs);
+                bool earLayer = BuildEarsLayer(builder, clips, profile);
+                bool tailLayer = BuildTailLayer(builder, clips, profile);
+
+                if (!earLayer) result.Warnings.Add("No ear poses move any bones, so no ear layer was generated.");
+                if (!tailLayer) result.Warnings.Add("No tail poses move any bones, so no tail layer was generated.");
+
+                if (settings.fakeDilation && layerControlType != null)
+                {
+                    string dilationWarning = BuildFakeDilationLayer(builder, clips, avatar, settings, layerControlType);
+                    if (dilationWarning != null) result.Warnings.Add(dilationWarning);
+                }
+
+                if (layerControlType != null)
+                {
+                    BuildCustomAnimationLayers(builder, clips, customs, layerControlType);
+                }
+            }
+            catch
+            {
+                AssetDatabase.DeleteAsset(buildPath);
+                throw;
+            }
+
+            AnimatorController controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(controllerPath);
+            if (controller == null)
+            {
+                if (AssetDatabase.LoadMainAssetAtPath(controllerPath) != null) AssetDatabase.DeleteAsset(controllerPath);
+                string moveControllerError = AssetDatabase.MoveAsset(buildPath, controllerPath);
+                if (!string.IsNullOrEmpty(moveControllerError)) throw new InvalidOperationException($"Could not save the controller: {moveControllerError}");
+                controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(controllerPath);
             }
             else
             {
-                if (AssetDatabase.LoadMainAssetAtPath(controllerPath) != null) AssetDatabase.DeleteAsset(controllerPath);
-                controller = AnimatorController.CreateAnimatorControllerAtPath(controllerPath);
-            }
-            var builder = new ControllerBuilder(controller);
-
-            AddParameters(builder, settings);
-
-            BuildInputsLayer(builder, clips, settings);
-            bool earLayer = BuildEarsLayer(builder, clips, profile);
-            bool tailLayer = BuildTailLayer(builder, clips, profile);
-
-            if (!earLayer) result.Warnings.Add("No ear poses move any bones, so no ear layer was generated.");
-            if (!tailLayer) result.Warnings.Add("No tail poses move any bones, so no tail layer was generated.");
-
-            if (settings.fakeDilation && layerControlType != null)
-            {
-                string dilationWarning = BuildFakeDilationLayer(builder, clips, avatar, settings, layerControlType);
-                if (dilationWarning != null) result.Warnings.Add(dilationWarning);
+                ReplaceControllerContent(building, controller);
+                AssetDatabase.DeleteAsset(buildPath);
             }
 
             EditorUtility.SetDirty(controller);
@@ -182,11 +242,28 @@ namespace Pawlygon.UnityTools.Editor
 
             // --- Menu, parameters, prefab ---
             ScriptableObject menu = null;
+            ScriptableObject customMenu = null;
             ScriptableObject parameters = null;
+            string customMenuPath = PawlygonEditorUtils.CombineAssetPath(folder, "Menu - Face Tracking Extras Custom.asset");
             try
             {
-                parameters = SaveOrReplace(CreateExpressionParameters(settings), PawlygonEditorUtils.CombineAssetPath(folder, "Parameters - Face Tracking Extras.asset"));
-                menu = SaveOrReplace(CreateExpressionsMenu(settings), PawlygonEditorUtils.CombineAssetPath(folder, "Menu - Face Tracking Extras.asset"));
+                Texture2D tailJawIcon = EnsureTailJawIcon(folder, result.Warnings);
+                var toggles = layerControlType != null ? customs.Toggles : new List<CustomToggle>();
+                parameters = SaveOrReplace(CreateExpressionParameters(settings, toggles), PawlygonEditorUtils.CombineAssetPath(folder, "Parameters - Face Tracking Extras.asset"));
+                menu = SaveOrReplace(CreateExpressionsMenu(settings, tailJawIcon), PawlygonEditorUtils.CombineAssetPath(folder, "Menu - Face Tracking Extras.asset"));
+
+                if (toggles.Count > 0)
+                {
+                    if (toggles.Count > MaxMenuControls)
+                    {
+                        result.Warnings.Add($"{toggles.Count} custom animations have menu toggles, but a menu holds {MaxMenuControls}; only the first {MaxMenuControls} were added.");
+                    }
+                    customMenu = SaveOrReplace(CreateToggleMenu(toggles.Take(MaxMenuControls)), customMenuPath);
+                }
+                else if (AssetDatabase.LoadMainAssetAtPath(customMenuPath) != null)
+                {
+                    AssetDatabase.DeleteAsset(customMenuPath);
+                }
             }
             catch (Exception ex)
             {
@@ -196,7 +273,7 @@ namespace Pawlygon.UnityTools.Editor
             AssetDatabase.SaveAssets();
 
             string prefabPath = GetPrefabPath(avatar);
-            string prefabError = CreatePrefab(prefabPath, controller, menu, parameters, settings);
+            string prefabError = CreatePrefab(prefabPath, controller, menu, customMenu, parameters, settings);
             if (prefabError != null)
             {
                 result.Warnings.Add(prefabError);
@@ -208,9 +285,33 @@ namespace Pawlygon.UnityTools.Editor
 
             AssetDatabase.SaveAssets();
 
+            Undo.RecordObject(profile, "Generate Face Tracking Extras");
+            profile.lastGeneratedHash = profile.ComputeGenerationHash();
+            EditorUtility.SetDirty(profile);
+            AssetDatabase.SaveAssetIfDirty(profile);
+
             result.Success = true;
             result.Message = $"Generated {clips.Count} clips and {controller.layers.Length} layers in {folder}.";
             return result;
+        }
+
+        /// <summary>
+        /// Another profile already living in <paramref name="folder"/>, which would mean two avatars share one
+        /// output folder (non-prefab avatars with the same name). Null when the folder is free or already ours.
+        /// </summary>
+        private static FTExtrasProfile FindOtherProfileInFolder(FTExtrasProfile profile, string folder)
+        {
+            if (!AssetDatabase.IsValidFolder(folder)) return null;
+
+            foreach (string guid in AssetDatabase.FindAssets($"t:{nameof(FTExtrasProfile)}", new[] { folder }))
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                if (PawlygonEditorUtils.NormalizeAssetPath(Path.GetDirectoryName(path)) != folder) continue;
+
+                var other = AssetDatabase.LoadAssetAtPath<FTExtrasProfile>(path);
+                if (other != null && other != profile) return other;
+            }
+            return null;
         }
 
         // =====================================================================
@@ -285,21 +386,33 @@ namespace Pawlygon.UnityTools.Editor
         }
 
         /// <summary>
-        /// Removes every layer, parameter and sub-asset (state machines, states, transitions, blend trees,
-        /// behaviours) so the controller can be rebuilt in place.
+        /// Replaces <paramref name="target"/>'s layers, parameters and sub-assets with <paramref name="source"/>'s.
+        /// The sub-assets (state machines, states, transitions, blend trees, behaviours) are moved rather than
+        /// copied, so every reference between them stays intact, and the target keeps its GUID.
         /// </summary>
-        private static void ClearController(AnimatorController controller)
+        private static void ReplaceControllerContent(AnimatorController source, AnimatorController target)
         {
-            controller.layers = Array.Empty<AnimatorControllerLayer>();
-            controller.parameters = Array.Empty<AnimatorControllerParameter>();
+            AnimatorControllerLayer[] layers = source.layers;
+            AnimatorControllerParameter[] parameters = source.parameters;
 
-            string path = AssetDatabase.GetAssetPath(controller);
-            foreach (UnityEngine.Object subAsset in AssetDatabase.LoadAllAssetsAtPath(path))
+            target.layers = Array.Empty<AnimatorControllerLayer>();
+            target.parameters = Array.Empty<AnimatorControllerParameter>();
+            foreach (UnityEngine.Object oldSubAsset in AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(target)))
             {
-                if (subAsset == null || subAsset == controller) continue;
-                AssetDatabase.RemoveObjectFromAsset(subAsset);
-                UnityEngine.Object.DestroyImmediate(subAsset, true);
+                if (oldSubAsset == null || oldSubAsset == target) continue;
+                AssetDatabase.RemoveObjectFromAsset(oldSubAsset);
+                UnityEngine.Object.DestroyImmediate(oldSubAsset, true);
             }
+
+            foreach (UnityEngine.Object newSubAsset in AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(source)))
+            {
+                if (newSubAsset == null || newSubAsset == source) continue;
+                AssetDatabase.RemoveObjectFromAsset(newSubAsset);
+                AssetDatabase.AddObjectToAsset(newSubAsset, target);
+            }
+
+            target.parameters = parameters;
+            target.layers = layers;
         }
 
         // =====================================================================
@@ -327,6 +440,7 @@ namespace Pawlygon.UnityTools.Editor
             builder.AddFloat(ParamGazeY, 0f);
             builder.AddFloat(ParamMood, 0f);
             builder.AddFloat(ParamJaw, 0f);
+            builder.AddFloat(ParamTimer, 0f);
         }
 
         // =====================================================================
@@ -341,16 +455,16 @@ namespace Pawlygon.UnityTools.Editor
         /// The toggle is a bool, which cannot weight a blend tree, so it switches between two states: one whose
         /// tree includes the jaw input and one without it.
         /// </summary>
-        private static void BuildInputsLayer(ControllerBuilder builder, ClipStore clips, FTExtrasGenerationSettings settings)
+        private static void BuildInputsLayer(ControllerBuilder builder, ClipStore clips, FTExtrasGenerationSettings settings, CustomAnimationPlan customs)
         {
             AnimatorStateMachine sm = builder.AddLayer("Inputs", 1f, isFirstLayer: true);
 
             AnimatorState jawOn = sm.AddState("Inputs (Jaw On)", new Vector3(300f, 100f));
-            jawOn.motion = InputsTree(builder, clips, settings, includeJaw: true);
+            jawOn.motion = InputsTree(builder, clips, settings, customs, includeJaw: true);
             jawOn.writeDefaultValues = true;
 
             AnimatorState jawOff = sm.AddState("Inputs (Jaw Off)", new Vector3(300f, 200f));
-            jawOff.motion = InputsTree(builder, clips, settings, includeJaw: false);
+            jawOff.motion = InputsTree(builder, clips, settings, customs, includeJaw: false);
             jawOff.writeDefaultValues = true;
 
             sm.defaultState = jawOn;
@@ -362,9 +476,11 @@ namespace Pawlygon.UnityTools.Editor
         /// A Direct blend tree adds its children's values, so a zero clip at weight 1 keeps every output written
         /// and each gated input adds on top of it.
         /// </summary>
-        private static BlendTree InputsTree(ControllerBuilder builder, ClipStore clips, FTExtrasGenerationSettings settings, bool includeJaw)
+        private static BlendTree InputsTree(ControllerBuilder builder, ClipStore clips, FTExtrasGenerationSettings settings, CustomAnimationPlan customs, bool includeJaw)
         {
-            var outputs = new[] { ParamGazeLeftX, ParamGazeRightX, ParamGazeY, ParamMood, ParamJaw };
+            var outputs = new[] { ParamGazeLeftX, ParamGazeRightX, ParamGazeY, ParamMood, ParamJaw }
+                .Concat(customs.Animations.Where(a => a.HasComputedDriver).Select(a => a.Driver))
+                .ToArray();
             AnimationClip zero = clips.Parameters("Inputs - Zero", outputs.Select(p => (p, 0f)).ToArray());
 
             BlendTree root = builder.NewTree(includeJaw ? "Inputs (Jaw On)" : "Inputs (Jaw Off)", BlendTreeType.Direct, null);
@@ -383,8 +499,62 @@ namespace Pawlygon.UnityTools.Editor
                 children.Add(Direct(RangeTree(builder, clips, settings.jawX, settings.jawFullAt, ParamJaw, 1f), settings.lipTrackingActive));
             }
 
+            // Followed averages: each parameter adds half of its value.
+            foreach (CustomAnimationSpec spec in customs.Animations.Where(a => a.HasComputedDriver))
+            {
+                children.Add(Direct(HalfTree(builder, clips, spec.Animation.followParameter, spec.Driver, $"{spec.SafeName} A"), ParamOne));
+                children.Add(Direct(HalfTree(builder, clips, spec.Animation.followParameterB, spec.Driver, $"{spec.SafeName} B"), ParamOne));
+            }
+
+            // Scrubbed custom animations: map the parameter's from..to range onto a 0..1 playback position.
+            foreach (CustomAnimationSpec spec in customs.Animations.Where(a => a.ScrubParameter != null))
+            {
+                children.Add(Direct(PositionTree(builder, clips, spec), ParamOne));
+            }
+
             root.children = children.ToArray();
             return root;
+        }
+
+        /// <summary>
+        /// 1D tree writing half of the input into the output, linear over the parameter's range (at least
+        /// -1..1); two of them in the Direct tree make the average.
+        /// </summary>
+        private static BlendTree HalfTree(ControllerBuilder builder, ClipStore clips, string input, string output, string label)
+        {
+            FTExtrasParameterCatalog.Entry info = FTExtrasParameterCatalog.Describe(input);
+            float low = Mathf.Min(-1f, info.Min);
+            float high = Mathf.Max(1f, info.Max);
+
+            BlendTree tree = builder.NewTree($"Custom - {label} half of {input}", BlendTreeType.Simple1D, input);
+            tree.AddChild(clips.Parameters($"Custom - {label} - Low", (output, low * 0.5f)), low);
+            tree.AddChild(clips.Parameters($"Custom - {label} - High", (output, high * 0.5f)), high);
+            return tree;
+        }
+
+        /// <summary>
+        /// 1D tree mapping the Follow value's from..to range to a 0..1 playback position (clamped outside).
+        /// </summary>
+        private static BlendTree PositionTree(ControllerBuilder builder, ClipStore clips, CustomAnimationSpec spec)
+        {
+            FTExtrasCustomAnimation animation = spec.Animation;
+            AnimationClip start = clips.Parameters($"Custom - {spec.SafeName} - Position 0", (spec.ScrubParameter, 0f));
+            AnimationClip end = clips.Parameters($"Custom - {spec.SafeName} - Position 1", (spec.ScrubParameter, 1f));
+
+            BlendTree tree = builder.NewTree($"{animation.name} position from {spec.Driver}", BlendTreeType.Simple1D, spec.Driver);
+            AddSorted(tree, (animation.fromValue, start), (animation.toValue, end));
+            return tree;
+        }
+
+        /// <summary>
+        /// Adds 1D children in ascending threshold order, which Unity requires.
+        /// </summary>
+        private static void AddSorted(BlendTree tree, params (float Threshold, Motion Motion)[] children)
+        {
+            foreach (var child in children.OrderBy(c => c.Threshold))
+            {
+                tree.AddChild(child.Motion, child.Threshold);
+            }
         }
 
         /// <summary>
@@ -604,6 +774,406 @@ namespace Pawlygon.UnityTools.Editor
             return null;
         }
 
+        // =====================================================================
+        // Custom animations
+        // =====================================================================
+
+        private const string CustomMenuName = "Custom Animations";
+
+        /// <summary>A menu toggle for one custom animation.</summary>
+        private class CustomToggle
+        {
+            public string Label;
+            public string Parameter;
+            public bool DefaultOn;
+        }
+
+        /// <summary>One valid custom animation with its generated parameter names.</summary>
+        private class CustomAnimationSpec
+        {
+            public FTExtrasCustomAnimation Animation;
+            public string SafeName;
+            public List<string> Gates = new List<string>();
+            public string Toggle;
+            public string ScrubParameter;
+
+            /// <summary>Follow: the parameter the layer reads; a computed average when following two.</summary>
+            public string Driver;
+            public bool HasComputedDriver => Driver != null && Driver != Animation.followParameter;
+        }
+
+        /// <summary>
+        /// The enabled, valid custom animations of a profile, with unique parameter names, their tracking gates
+        /// and the problems of the ones that had to be skipped.
+        /// </summary>
+        private class CustomAnimationPlan
+        {
+            public readonly List<CustomAnimationSpec> Animations = new List<CustomAnimationSpec>();
+            public readonly List<string> Problems = new List<string>();
+            public readonly List<CustomToggle> Toggles = new List<CustomToggle>();
+
+            public CustomAnimationPlan(FTExtrasProfile profile, FTExtrasGenerationSettings settings)
+            {
+                var usedNames = new HashSet<string>();
+                foreach (FTExtrasCustomAnimation animation in profile.customAnimations ?? new List<FTExtrasCustomAnimation>())
+                {
+                    if (animation == null || !animation.enabled) continue;
+
+                    string problem = DescribeProblem(animation);
+                    if (problem != null)
+                    {
+                        Problems.Add($"Custom animation '{animation.name}' was skipped: {problem}");
+                        continue;
+                    }
+
+                    string safeName = UniqueName(SafeParameterName(animation.name), usedNames);
+                    var spec = new CustomAnimationSpec { Animation = animation, SafeName = safeName };
+
+                    switch (animation.gate)
+                    {
+                        case FTExtrasTrackingGate.EyeTracking: spec.Gates.Add(settings.eyeTrackingActive); break;
+                        case FTExtrasTrackingGate.LipTracking: spec.Gates.Add(settings.lipTrackingActive); break;
+                        case FTExtrasTrackingGate.Auto:
+                            foreach (string parameter in animation.UsedParameters)
+                            {
+                                string gate = FTExtrasParameterCatalog.IsEyeParameter(parameter) ? settings.eyeTrackingActive : settings.lipTrackingActive;
+                                if (!spec.Gates.Contains(gate)) spec.Gates.Add(gate);
+                            }
+                            break;
+                    }
+
+                    if (animation.menuToggle)
+                    {
+                        spec.Toggle = CustomParamPrefix + safeName;
+                        Toggles.Add(new CustomToggle { Label = animation.name, Parameter = spec.Toggle, DefaultOn = animation.toggleDefaultOn });
+                    }
+
+                    if (animation.mode == FTExtrasCustomMode.Follow)
+                    {
+                        spec.Driver = animation.IsAveraged ? CustomParamPrefix + safeName + "/Value" : animation.followParameter;
+                    }
+
+                    if (animation.mode == FTExtrasCustomMode.Follow && animation.followStyle == FTExtrasFollowStyle.Scrub)
+                    {
+                        spec.ScrubParameter = CustomParamPrefix + safeName + "/Position";
+                    }
+
+                    Animations.Add(spec);
+                }
+            }
+
+            public void AddParameters(ControllerBuilder builder)
+            {
+                foreach (CustomAnimationSpec spec in Animations)
+                {
+                    foreach (string parameter in spec.Animation.UsedParameters) builder.AddFloat(parameter, 0f);
+                    foreach (string gate in spec.Gates) builder.AddFloat(gate, 0f);
+                    if (spec.Toggle != null) builder.AddBool(spec.Toggle, spec.Animation.toggleDefaultOn);
+                    if (spec.ScrubParameter != null) builder.AddFloat(spec.ScrubParameter, 0f);
+                    if (spec.HasComputedDriver) builder.AddFloat(spec.Driver, 0f);
+                }
+            }
+
+            private static string DescribeProblem(FTExtrasCustomAnimation animation)
+            {
+                if (animation.clip == null) return "no animation clip is set.";
+                if (animation.mode == FTExtrasCustomMode.Follow)
+                {
+                    if (string.IsNullOrWhiteSpace(animation.followParameter)) return "no parameter is set.";
+                    if (animation.followAverage && string.IsNullOrWhiteSpace(animation.followParameterB)) return "the parameter to average with is not set.";
+                    if (Mathf.Approximately(animation.fromValue, animation.toValue)) return "'From' and 'To' are the same value.";
+                }
+                else
+                {
+                    if (animation.conditions.Count == 0) return "it has no conditions.";
+                    if (animation.conditions.Any(c => string.IsNullOrWhiteSpace(c.parameter))) return "a condition has no parameter.";
+                }
+                return null;
+            }
+
+            private static string SafeParameterName(string name)
+            {
+                string cleaned = new string((name ?? string.Empty).Select(c => char.IsLetterOrDigit(c) || c == ' ' || c == '_' || c == '-' ? c : '_').ToArray()).Trim();
+                return string.IsNullOrEmpty(cleaned) ? "Custom Animation" : cleaned;
+            }
+
+            private static string UniqueName(string name, HashSet<string> used)
+            {
+                string unique = name;
+                for (int i = 2; !used.Add(unique); i++) unique = $"{name} {i}";
+                return unique;
+            }
+        }
+
+        private static void BuildCustomAnimationLayers(ControllerBuilder builder, ClipStore clips, CustomAnimationPlan customs, Type layerControlType)
+        {
+            foreach (CustomAnimationSpec spec in customs.Animations)
+            {
+                clips.MarkUsed(spec.Animation.clip);
+                clips.MarkUsed(spec.Animation.negativeClip);
+
+                if (spec.Animation.mode == FTExtrasCustomMode.Follow) BuildFollowLayer(builder, clips, spec, layerControlType);
+                else BuildTriggerLayer(builder, clips, spec, layerControlType);
+            }
+        }
+
+        /// <summary>
+        /// Follow a parameter. Off (layer weight 0) while tracking or the toggle is off, and for Fade In also while
+        /// the value is at its resting "from" end, so the layer only takes over its properties while it is
+        /// visible. Active plays a blend tree (Fade In, Two-sided) or the clip at a position (Scrub).
+        /// </summary>
+        private static void BuildFollowLayer(ControllerBuilder builder, ClipStore clips, CustomAnimationSpec spec, Type layerControlType)
+        {
+            FTExtrasCustomAnimation animation = spec.Animation;
+            const float Blend = 0.1f;
+
+            int layerIndex = builder.Controller.layers.Length;
+            AnimatorStateMachine sm = builder.AddLayer($"Custom - {animation.name}", 0f);
+            AnimationClip empty = clips.Empty("Custom - Off");
+
+            AnimatorState active = sm.AddState("Active", new Vector3(300f, 200f));
+            active.writeDefaultValues = true;
+            switch (animation.followStyle)
+            {
+                case FTExtrasFollowStyle.FadeIn:
+                {
+                    BlendTree tree = builder.NewTree($"{animation.name} (fade in)", BlendTreeType.Simple1D, spec.Driver);
+                    AddSorted(tree, (animation.fromValue, empty), (animation.toValue, animation.clip));
+                    active.motion = tree;
+                    break;
+                }
+                case FTExtrasFollowStyle.TwoSided:
+                {
+                    BlendTree tree = builder.NewTree($"{animation.name} (two-sided)", BlendTreeType.Simple1D, spec.Driver);
+                    float middle = (animation.fromValue + animation.toValue) * 0.5f;
+                    AddSorted(tree, (animation.fromValue, animation.negativeClip != null ? (Motion)animation.negativeClip : empty), (middle, empty), (animation.toValue, animation.clip));
+                    active.motion = tree;
+                    break;
+                }
+                case FTExtrasFollowStyle.Scrub:
+                    active.motion = animation.clip;
+                    active.timeParameterActive = true;
+                    active.timeParameter = spec.ScrubParameter;
+                    break;
+            }
+            AddLayerControl(active, layerControlType, layerIndex, 1f, Blend);
+
+            bool fadeInRest = animation.followStyle == FTExtrasFollowStyle.FadeIn;
+            if (spec.Gates.Count == 0 && spec.Toggle == null && !fadeInRest)
+            {
+                // Nothing turns it off: always active.
+                sm.defaultState = active;
+                return;
+            }
+
+            AnimatorState off = sm.AddState("Off", new Vector3(300f, 80f));
+            off.motion = empty;
+            off.writeDefaultValues = true;
+            AddLayerControl(off, layerControlType, layerIndex, 0f, Blend);
+            sm.defaultState = off;
+
+            AnimatorStateTransition start = Transition(off, active, Blend);
+            AddStartConditions(start, spec);
+
+            if (fadeInRest)
+            {
+                // Leave the rest position by a small margin before taking over, and return a little closer to it,
+                // so tracking noise at rest doesn't flicker the layer on and off.
+                float direction = Mathf.Sign(animation.toValue - animation.fromValue);
+                float span = Mathf.Abs(animation.toValue - animation.fromValue);
+                float enter = animation.fromValue + direction * span * 0.02f;
+                float leave = animation.fromValue + direction * span * 0.01f;
+                start.AddCondition(direction > 0f ? AnimatorConditionMode.Greater : AnimatorConditionMode.Less, enter, spec.Driver);
+                Transition(active, off, Blend).AddCondition(direction > 0f ? AnimatorConditionMode.Less : AnimatorConditionMode.Greater, leave, spec.Driver);
+            }
+
+            AddStopTransitions(sm, off, spec, Blend);
+        }
+
+        /// <summary>
+        /// Play when conditions are met: Waiting → Armed (hold timer) → Playing → Done (Play once, waits for the
+        /// conditions to clear) → Cooldown → Waiting. Waiting, Done and Cooldown set the layer weight to 0, so the
+        /// layer never overrides other animations while it isn't playing. Fades are the transition durations.
+        /// </summary>
+        private static void BuildTriggerLayer(ControllerBuilder builder, ClipStore clips, CustomAnimationSpec spec, Type layerControlType)
+        {
+            FTExtrasCustomAnimation animation = spec.Animation;
+            float fadeIn = Mathf.Max(0f, animation.fadeIn);
+            float fadeOut = Mathf.Max(0f, animation.fadeOut);
+
+            int layerIndex = builder.Controller.layers.Length;
+            AnimatorStateMachine sm = builder.AddLayer($"Custom - {animation.name}", 0f);
+            AnimationClip empty = clips.Empty("Custom - Off");
+
+            AnimatorState waiting = sm.AddState("Waiting", new Vector3(300f, 0f));
+            waiting.motion = empty;
+            AddLayerControl(waiting, layerControlType, layerIndex, 0f, fadeOut);
+            sm.defaultState = waiting;
+
+            AnimatorState armed = null;
+            if (animation.holdSeconds > 0f)
+            {
+                armed = sm.AddState("Armed", new Vector3(300f, 120f));
+                armed.motion = clips.Timer($"Custom - {spec.SafeName} - Hold", animation.holdSeconds, ParamTimer);
+            }
+
+            AnimatorState playing = sm.AddState("Playing", new Vector3(300f, 240f));
+            playing.motion = PlayableClip(clips, spec);
+            AddLayerControl(playing, layerControlType, layerIndex, 1f, fadeIn);
+
+            AnimatorState cooldown = null;
+            if (animation.cooldown > 0f)
+            {
+                cooldown = sm.AddState("Cooldown", new Vector3(600f, 120f));
+                cooldown.motion = clips.Timer($"Custom - {spec.SafeName} - Cooldown", animation.cooldown, ParamTimer);
+                AddLayerControl(cooldown, layerControlType, layerIndex, 0f, fadeOut);
+                AnimatorStateTransition ready = Transition(cooldown, waiting, 0f);
+                ready.hasExitTime = true;
+                ready.exitTime = 1f;
+            }
+            AnimatorState after = cooldown ?? waiting;
+
+            foreach (AnimatorState state in sm.states.Select(s => s.state)) state.writeDefaultValues = true;
+
+            // Waiting → Armed / Playing when the conditions are met.
+            AnimatorState first = armed ?? playing;
+            float firstDuration = armed != null ? 0f : fadeIn;
+            if (animation.combine == FTExtrasConditionCombine.All)
+            {
+                AnimatorStateTransition start = Transition(waiting, first, firstDuration);
+                foreach (FTExtrasCondition condition in animation.conditions) AddMet(start, condition);
+                AddStartConditions(start, spec);
+            }
+            else
+            {
+                foreach (FTExtrasCondition condition in animation.conditions)
+                {
+                    AnimatorStateTransition start = Transition(waiting, first, firstDuration);
+                    AddMet(start, condition);
+                    AddStartConditions(start, spec);
+                }
+            }
+
+            if (armed != null)
+            {
+                // Armed → Waiting as soon as the conditions stop holding; Armed → Playing when the timer ends.
+                if (animation.combine == FTExtrasConditionCombine.All)
+                {
+                    foreach (FTExtrasCondition condition in animation.conditions) AddNotMet(Transition(armed, waiting, 0f), condition);
+                }
+                else
+                {
+                    AnimatorStateTransition broken = Transition(armed, waiting, 0f);
+                    foreach (FTExtrasCondition condition in animation.conditions) AddNotMet(broken, condition);
+                }
+
+                AnimatorStateTransition fire = Transition(armed, playing, fadeIn);
+                fire.hasExitTime = true;
+                fire.exitTime = 1f;
+            }
+
+            if (animation.play == FTExtrasTriggerPlay.PlayOnce)
+            {
+                AnimatorState done = sm.AddState("Done", new Vector3(600f, 240f));
+                done.motion = empty;
+                done.writeDefaultValues = true;
+                AddLayerControl(done, layerControlType, layerIndex, 0f, fadeOut);
+
+                AnimatorStateTransition finished = Transition(playing, done, fadeOut);
+                finished.hasExitTime = true;
+                finished.exitTime = 1f;
+
+                AddReleaseTransitions(done, after, animation, 0f);
+            }
+            else
+            {
+                AddReleaseTransitions(playing, after, animation, fadeOut);
+            }
+
+            AddStopTransitions(sm, waiting, spec, fadeOut);
+        }
+
+        /// <summary>
+        /// The clip as the play mode needs it: Loop while active needs a looping clip and Hold while active a
+        /// non-looping one. When the user's clip has the other setting, a copy with the right setting is made in
+        /// the Animations folder; the user's clip is never changed.
+        /// </summary>
+        private static AnimationClip PlayableClip(ClipStore clips, CustomAnimationSpec spec)
+        {
+            AnimationClip clip = spec.Animation.clip;
+            switch (spec.Animation.play)
+            {
+                case FTExtrasTriggerPlay.LoopWhileActive when !clip.isLooping:
+                    return clips.LoopVariant(clip, true, $"Custom - {spec.SafeName} (Loop)");
+                case FTExtrasTriggerPlay.HoldWhileActive when clip.isLooping:
+                    return clips.LoopVariant(clip, false, $"Custom - {spec.SafeName} (Once)");
+                default:
+                    return clip;
+            }
+        }
+
+        private static void AddMet(AnimatorStateTransition transition, FTExtrasCondition condition)
+        {
+            transition.AddCondition(condition.comparison == FTExtrasComparison.Above ? AnimatorConditionMode.Greater : AnimatorConditionMode.Less,
+                condition.threshold, condition.parameter);
+        }
+
+        private static void AddNotMet(AnimatorStateTransition transition, FTExtrasCondition condition)
+        {
+            transition.AddCondition(condition.comparison == FTExtrasComparison.Above ? AnimatorConditionMode.Less : AnimatorConditionMode.Greater,
+                condition.threshold, condition.parameter);
+        }
+
+        /// <summary>
+        /// Transitions out of <paramref name="from"/> once the conditions are clearly over (past the release
+        /// margin): All of → any one released (one transition each); Any of → all released (one transition).
+        /// </summary>
+        private static void AddReleaseTransitions(AnimatorState from, AnimatorState to, FTExtrasCustomAnimation animation, float duration)
+        {
+            float margin = Mathf.Max(0f, animation.releaseMargin);
+            void AddReleased(AnimatorStateTransition transition, FTExtrasCondition condition)
+            {
+                bool above = condition.comparison == FTExtrasComparison.Above;
+                transition.AddCondition(above ? AnimatorConditionMode.Less : AnimatorConditionMode.Greater,
+                    above ? condition.threshold - margin : condition.threshold + margin, condition.parameter);
+            }
+
+            if (animation.combine == FTExtrasConditionCombine.All)
+            {
+                foreach (FTExtrasCondition condition in animation.conditions) AddReleased(Transition(from, to, duration), condition);
+            }
+            else
+            {
+                AnimatorStateTransition released = Transition(from, to, duration);
+                foreach (FTExtrasCondition condition in animation.conditions) AddReleased(released, condition);
+            }
+        }
+
+        /// <summary>Requires face tracking (the animation's gates) and its menu toggle to start.</summary>
+        private static void AddStartConditions(AnimatorStateTransition transition, CustomAnimationSpec spec)
+        {
+            foreach (string gate in spec.Gates) transition.AddCondition(AnimatorConditionMode.Greater, 0.5f, gate);
+            if (spec.Toggle != null) transition.AddCondition(AnimatorConditionMode.If, 0f, spec.Toggle);
+        }
+
+        /// <summary>Any State → <paramref name="off"/> when face tracking stops or the menu toggle is turned off.</summary>
+        private static void AddStopTransitions(AnimatorStateMachine sm, AnimatorState off, CustomAnimationSpec spec, float duration)
+        {
+            foreach (string gate in spec.Gates)
+            {
+                AnimatorStateTransition stop = AnyStateTransition(sm, off);
+                stop.duration = duration;
+                stop.AddCondition(AnimatorConditionMode.Less, 0.5f, gate);
+            }
+
+            if (spec.Toggle != null)
+            {
+                AnimatorStateTransition stop = AnyStateTransition(sm, off);
+                stop.duration = duration;
+                stop.AddCondition(AnimatorConditionMode.IfNot, 0f, spec.Toggle);
+            }
+        }
+
         private static void AddLayerControl(AnimatorState state, Type type, int layer, float goalWeight, float duration)
         {
             StateMachineBehaviour behaviour = state.AddStateMachineBehaviour(type);
@@ -617,27 +1187,97 @@ namespace Pawlygon.UnityTools.Editor
         // Expressions menu / parameters (VRChat SDK, via reflection)
         // =====================================================================
 
-        private static ScriptableObject CreateExpressionParameters(FTExtrasGenerationSettings settings)
+        /// <summary>
+        /// Synced, saved bools: the Tail follows Jaw toggle plus one per custom animation with a menu toggle.
+        /// </summary>
+        private static ScriptableObject CreateExpressionParameters(FTExtrasGenerationSettings settings, IList<CustomToggle> customToggles)
         {
             Type paramsType = FindType("VRCExpressionParameters", typeof(ScriptableObject))
                 ?? throw new InvalidOperationException("VRCExpressionParameters type not found");
             Type paramType = paramsType.GetNestedType("Parameter") ?? throw new InvalidOperationException("Parameter type not found");
 
-            var asset = ScriptableObject.CreateInstance(paramsType);
-            object parameter = Activator.CreateInstance(paramType);
-            SetField(parameter, "name", settings.tailFollowsJawParameter);
-            SetField(parameter, "valueType", "Bool");
-            SetField(parameter, "defaultValue", 1f);
-            SetField(parameter, "saved", true);
-            SetField(parameter, "networkSynced", true);
+            var bools = new List<(string Name, bool DefaultOn)> { (settings.tailFollowsJawParameter, true) };
+            bools.AddRange(customToggles.Select(t => (t.Parameter, t.DefaultOn)));
 
-            Array array = Array.CreateInstance(paramType, 1);
-            array.SetValue(parameter, 0);
+            var asset = ScriptableObject.CreateInstance(paramsType);
+            Array array = Array.CreateInstance(paramType, bools.Count);
+            for (int i = 0; i < bools.Count; i++)
+            {
+                object parameter = Activator.CreateInstance(paramType);
+                SetField(parameter, "name", bools[i].Name);
+                SetField(parameter, "valueType", "Bool");
+                SetField(parameter, "defaultValue", bools[i].DefaultOn ? 1f : 0f);
+                SetField(parameter, "saved", true);
+                SetField(parameter, "networkSynced", true);
+                array.SetValue(parameter, i);
+            }
+
             SetField(asset, "parameters", array);
             return asset;
         }
 
-        private static ScriptableObject CreateExpressionsMenu(FTExtrasGenerationSettings settings)
+        /// <summary>
+        /// A menu of on/off toggles for the custom animations.
+        /// </summary>
+        private static ScriptableObject CreateToggleMenu(IEnumerable<CustomToggle> toggles)
+        {
+            Type menuType = FindType("VRCExpressionsMenu", typeof(ScriptableObject))
+                ?? throw new InvalidOperationException("VRCExpressionsMenu type not found");
+            Type controlType = menuType.GetNestedType("Control") ?? throw new InvalidOperationException("Control type not found");
+            Type controlParamType = controlType.GetNestedType("Parameter") ?? throw new InvalidOperationException("Control.Parameter type not found");
+
+            var menu = ScriptableObject.CreateInstance(menuType);
+            if (!(GetFieldValue(menu, "controls") is IList controls)) return menu;
+
+            foreach (CustomToggle toggle in toggles)
+            {
+                object control = Activator.CreateInstance(controlType);
+                SetField(control, "name", toggle.Label);
+                SetField(control, "type", "Toggle");
+                SetField(control, "value", 1f);
+
+                object parameter = Activator.CreateInstance(controlParamType);
+                SetField(parameter, "name", toggle.Parameter);
+                SetField(control, "parameter", parameter);
+                FillNullArrays(control);
+                controls.Add(control);
+            }
+            return menu;
+        }
+
+        /// <summary>
+        /// Copies the bundled Tail follows Jaw icon into the output folder, so the generated menu does not
+        /// reference a file inside the package. An icon already in the folder is kept, which lets users swap
+        /// in their own. Returns null (with a warning) if the bundled icon is missing.
+        /// </summary>
+        private static Texture2D EnsureTailJawIcon(string folder, List<string> warnings)
+        {
+            string target = PawlygonEditorUtils.CombineAssetPath(folder, TailJawIconFileName);
+            var existing = AssetDatabase.LoadAssetAtPath<Texture2D>(target);
+            if (existing != null) return existing;
+
+            string source = PawlygonEditorUtils.CombineAssetPath(PawlygonPackagePaths.GetPackageRootAssetPath(), BundledTailJawIconPath);
+            if (!AssetDatabase.CopyAsset(source, target))
+            {
+                warnings.Add($"Could not copy the Tail follows Jaw icon from {source}; the menu toggle has no icon.");
+                return null;
+            }
+
+            // VRChat menu icons are small; keep the copy light.
+            if (AssetImporter.GetAtPath(target) is TextureImporter importer)
+            {
+                importer.textureType = TextureImporterType.Default;
+                importer.alphaIsTransparency = true;
+                importer.mipmapEnabled = false;
+                importer.maxTextureSize = MenuIconMaxSize;
+                importer.textureCompression = TextureImporterCompression.CompressedHQ;
+                importer.SaveAndReimport();
+            }
+
+            return AssetDatabase.LoadAssetAtPath<Texture2D>(target);
+        }
+
+        private static ScriptableObject CreateExpressionsMenu(FTExtrasGenerationSettings settings, Texture2D icon)
         {
             Type menuType = FindType("VRCExpressionsMenu", typeof(ScriptableObject))
                 ?? throw new InvalidOperationException("VRCExpressionsMenu type not found");
@@ -649,6 +1289,7 @@ namespace Pawlygon.UnityTools.Editor
             SetField(control, "name", "Tail follows Jaw");
             SetField(control, "type", "Toggle");
             SetField(control, "value", 1f);
+            if (icon != null) SetField(control, "icon", icon);
 
             object parameter = Activator.CreateInstance(controlParamType);
             SetField(parameter, "name", settings.tailFollowsJawParameter);
@@ -666,7 +1307,7 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Saves a prefab holding a VRCFury Full Controller for the generated assets. Returns an error or null.
         /// </summary>
-        private static string CreatePrefab(string prefabPath, AnimatorController controller, ScriptableObject menu, ScriptableObject parameters, FTExtrasGenerationSettings settings)
+        private static string CreatePrefab(string prefabPath, AnimatorController controller, ScriptableObject menu, ScriptableObject customMenu, ScriptableObject parameters, FTExtrasGenerationSettings settings)
         {
             Type furyComponents = AppDomain.CurrentDomain.GetAssemblies()
                 .Select(a => a.GetType("com.vrcfury.api.FuryComponents"))
@@ -687,6 +1328,7 @@ namespace Pawlygon.UnityTools.Editor
                 addController.Invoke(fullController, new object[] { controller, Enum.Parse(layerType, "FX") });
 
                 if (menu != null) RequireMethod(fcType, "AddMenu").Invoke(fullController, new object[] { menu, settings.menuName });
+                if (customMenu != null) RequireMethod(fcType, "AddMenu").Invoke(fullController, new object[] { customMenu, $"{settings.menuName}/{CustomMenuName}" });
                 if (parameters != null) RequireMethod(fcType, "AddParams").Invoke(fullController, new object[] { parameters });
 
                 // Keep every parameter name as-is so the face tracking inputs are shared with VRCFT.
@@ -984,6 +1626,36 @@ namespace Pawlygon.UnityTools.Editor
             public AnimationClip Empty(string name)
             {
                 return Save(name, new AnimationClip());
+            }
+
+            /// <summary>
+            /// A clip that lasts <paramref name="seconds"/> and does nothing visible (it holds a helper parameter at
+            /// 0), used to time states with exit time.
+            /// </summary>
+            public AnimationClip Timer(string name, float seconds, string parameter)
+            {
+                var clip = new AnimationClip();
+                var curve = new AnimationCurve(new Keyframe(0f, 0f), new Keyframe(Mathf.Max(StaticClipLength, seconds), 0f));
+                AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve("", typeof(Animator), parameter), curve);
+                return Save(name, clip);
+            }
+
+            /// <summary>A copy of a user clip with its loop setting changed; the original is left untouched.</summary>
+            public AnimationClip LoopVariant(AnimationClip source, bool loop, string name)
+            {
+                AnimationClip copy = UnityEngine.Object.Instantiate(source);
+                SetLoop(copy, loop);
+                return Save(name, copy);
+            }
+
+            /// <summary>
+            /// Keeps a user clip that happens to live in the Animations folder from being deleted as unused.
+            /// </summary>
+            public void MarkUsed(AnimationClip clip)
+            {
+                if (clip == null) return;
+                string path = AssetDatabase.GetAssetPath(clip);
+                if (!string.IsNullOrEmpty(path)) savedPaths.Add(path);
             }
 
             private static void SetLoop(AnimationClip clip, bool loop)

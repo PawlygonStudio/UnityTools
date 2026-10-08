@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -82,14 +83,21 @@ namespace Pawlygon.UnityTools.Editor
         private void GenerateForTargets()
         {
             var failures = new List<string>();
+            List<FTDiffGenerator> generators = targets.OfType<FTDiffGenerator>().ToList();
 
-            foreach (Object targetObject in targets)
+            // An unchanged FBX produces a patch that does nothing; that is almost always a
+            // forgotten FBX replacement, so ask before generating.
+            List<string> unchangedNames = generators
+                .Where(generator => generator.IsModifiedFbxIdenticalToOriginal())
+                .Select(generator => generator.name)
+                .ToList();
+            if (!FTDiffGenerator.ConfirmGenerationForUnchangedModels(unchangedNames))
             {
-                if (targetObject is not FTDiffGenerator generator)
-                {
-                    continue;
-                }
+                return;
+            }
 
+            foreach (FTDiffGenerator generator in generators)
+            {
                 if (!generator.GenerateDiffFiles(out string errorMessage))
                 {
                     failures.Add($"{generator.name}: {errorMessage}");
@@ -155,6 +163,11 @@ namespace Pawlygon.UnityTools.Editor
             return string.Equals(System.IO.Path.GetExtension(path), ".fbx", System.StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>
+        /// Writes the PatcherHub config for a generator, using the same context building as the
+        /// Avatar Setup Wizard (see <see cref="FTPatchConfigGenerator.BuildContextForGenerator"/>
+        /// for how the values the wizard knows from its avatar entry are derived here).
+        /// </summary>
         private static void GeneratePatchConfig(FTDiffGenerator generator)
         {
             if (!FTPatchConfigGenerator.IsPatcherHubAvailable())
@@ -162,25 +175,12 @@ namespace Pawlygon.UnityTools.Editor
                 return;
             }
 
-            string baseName = generator.GetBaseName();
-            string patcherFolder = generator.GetPatcherFolderAssetPath();
-            if (string.IsNullOrEmpty(baseName) || string.IsNullOrEmpty(patcherFolder))
+            FTPatchConfigGenerator.ConfigContext context = FTPatchConfigGenerator.BuildContextForGenerator(generator);
+            if (context == null)
             {
+                Debug.LogWarning($"[FTDiffGenerator] Could not build a PatcherHub config for '{generator.name}'. Check the FBX references and output directory.", generator);
                 return;
             }
-
-            string diffFilesFolder = patcherFolder + "/data/DiffFiles";
-            string fbxFolder = System.IO.Path.GetDirectoryName(
-                AssetDatabase.GetAssetPath(generator.originalModelFbx))?.Replace('\\', '/');
-
-            var context = new FTPatchConfigGenerator.ConfigContext
-            {
-                OriginalFbx = generator.originalModelFbx,
-                FbxDiffAssetPath = diffFilesFolder + "/" + FTDiffGenerator.GetFbxDiffFileName(baseName),
-                MetaDiffAssetPath = diffFilesFolder + "/" + FTDiffGenerator.GetMetaDiffFileName(baseName),
-                ConfigOutputFolder = patcherFolder,
-                FbxOutputPath = fbxFolder
-            };
 
             FTPatchConfigGenerator.GenerateConfig(context);
         }

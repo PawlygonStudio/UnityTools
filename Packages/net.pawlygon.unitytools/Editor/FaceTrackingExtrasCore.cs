@@ -344,12 +344,22 @@ namespace Pawlygon.UnityTools.Editor
             Type type = target.GetType();
 
             FieldInfo field = type.GetField(name, flags);
-            if (field != null) return field.GetValue(target) as T;
+            if (field != null) return AsLiveValue<T>(field.GetValue(target));
 
             PropertyInfo property = type.GetProperty(name, flags);
-            if (property != null && property.GetIndexParameters().Length == 0) return property.GetValue(target) as T;
+            if (property != null && property.GetIndexParameters().Length == 0) return AsLiveValue<T>(property.GetValue(target));
 
             return null;
+        }
+
+        /// <summary>
+        /// An unassigned or destroyed Unity object field (e.g. a PhysBone with no Root Transform) reads back as a
+        /// non-null placeholder that throws on use; return real null so callers' fallbacks apply.
+        /// </summary>
+        private static T AsLiveValue<T>(object value) where T : class
+        {
+            if (value is UnityEngine.Object unityObject && unityObject == null) return null;
+            return value as T;
         }
 
         // =====================================================================

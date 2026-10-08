@@ -6,7 +6,8 @@ using UnityEngine;
 namespace Pawlygon.UnityTools.Editor
 {
     /// <summary>
-    /// Setup tab: detected bone chains, saving them to the profile, and the rig data export.
+    /// Setup tab: detected bone chains, saving them to the profile (the action bar's main action), and the
+    /// rig data export.
     /// </summary>
     public partial class FaceTrackingExtras
     {
@@ -28,12 +29,9 @@ namespace Pawlygon.UnityTools.Editor
                 {
                     EditorGUILayout.LabelField("Bone Chains", sectionTitleStyle);
                     EditorGUILayout.Space(2f);
-                    EditorGUILayout.LabelField("Find the ear and tail bones on the avatar.", PawlygonEditorUI.SubLabelStyle);
-                    EditorGUILayout.Space(8f);
-                    if (PawlygonEditorUI.DrawPrimaryButton("Detect Ears & Tail", 32f))
-                    {
-                        RunAnalysis();
-                    }
+                    EditorGUILayout.LabelField(
+                        "Find the ear and tail bones on the avatar with Detect Ears & Tail below. The status bar says what went wrong if it fails.",
+                        PawlygonEditorUI.SubLabelStyle);
                 }
                 return;
             }
@@ -41,6 +39,12 @@ namespace Pawlygon.UnityTools.Editor
             using (new EditorGUI.DisabledScope(mode != Mode.Idle))
             {
                 DrawRigSection();
+
+                if (profile != null && !ProfileBelongsToAnotherAvatar && ChainsMatchProfile())
+                {
+                    EditorGUILayout.Space(SectionSpacing);
+                    DrawBaselineSection();
+                }
             }
 
             EditorGUILayout.Space(SectionSpacing);
@@ -125,7 +129,9 @@ namespace Pawlygon.UnityTools.Editor
                 else if (!newRoot.IsChildOf(selectedAvatar.transform))
                 {
                     SetStatus($"'{newRoot.name}' is not part of '{selectedAvatar.name}'.", MessageType.Warning);
-                    return;
+
+                    // The status bar appears below; restart the event so the layout includes it.
+                    GUIUtility.ExitGUI();
                 }
                 else
                 {
@@ -203,6 +209,23 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawSaveChains()
         {
+            if (ProfileBelongsToAnotherAvatar)
+            {
+                bool ownProfile = profile.HasIdentity && profile.BelongsTo(selectedAvatar);
+                EditorGUILayout.HelpBox(
+                    ownProfile
+                        ? $"Some bones saved in '{profile.name}' are missing from this avatar (renamed or deleted). {sessionError}"
+                        : $"The profile '{profile.name}' was made for '{profile.avatarName}', and its bones are not on this avatar. " +
+                          "Click Create New Profile below for this avatar instead of overwriting that one.",
+                    MessageType.Warning);
+                if (!ownProfile)
+                {
+                    EditorGUILayout.Space(4f);
+                    DrawNewProfileBaseline();
+                }
+                return;
+            }
+
             if (profile != null && ChainsMatchProfile())
             {
                 EditorGUILayout.LabelField("<color=#6BCB77>✓</color> Chains saved in the profile.", poseLabelStyle);
@@ -218,14 +241,88 @@ namespace Pawlygon.UnityTools.Editor
 
             EditorGUILayout.HelpBox(
                 profile == null
-                    ? "Save the chains to create this avatar's Face Tracking Extras profile. The bones' current rotations are stored as the rest pose."
-                    : "The chains differ from the saved profile.",
+                    ? "Click Create Profile to save these chains as this avatar's Face Tracking Extras profile. The bones' current rotations are stored as the rest pose."
+                    : "The chains differ from the saved profile. Click Update Profile to save them.",
                 MessageType.Info);
 
-            if (PawlygonEditorUI.DrawPrimaryButton(profile == null ? "Create Profile" : "Update Profile", 28f))
+            if (profile == null)
             {
-                SaveChains();
-                GUIUtility.ExitGUI();
+                EditorGUILayout.Space(4f);
+                DrawNewProfileBaseline();
+            }
+        }
+
+        /// <summary>
+        /// Setup's action bar: detect the chains, create or update the profile, or (when the profile belongs to
+        /// another avatar) create a new one; once the chains are saved, move on to the poses.
+        /// </summary>
+        private void DrawSetupActions()
+        {
+            if (analysis == null || !analysis.Success)
+            {
+                PawlygonEditorUI.BeginActionBar();
+                GUILayout.FlexibleSpace();
+                if (PawlygonEditorUI.DrawPrimaryButton("Detect Ears & Tail", 28f, GUILayout.Width(170f)))
+                {
+                    RunAnalysis();
+                    if (analysis.Success && profile != null)
+                    {
+                        ApplyProfileChains();
+                        BindSession();
+                    }
+                    GUIUtility.ExitGUI();
+                }
+                PawlygonEditorUI.EndActionBar();
+                return;
+            }
+
+            using (new EditorGUI.DisabledScope(mode != Mode.Idle))
+            {
+                PawlygonEditorUI.BeginActionBar();
+
+                if (ProfileBelongsToAnotherAvatar)
+                {
+                    if (PawlygonEditorUI.DrawSecondaryButton("Overwrite That Profile", 28f)
+                        && EditorUtility.DisplayDialog(
+                            "Overwrite Profile",
+                            $"Replace the bone chains in '{profile.name}' (made for '{profile.avatarName}') with this avatar's? Its poses for changed chains are cleared.",
+                            "Overwrite", "Cancel"))
+                    {
+                        SaveChains();
+                        GUIUtility.ExitGUI();
+                    }
+
+                    GUILayout.FlexibleSpace();
+
+                    if (PawlygonEditorUI.DrawPrimaryButton("Create New Profile", 28f, GUILayout.Width(170f)))
+                    {
+                        profile = null;
+                        session = null;
+                        sessionError = null;
+                        SaveChains();
+                        GUIUtility.ExitGUI();
+                    }
+                }
+                else if (profile != null && ChainsMatchProfile())
+                {
+                    GUILayout.FlexibleSpace();
+                    if (PawlygonEditorUI.DrawPrimaryButton("Next: Ears & Tail", 28f, GUILayout.Width(170f)))
+                    {
+                        SwitchTab(Tab.EarsAndTail);
+                        GUIUtility.ExitGUI();
+                    }
+                }
+                else
+                {
+                    GUILayout.FlexibleSpace();
+                    if (PawlygonEditorUI.DrawPrimaryButton(profile == null ? "Create Profile" : "Update Profile", 28f, GUILayout.Width(170f)))
+                    {
+                        SaveChains();
+                        GUIUtility.ExitGUI();
+                    }
+                }
+
+                PawlygonEditorUI.EndActionBar();
             }
         }
 
@@ -247,9 +344,10 @@ namespace Pawlygon.UnityTools.Editor
 
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    if (PawlygonEditorUI.DrawPrimaryButton("Export Rig Data", 28f))
+                    if (PawlygonEditorUI.DrawSecondaryButton("Export Rig Data", 28f))
                     {
                         ExportRigData();
+                        GUIUtility.ExitGUI();
                     }
 
                     using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(lastExportPath)))
@@ -268,7 +366,8 @@ namespace Pawlygon.UnityTools.Editor
             try
             {
                 lastExportPath = FaceTrackingExtrasCore.ExportJson(analysis, selectedChains);
-                SetStatus($"Rig data exported to {lastExportPath}", MessageType.Info);
+                string exportedPath = lastExportPath;
+                SetStatus($"Rig data exported to {exportedPath}", MessageType.Info, "Show File", () => EditorUtility.RevealInFinder(exportedPath));
                 Debug.Log($"{FaceTrackingExtrasCore.LogPrefix} Rig data exported to {lastExportPath}");
             }
             catch (System.Exception ex)

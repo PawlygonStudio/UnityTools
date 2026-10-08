@@ -7,22 +7,45 @@ using UnityEngine;
 namespace Pawlygon.UnityTools.Editor
 {
     /// <summary>
-    /// Standalone editor window that checks meshes for the 60 required Unified Expression blendshapes.
-    /// Supports two input modes: selecting a scene GameObject (scans all SkinnedMeshRenderers)
-    /// or dragging in an FBX/Model asset (loads mesh sub-assets).
+    /// "Face Tracking Blendshapes" window: checks meshes for the Unified Expressions blendshapes that VRChat
+    /// face tracking drives. Accepts a scene avatar (scans its SkinnedMeshRenderers), a prefab asset (same,
+    /// through the prefab's hierarchy) or a model asset (its mesh sub-assets). The check is read-only and runs
+    /// automatically whenever the input or the project changes.
     /// </summary>
     public class UnifiedExpressionChecker : EditorWindow
     {
         private const string MenuPath = "!Pawlygon/Tools/Face Tracking Blendshapes";
-        private const float SectionSpacing = 10f;
+        private const string WindowTitle = "Face Tracking Blendshapes";
+        private const string DocsUrl = "https://docs.vrcft.io/docs/tutorial-avatars/tutorial-avatars-extras/unified-blendshapes";
+        private const float SectionSpacing = 8f;
+
+        /// <summary>Face regions, in display order, taken from the required names' prefixes.</summary>
+        private static readonly string[] Regions = { "Brow", "Eye", "Cheek", "Jaw", "Lip", "Mouth", "Nose", "Tongue" };
+
+        private static readonly string[] Required = PawlygonEditorUtils.RequiredUnifiedExpressionBlendshapes;
+
+        private static readonly Dictionary<string, int> RequiredPerRegion = Required
+            .GroupBy(GetRegion)
+            .ToDictionary(g => g.Key, g => g.Count());
 
         // --- State ---
         [SerializeField] private Vector2 scrollPosition;
-        private GameObject selectedInput;
+        [SerializeField] private GameObject selectedInput;
         private List<MeshAnalysis> results;
-        private bool showAllMeshes;
-        private string statusMessage;
-        private MessageType statusMessageType;
+        private string sourceKind;
+        private bool needsCheck = true;
+        private bool showMeshesWithout;
+
+        /// <summary>Foldout states the user changed, by <see cref="MeshAnalysis.Key"/>; others use the default.</summary>
+        private readonly Dictionary<string, bool> foldouts = new Dictionary<string, bool>();
+        private readonly PawlygonStatus status = new PawlygonStatus();
+
+        // --- Styles ---
+        private GUIStyle meshBoxStyle;
+        private GUIStyle mutedMiniStyle;
+        private GUIStyle wrappedMiniStyle;
+        private GUIStyle boldFoldoutStyle;
+        private bool stylesBuiltForProSkin;
 
         // =====================================================================
         // Data model
@@ -30,33 +53,54 @@ namespace Pawlygon.UnityTools.Editor
 
         private class MeshAnalysis
         {
+            public string Key;
             public string MeshName;
             public string SourcePath;
             public int TotalBlendshapeCount;
+
+            /// <summary>Required names not found with exactly this spelling (case-sensitive).</summary>
             public string[] MissingBlendshapes;
-            public bool HasAnyUnifiedBlendshapes;
-            public bool ShowDetails;
+
+            /// <summary>Required name to the mesh's name that matches it only when ignoring case.</summary>
+            public Dictionary<string, string> CaseMismatches;
+
+            public int FoundCount;
+            public UnityEngine.Object PingTarget;
+
+            public bool HasAnyUnifiedBlendshapes => FoundCount > 0 || CaseMismatches.Count > 0;
+            public bool IsComplete => HasAnyUnifiedBlendshapes && MissingBlendshapes.Length == 0;
         }
 
         // =====================================================================
         // Window lifecycle
         // =====================================================================
 
-        [MenuItem(MenuPath)]
+        [MenuItem(MenuPath, priority = 20)] // Tools: Check
         public static void ShowWindow()
         {
             UnifiedExpressionChecker window = GetWindow<UnifiedExpressionChecker>();
-            window.titleContent = new GUIContent("Face Tracking Blendshapes");
-            window.minSize = new Vector2(520f, 400f);
+            window.titleContent = new GUIContent(WindowTitle);
+            window.minSize = new Vector2(520f, 460f);
         }
 
         private void OnEnable()
         {
-            AutoSelectFirstSceneRoot();
+            titleContent = new GUIContent(WindowTitle);
+            if (selectedInput == null)
+            {
+                selectedInput = PawlygonEditorUtils.GetPreferredAvatar();
+            }
+            needsCheck = true;
         }
 
-        private void OnSelectionChange()
+        // The meshes can change while the window is open (re-import, renamed blendshapes, edited hierarchy).
+        private void OnFocus() => RequestCheck();
+        private void OnProjectChange() => RequestCheck();
+        private void OnHierarchyChange() => RequestCheck();
+
+        private void RequestCheck()
         {
+            needsCheck = true;
             Repaint();
         }
 
@@ -67,275 +111,394 @@ namespace Pawlygon.UnityTools.Editor
         private void OnGUI()
         {
             PawlygonEditorUI.EnsureStyles();
+            EnsureStyles();
+
+            // Check before anything is laid out, so the Layout and Repaint passes draw the same controls.
+            if (needsCheck && Event.current.type == EventType.Layout)
+            {
+                Check();
+            }
 
             PawlygonEditorUI.DrawHeader(
-                "Face Tracking Blendshapes",
-                "Check meshes for the required Unified Expression blendshapes used by VRC face tracking.");
-            EditorGUILayout.Space(SectionSpacing);
+                WindowTitle,
+                "Checks your meshes for every Unified Expressions blendshape face tracking needs.",
+                DocsUrl);
+
+            if (PawlygonEditorUI.DrawAvatarBar(this, ref selectedInput, "Avatar or Model", allowAssets: true))
+            {
+                status.Clear();
+                foldouts.Clear();
+                showMeshesWithout = false;
+                needsCheck = true;
+                GUIUtility.ExitGUI();
+            }
+
+            EditorGUILayout.Space(4f);
 
             scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition, GUILayout.ExpandHeight(true));
-
-            DrawInputSection();
-            EditorGUILayout.Space(SectionSpacing);
-
-            if (results != null && results.Count > 0)
-            {
-                DrawResults();
-            }
-            else if (results != null && results.Count == 0)
-            {
-                EditorGUILayout.HelpBox("No meshes with blendshapes were found.", MessageType.Info);
-            }
-
-            if (!string.IsNullOrEmpty(statusMessage))
-            {
-                EditorGUILayout.Space();
-                EditorGUILayout.HelpBox(statusMessage, statusMessageType);
-            }
-
+            DrawBody();
             EditorGUILayout.EndScrollView();
 
-            EditorGUILayout.Space(8f);
+            PawlygonEditorUI.DrawStatusBar(status);
             PawlygonEditorUI.DrawFooter();
         }
 
-        // =====================================================================
-        // Input section
-        // =====================================================================
-
-        private void DrawInputSection()
+        private void EnsureStyles()
         {
-            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
-            {
-                EditorGUILayout.LabelField("Input", new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 });
-                EditorGUILayout.Space(4f);
+            if (meshBoxStyle != null && stylesBuiltForProSkin == EditorGUIUtility.isProSkin) return;
+            stylesBuiltForProSkin = EditorGUIUtility.isProSkin;
 
-                selectedInput = (GameObject)EditorGUILayout.ObjectField("GameObject / Model", selectedInput, typeof(GameObject), true);
+            meshBoxStyle = new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) };
 
-                EditorGUILayout.Space(2f);
-                EditorGUILayout.LabelField("Select a GameObject from the scene or drag an FBX/Model asset from the Project.", PawlygonEditorUI.SubLabelStyle);
+            mutedMiniStyle = new GUIStyle(EditorStyles.miniLabel) { clipping = TextClipping.Clip };
+            mutedMiniStyle.normal.textColor = PawlygonEditorUI.MutedColor;
 
-                EditorGUILayout.Space(8f);
+            wrappedMiniStyle = new GUIStyle(EditorStyles.miniLabel) { wordWrap = true, richText = true };
 
-                using (new EditorGUI.DisabledScope(selectedInput == null))
-                {
-                    if (PawlygonEditorUI.DrawPrimaryButton("Check Blendshapes", 32f))
-                    {
-                        AnalyzeBlendshapes();
-
-                        // The results section below changes shape after analysis; abort this
-                        // event so IMGUI re-lays out instead of drawing against stale layout.
-                        GUIUtility.ExitGUI();
-                    }
-                }
-            }
+            boldFoldoutStyle = new GUIStyle(EditorStyles.foldout) { fontStyle = FontStyle.Bold };
         }
 
-        // =====================================================================
-        // Analysis
-        // =====================================================================
-
-        private void AnalyzeBlendshapes()
+        private void DrawBody()
         {
-            results = new List<MeshAnalysis>();
-            statusMessage = null;
-            showAllMeshes = false;
-
             if (selectedInput == null)
             {
+                EditorGUILayout.HelpBox(
+                    "Pick an avatar in the scene, or drag a model (FBX) or prefab from the Project window into the field above.",
+                    MessageType.Info);
                 return;
             }
 
+            if (results == null) return;
+
+            if (results.Count == 0)
+            {
+                EditorGUILayout.HelpBox(
+                    $"'{selectedInput.name}' has no meshes with blendshapes. Pick the avatar (or the model) that contains the face mesh.",
+                    MessageType.Warning);
+                return;
+            }
+
+            DrawSummary();
+            EditorGUILayout.Space(SectionSpacing);
+            DrawMeshList();
+        }
+
+        // =====================================================================
+        // Check
+        // =====================================================================
+
+        private void Check()
+        {
+            needsCheck = false;
+            results = null;
+            sourceKind = null;
+            if (selectedInput == null) return;
+
+            results = new List<MeshAnalysis>();
             bool isAsset = EditorUtility.IsPersistent(selectedInput);
 
-            if (isAsset)
+            // Model files store their meshes as sub-assets. Prefab assets (and scene objects) only reference
+            // meshes from their renderers, so they are read through the hierarchy instead.
+            bool isModelAsset = isAsset && AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(selectedInput)) is ModelImporter;
+
+            if (isModelAsset)
             {
+                sourceKind = "model";
                 AnalyzeModelAsset(selectedInput);
             }
             else
             {
-                AnalyzeSceneObject(selectedInput);
+                sourceKind = isAsset ? "prefab" : "scene object";
+                AnalyzeHierarchy(selectedInput);
             }
 
-            // Build status message
-            if (results.Count == 0)
-            {
-                statusMessage = "No meshes with blendshapes were found.";
-                statusMessageType = MessageType.Warning;
-                return;
-            }
-
-            int relevantCount = results.Count(r => r.HasAnyUnifiedBlendshapes);
-            int completeCount = results.Count(r => r.MissingBlendshapes.Length == 0 && r.HasAnyUnifiedBlendshapes);
-            int incompleteCount = relevantCount - completeCount;
-            int otherCount = results.Count - relevantCount;
-
-            string source = isAsset ? "model asset" : "scene GameObject";
-            statusMessage = $"Checked {results.Count} mesh{(results.Count == 1 ? "" : "es")} from {source}. " +
-                $"{relevantCount} with Unified Expression blendshapes ({completeCount} complete, {incompleteCount} incomplete)" +
-                (otherCount > 0 ? $", {otherCount} without." : ".");
-            statusMessageType = incompleteCount > 0 ? MessageType.Warning : MessageType.Info;
+            // Meshes that need work first, then complete ones, then meshes without any face tracking shapes.
+            results = results
+                .OrderBy(r => r.HasAnyUnifiedBlendshapes ? (r.IsComplete ? 1 : 0) : 2)
+                .ToList();
         }
 
-        private void AnalyzeSceneObject(GameObject sceneObject)
+        private void AnalyzeHierarchy(GameObject root)
         {
-            SkinnedMeshRenderer[] renderers = sceneObject.GetComponentsInChildren<SkinnedMeshRenderer>(true);
-
-            foreach (SkinnedMeshRenderer renderer in renderers)
+            foreach (SkinnedMeshRenderer renderer in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
             {
                 Mesh mesh = renderer.sharedMesh;
+                if (mesh == null || mesh.blendShapeCount == 0) continue;
 
-                if (mesh == null || mesh.blendShapeCount == 0)
-                {
-                    continue;
-                }
-
-                string hierarchyPath = GetRelativeHierarchyPath(sceneObject.transform, renderer.transform);
-                string[] missing = PawlygonEditorUtils.GetMissingRequiredUnifiedBlendshapes(mesh);
-                bool hasAny = missing.Length < PawlygonEditorUtils.RequiredUnifiedExpressionBlendshapes.Length;
-
-                results.Add(new MeshAnalysis
-                {
-                    MeshName = string.IsNullOrEmpty(mesh.name) ? renderer.name : mesh.name,
-                    SourcePath = hierarchyPath,
-                    TotalBlendshapeCount = mesh.blendShapeCount,
-                    MissingBlendshapes = missing,
-                    HasAnyUnifiedBlendshapes = hasAny,
-                    ShowDetails = false
-                });
+                string path = GetRelativeHierarchyPath(root.transform, renderer.transform);
+                results.Add(AnalyzeMesh(mesh, string.IsNullOrEmpty(mesh.name) ? renderer.name : mesh.name, path, renderer));
             }
         }
 
         private void AnalyzeModelAsset(GameObject modelAsset)
         {
             string assetPath = AssetDatabase.GetAssetPath(modelAsset);
+            if (string.IsNullOrEmpty(assetPath)) return;
 
-            if (string.IsNullOrEmpty(assetPath))
-            {
-                return;
-            }
-
-            UnityEngine.Object[] allSubAssets = AssetDatabase.LoadAllAssetsAtPath(assetPath);
-
-            if (allSubAssets == null)
-            {
-                return;
-            }
-
-            foreach (UnityEngine.Object subAsset in allSubAssets)
+            foreach (UnityEngine.Object subAsset in AssetDatabase.LoadAllAssetsAtPath(assetPath))
             {
                 if (subAsset is Mesh mesh && mesh.blendShapeCount > 0)
                 {
-                    string[] missing = PawlygonEditorUtils.GetMissingRequiredUnifiedBlendshapes(mesh);
-                    bool hasAny = missing.Length < PawlygonEditorUtils.RequiredUnifiedExpressionBlendshapes.Length;
-
-                    results.Add(new MeshAnalysis
-                    {
-                        MeshName = string.IsNullOrEmpty(mesh.name) ? "Unnamed Mesh" : mesh.name,
-                        SourcePath = assetPath,
-                        TotalBlendshapeCount = mesh.blendShapeCount,
-                        MissingBlendshapes = missing,
-                        HasAnyUnifiedBlendshapes = hasAny,
-                        ShowDetails = false
-                    });
+                    results.Add(AnalyzeMesh(mesh, string.IsNullOrEmpty(mesh.name) ? "Unnamed Mesh" : mesh.name, assetPath, mesh));
                 }
             }
         }
 
+        private static MeshAnalysis AnalyzeMesh(Mesh mesh, string meshName, string sourcePath, UnityEngine.Object pingTarget)
+        {
+            string[] missing = PawlygonEditorUtils.GetMissingRequiredUnifiedBlendshapes(mesh);
+
+            // Names that only differ in upper/lower case: animations bind by exact name, so they don't work.
+            var namesIgnoringCase = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < mesh.blendShapeCount; i++)
+            {
+                string name = mesh.GetBlendShapeName(i);
+                if (!string.IsNullOrWhiteSpace(name) && !namesIgnoringCase.ContainsKey(name))
+                {
+                    namesIgnoringCase.Add(name, name);
+                }
+            }
+
+            var caseMismatches = new Dictionary<string, string>();
+            foreach (string required in missing)
+            {
+                if (namesIgnoringCase.TryGetValue(required, out string actual))
+                {
+                    caseMismatches[required] = actual;
+                }
+            }
+
+            return new MeshAnalysis
+            {
+                Key = sourcePath + "|" + meshName,
+                MeshName = meshName,
+                SourcePath = sourcePath,
+                TotalBlendshapeCount = mesh.blendShapeCount,
+                MissingBlendshapes = missing,
+                CaseMismatches = caseMismatches,
+                FoundCount = Required.Length - missing.Length,
+                PingTarget = pingTarget
+            };
+        }
+
         // =====================================================================
-        // Results display
+        // Summary
         // =====================================================================
 
-        private void DrawResults()
+        private void DrawSummary()
         {
+            int complete = results.Count(r => r.IsComplete);
+            int incomplete = results.Count(r => r.HasAnyUnifiedBlendshapes && !r.IsComplete);
+            int without = results.Count - complete - incomplete;
+
             using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
             {
-                EditorGUILayout.LabelField("Results", new GUIStyle(EditorStyles.boldLabel) { fontSize = 13 });
-                EditorGUILayout.Space(4f);
+                PawlygonEditorUI.DrawSectionHeader("Summary",
+                    $"Face tracking moves the face through {Required.Length} Unified Expressions blendshapes, found by name. " +
+                    "Names must match exactly, including upper and lower case.");
 
-                int relevantCount = results.Count(r => r.HasAnyUnifiedBlendshapes);
-                int completeCount = results.Count(r => r.MissingBlendshapes.Length == 0 && r.HasAnyUnifiedBlendshapes);
-                int incompleteCount = relevantCount - completeCount;
-                int otherCount = results.Count - relevantCount;
-
-                EditorGUILayout.LabelField(
-                    $"{relevantCount} mesh{(relevantCount == 1 ? "" : "es")} with Unified Expression blendshapes \u2014 " +
-                    $"{completeCount} complete, {incompleteCount} incomplete",
-                    PawlygonEditorUI.SubLabelStyle);
-
-                if (otherCount > 0)
+                using (new EditorGUILayout.HorizontalScope())
                 {
-                    showAllMeshes = EditorGUILayout.ToggleLeft(
-                        $"Show all meshes ({otherCount} without Unified Expression blendshapes)",
-                        showAllMeshes);
+                    GUILayout.Label($"{results.Count} mesh{(results.Count != 1 ? "es" : "")} checked ({sourceKind})", GUILayout.ExpandWidth(false));
+                    GUILayout.Space(6f);
+                    if (complete > 0) PawlygonEditorUI.DrawBadge($"{complete} complete", PawlygonEditorUI.BadgeKind.Ok, "Every Unified Expressions blendshape is there.");
+                    if (incomplete > 0) PawlygonEditorUI.DrawBadge($"{incomplete} incomplete", PawlygonEditorUI.BadgeKind.Warning, "Has some Unified Expressions blendshapes, but not all.");
+                    if (without > 0) PawlygonEditorUI.DrawBadge($"{without} without UE shapes", PawlygonEditorUI.BadgeKind.Neutral, "Has blendshapes, but none of the Unified Expressions ones (e.g. a body or clothing mesh).");
+                    GUILayout.FlexibleSpace();
                 }
 
-                EditorGUILayout.Space(8f);
-
-                foreach (MeshAnalysis meshResult in results)
-                {
-                    if (!meshResult.HasAnyUnifiedBlendshapes && !showAllMeshes)
-                    {
-                        continue;
-                    }
-
-                    DrawMeshResult(meshResult);
-                }
-            }
-        }
-
-        private void DrawMeshResult(MeshAnalysis meshResult)
-        {
-            using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 6, 6) }))
-            {
-                EditorGUILayout.LabelField(meshResult.MeshName, EditorStyles.boldLabel);
-                EditorGUILayout.LabelField(meshResult.SourcePath, PawlygonEditorUI.RichMiniLabelStyle);
-                EditorGUILayout.LabelField($"{meshResult.TotalBlendshapeCount} total blendshapes", PawlygonEditorUI.RichMiniLabelStyle);
-
                 EditorGUILayout.Space(4f);
-
-                if (meshResult.MissingBlendshapes.Length == 0)
+                string verdict;
+                if (incomplete > 0)
                 {
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        GUILayout.Label(EditorGUIUtility.IconContent("TestPassed"), GUILayout.Width(18f), GUILayout.Height(16f));
-                        EditorGUILayout.LabelField("All Unified Expression Blendshapes found", PawlygonEditorUI.RichMiniLabelStyle);
-                    }
+                    verdict = "Missing blendshapes won't move with face tracking. Add or rename them in your 3D software, then re-import the model; this window updates on its own.";
+                }
+                else if (complete > 0)
+                {
+                    string names = string.Join(", ", results.Where(r => r.IsComplete).Select(r => $"'{r.MeshName}'"));
+                    verdict = $"Ready for face tracking: {names} {(complete == 1 ? "has" : "have")} every Unified Expressions blendshape.";
                 }
                 else
                 {
-                    using (new EditorGUILayout.HorizontalScope())
+                    verdict = "None of these meshes has Unified Expressions blendshapes. Face tracking needs them on the face mesh; the ? button above opens the guide.";
+                }
+                EditorGUILayout.LabelField(verdict, PawlygonEditorUI.SubLabelStyle);
+            }
+        }
+
+        // =====================================================================
+        // Mesh list
+        // =====================================================================
+
+        private void DrawMeshList()
+        {
+            foreach (MeshAnalysis mesh in results.Where(r => r.HasAnyUnifiedBlendshapes))
+            {
+                DrawMeshResult(mesh);
+            }
+
+            int withoutCount = results.Count(r => !r.HasAnyUnifiedBlendshapes);
+            if (withoutCount == 0) return;
+
+            // Draw with this event's value so the layout matches; the new value shows on the next repaint.
+            bool show = showMeshesWithout;
+            EditorGUILayout.Space(2f);
+            showMeshesWithout = EditorGUILayout.ToggleLeft(
+                $"Show {withoutCount} mesh{(withoutCount != 1 ? "es" : "")} without Unified Expressions blendshapes", show);
+
+            if (!show) return;
+
+            foreach (MeshAnalysis mesh in results.Where(r => !r.HasAnyUnifiedBlendshapes))
+            {
+                DrawMeshResult(mesh);
+            }
+        }
+
+        private void DrawMeshResult(MeshAnalysis mesh)
+        {
+            bool expandable = mesh.HasAnyUnifiedBlendshapes && !mesh.IsComplete;
+            bool expanded = expandable && (foldouts.TryGetValue(mesh.Key, out bool stored) ? stored : true);
+
+            using (new EditorGUILayout.VerticalScope(meshBoxStyle))
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    var nameContent = new GUIContent(mesh.MeshName, $"{mesh.SourcePath}\n{mesh.TotalBlendshapeCount} blendshapes in total");
+                    if (expandable)
                     {
-                        GUILayout.Label(EditorGUIUtility.IconContent("console.warnicon.sml"), GUILayout.Width(18f), GUILayout.Height(16f));
-                        EditorGUILayout.LabelField(
-                            $"Missing {meshResult.MissingBlendshapes.Length} of {PawlygonEditorUtils.RequiredUnifiedExpressionBlendshapes.Length} Unified Expression Blendshapes",
-                            PawlygonEditorUI.RichMiniLabelStyle);
+                        Rect rect = GUILayoutUtility.GetRect(nameContent, boldFoldoutStyle, GUILayout.ExpandWidth(false));
+                        bool newExpanded = EditorGUI.Foldout(rect, expanded, nameContent, true, boldFoldoutStyle);
+                        if (newExpanded != expanded) foldouts[mesh.Key] = newExpanded;
+                    }
+                    else
+                    {
+                        GUILayout.Label(nameContent, EditorStyles.boldLabel, GUILayout.ExpandWidth(false));
                     }
 
-                    meshResult.ShowDetails = EditorGUILayout.Foldout(
-                        meshResult.ShowDetails,
-                        $"Show missing blendshapes ({meshResult.MissingBlendshapes.Length})",
-                        true);
+                    GUILayout.Label(new GUIContent(mesh.SourcePath, mesh.SourcePath), mutedMiniStyle, GUILayout.MinWidth(20f));
+                    GUILayout.FlexibleSpace();
 
-                    if (meshResult.ShowDetails)
+                    if (mesh.HasAnyUnifiedBlendshapes)
                     {
-                        using (new EditorGUILayout.VerticalScope(new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(10, 10, 6, 6) }))
-                        {
-                            foreach (string blendshapeName in meshResult.MissingBlendshapes)
-                            {
-                                EditorGUILayout.LabelField($"- {blendshapeName}", PawlygonEditorUI.RichMiniLabelStyle);
-                            }
-                        }
+                        GUILayout.Label($"{mesh.FoundCount}/{Required.Length}", mutedMiniStyle, GUILayout.ExpandWidth(false));
                     }
+                    DrawMeshBadge(mesh);
+                }
+
+                if (expanded)
+                {
+                    EditorGUILayout.Space(4f);
+                    DrawCaseMismatches(mesh);
+                    DrawMissingByRegion(mesh);
+                    DrawMeshActions(mesh);
                 }
             }
 
             EditorGUILayout.Space(2f);
         }
 
+        private static void DrawMeshBadge(MeshAnalysis mesh)
+        {
+            if (mesh.IsComplete)
+            {
+                PawlygonEditorUI.DrawBadge("Complete", PawlygonEditorUI.BadgeKind.Ok, "Every Unified Expressions blendshape is there.");
+            }
+            else if (mesh.HasAnyUnifiedBlendshapes)
+            {
+                PawlygonEditorUI.DrawBadge($"{mesh.MissingBlendshapes.Length} missing", PawlygonEditorUI.BadgeKind.Warning,
+                    "These blendshapes won't move with face tracking until they are added or renamed.");
+            }
+            else
+            {
+                PawlygonEditorUI.DrawBadge("No UE shapes", PawlygonEditorUI.BadgeKind.Neutral,
+                    $"{mesh.TotalBlendshapeCount} blendshapes, none of them Unified Expressions. Fine for body or clothing meshes.");
+            }
+        }
+
+        private void DrawCaseMismatches(MeshAnalysis mesh)
+        {
+            if (mesh.CaseMismatches.Count == 0) return;
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                PawlygonEditorUI.DrawBadge("Wrong case", PawlygonEditorUI.BadgeKind.Warning,
+                    "Face tracking finds blendshapes by their exact name, so 'jawopen' is not 'JawOpen'.");
+                GUILayout.Label($"{mesh.CaseMismatches.Count} name{(mesh.CaseMismatches.Count != 1 ? "s" : "")} only differ in upper/lower case",
+                    mutedMiniStyle, GUILayout.MinWidth(20f));
+            }
+
+            foreach (KeyValuePair<string, string> mismatch in mesh.CaseMismatches)
+            {
+                EditorGUILayout.LabelField(
+                    $"• found '{mismatch.Value}': names are case-sensitive, rename it to '<b>{mismatch.Key}</b>'", wrappedMiniStyle);
+            }
+
+            EditorGUILayout.Space(4f);
+        }
+
+        private void DrawMissingByRegion(MeshAnalysis mesh)
+        {
+            foreach (string region in Regions.Append("Other"))
+            {
+                string[] missing = mesh.MissingBlendshapes.Where(n => GetRegion(n) == region).ToArray();
+                if (missing.Length == 0) continue;
+
+                string[] absent = missing.Where(n => !mesh.CaseMismatches.ContainsKey(n)).ToArray();
+                int wrongCase = missing.Length - absent.Length;
+                RequiredPerRegion.TryGetValue(region, out int regionTotal);
+
+                string countText = $"{missing.Length} of {regionTotal} missing" + (wrongCase > 0 ? $" ({wrongCase} wrong case)" : "");
+                EditorGUILayout.LabelField($"<b>{region}</b>  {countText}", wrappedMiniStyle);
+
+                if (absent.Length > 0)
+                {
+                    using (new EditorGUI.IndentLevelScope())
+                    {
+                        EditorGUILayout.LabelField(string.Join(", ", absent), wrappedMiniStyle);
+                    }
+                }
+            }
+        }
+
+        private void DrawMeshActions(MeshAnalysis mesh)
+        {
+            EditorGUILayout.Space(4f);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.FlexibleSpace();
+
+                if (mesh.PingTarget != null && GUILayout.Button(new GUIContent("Ping", "Show this mesh in the Hierarchy or Project window."),
+                        EditorStyles.miniButtonLeft, GUILayout.Width(50f)))
+                {
+                    PawlygonStatus.Ping(mesh.PingTarget)();
+                }
+
+                if (GUILayout.Button(new GUIContent("Copy Missing Names", "Copies the missing blendshape names (one per line, with the correct spelling)."),
+                        mesh.PingTarget != null ? EditorStyles.miniButtonRight : EditorStyles.miniButton, GUILayout.Width(130f)))
+                {
+                    EditorGUIUtility.systemCopyBuffer = string.Join("\n", mesh.MissingBlendshapes);
+                    status.Info($"Copied {mesh.MissingBlendshapes.Length} missing blendshape name{(mesh.MissingBlendshapes.Length != 1 ? "s" : "")} from '{mesh.MeshName}' to the clipboard.");
+
+                    // The status bar appears below; restart so the layout includes it.
+                    GUIUtility.ExitGUI();
+                }
+            }
+        }
+
         // =====================================================================
         // Utility
         // =====================================================================
+
+        /// <summary>The face region of a required name, from its prefix ("JawOpen" is Jaw), or "Other".</summary>
+        private static string GetRegion(string blendshapeName)
+        {
+            foreach (string region in Regions)
+            {
+                if (blendshapeName.StartsWith(region, StringComparison.Ordinal)) return region;
+            }
+
+            return "Other";
+        }
 
         private static string GetRelativeHierarchyPath(Transform root, Transform target)
         {
@@ -355,53 +518,6 @@ namespace Pawlygon.UnityTools.Editor
 
             parts.Reverse();
             return string.Join("/", parts);
-        }
-
-        private void AutoSelectFirstSceneRoot()
-        {
-            if (selectedInput != null)
-            {
-                return;
-            }
-
-            var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-
-            if (!activeScene.IsValid() || !activeScene.isLoaded)
-            {
-                return;
-            }
-
-            GameObject[] rootObjects = activeScene.GetRootGameObjects();
-
-            if (rootObjects == null || rootObjects.Length == 0)
-            {
-                return;
-            }
-
-            // Prefer a root object with a SkinnedMeshRenderer (has blendshapes to check)
-            foreach (GameObject root in rootObjects)
-            {
-                if (root.GetComponentInChildren<SkinnedMeshRenderer>(true) != null)
-                {
-                    selectedInput = root;
-                    return;
-                }
-            }
-
-            // Fall back to first root with a VRCAvatarDescriptor
-            Type descriptorType = PawlygonEditorUtils.FindVRCAvatarDescriptorType();
-
-            if (descriptorType != null)
-            {
-                foreach (GameObject root in rootObjects)
-                {
-                    if (root.GetComponentInChildren(descriptorType, true) != null)
-                    {
-                        selectedInput = root;
-                        return;
-                    }
-                }
-            }
         }
     }
 }

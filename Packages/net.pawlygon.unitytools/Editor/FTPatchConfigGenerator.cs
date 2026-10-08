@@ -106,6 +106,214 @@ namespace Pawlygon.UnityTools.Editor
             return FindFTPatchConfigType();
         }
 
+        // =====================================================================
+        // Context building (shared by the Avatar Setup Wizard and the diff generator inspector)
+        // =====================================================================
+
+        /// <summary>File name (without extension) of the config asset for an avatar name.</summary>
+        public static string GetConfigAssetName(string avatarName)
+        {
+            return avatarName + " FTPatchConfig";
+        }
+
+        /// <summary>Asset path of the config asset for an avatar root folder and avatar name.</summary>
+        public static string GetConfigAssetPath(string avatarRootPath, string avatarName)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(FTDiffGenerator.GetPatcherFolderAssetPath(avatarRootPath), GetConfigAssetName(avatarName) + ".asset");
+        }
+
+        /// <summary>
+        /// The folder PatcherHub writes the patched FBX to on the end user's machine: the avatar
+        /// root's <c>FBX</c> folder, where the wizard keeps the modified FBX.
+        /// </summary>
+        public static string GetFbxOutputFolderPath(string avatarRootPath)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(avatarRootPath, "FBX");
+        }
+
+        /// <summary>
+        /// Builds the config context for an avatar whose diff files were (or will be) written to
+        /// <paramref name="avatarRootPath"/> (the diff generator's output folder). Every caller
+        /// goes through here so the asset name, display name, diff references and FBX output path
+        /// are always the same. Returns null when a required value is missing.
+        /// </summary>
+        public static ConfigContext BuildContext(GameObject originalFbx, string avatarRootPath, string diffBaseName, string avatarName, IEnumerable<GameObject> patchedPrefabs)
+        {
+            if (originalFbx == null ||
+                string.IsNullOrEmpty(avatarRootPath) ||
+                string.IsNullOrEmpty(diffBaseName) ||
+                string.IsNullOrWhiteSpace(avatarName))
+            {
+                return null;
+            }
+
+            avatarName = avatarName.Trim();
+            List<GameObject> prefabs = patchedPrefabs?.Where(prefab => prefab != null).Distinct().ToList();
+
+            return new ConfigContext
+            {
+                OriginalFbx = originalFbx,
+                AvatarDisplayName = avatarName,
+                FbxDiffAssetPath = FTDiffGenerator.GetFbxDiffAssetPath(avatarRootPath, diffBaseName),
+                MetaDiffAssetPath = FTDiffGenerator.GetMetaDiffAssetPath(avatarRootPath, diffBaseName),
+                ConfigOutputFolder = FTDiffGenerator.GetPatcherFolderAssetPath(avatarRootPath),
+                FbxOutputPath = GetFbxOutputFolderPath(avatarRootPath),
+                PatchedPrefabs = prefabs != null && prefabs.Count > 0 ? prefabs : null,
+                ConfigAssetName = GetConfigAssetName(avatarName)
+            };
+        }
+
+        /// <summary>
+        /// Builds the config context for a diff generator used outside the wizard (its inspector
+        /// or context menu), where the wizard's avatar entry is not available. The generator's
+        /// output folder is treated as the avatar root, as the wizard sets it up, and the rest is
+        /// derived so a wizard-created generator yields the wizard's config:
+        /// <list type="bullet">
+        /// <item>Asset name: an existing config in the patcher folder whose original FBX is this
+        /// generator's keeps its name (so it is updated, never duplicated). Otherwise the avatar
+        /// name is the output folder's name, or the original FBX's file name when several diff
+        /// generators write to the same folder (the wizard's shared-folder rule) or a config with
+        /// the folder name already belongs to another FBX.</item>
+        /// <item>Patched prefabs: prefabs under the output folder (outside <c>patcher</c>) that
+        /// depend on the modified or original FBX.</item>
+        /// </list>
+        /// Returns null when the generator is incomplete.
+        /// </summary>
+        public static ConfigContext BuildContextForGenerator(FTDiffGenerator generator)
+        {
+            if (generator == null || generator.originalModelFbx == null || generator.outputDirectory == null)
+            {
+                return null;
+            }
+
+            string avatarRootPath = AssetDatabase.GetAssetPath(generator.outputDirectory);
+            if (string.IsNullOrEmpty(avatarRootPath) || !AssetDatabase.IsValidFolder(avatarRootPath))
+            {
+                return null;
+            }
+
+            string originalFbxPath = AssetDatabase.GetAssetPath(generator.originalModelFbx);
+            string fbxName = Path.GetFileNameWithoutExtension(originalFbxPath);
+            string avatarName = Path.GetFileName(avatarRootPath);
+
+            if (CountDiffGeneratorsWritingTo(generator.outputDirectory) > 1 ||
+                IsConfigOwnedByAnotherFbx(GetConfigAssetPath(avatarRootPath, avatarName), generator.originalModelFbx))
+            {
+                avatarName = fbxName;
+            }
+
+            ConfigContext context = BuildContext(
+                generator.originalModelFbx,
+                avatarRootPath,
+                generator.GetBaseName(),
+                avatarName,
+                FindPatchedPrefabs(avatarRootPath, generator.originalModelFbx, generator.modifiedModelFbx));
+
+            string existingConfigName = FindExistingConfigName(FTDiffGenerator.GetPatcherFolderAssetPath(avatarRootPath), generator.originalModelFbx);
+            if (context != null && !string.IsNullOrEmpty(existingConfigName))
+            {
+                context.ConfigAssetName = existingConfigName;
+            }
+
+            return context;
+        }
+
+        private static int CountDiffGeneratorsWritingTo(DefaultAsset outputDirectory)
+        {
+            int count = 0;
+            foreach (string guid in AssetDatabase.FindAssets("t:" + nameof(FTDiffGenerator)))
+            {
+                var otherGenerator = AssetDatabase.LoadAssetAtPath<FTDiffGenerator>(AssetDatabase.GUIDToAssetPath(guid));
+                if (otherGenerator != null && otherGenerator.outputDirectory == outputDirectory)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static bool IsConfigOwnedByAnotherFbx(string configAssetPath, GameObject originalFbx)
+        {
+            Type configType = FindFTPatchConfigType();
+            if (configType == null) return false;
+
+            ScriptableObject config = AssetDatabase.LoadAssetAtPath<ScriptableObject>(configAssetPath);
+            if (config == null || !configType.IsInstanceOfType(config)) return false;
+
+            GameObject configFbx = GetConfigOriginalFbx(config, configType);
+            return configFbx != null && configFbx != originalFbx;
+        }
+
+        /// <summary>
+        /// Returns the asset name of a config in <paramref name="patcherFolder"/> whose original
+        /// FBX is <paramref name="originalFbx"/>, or null when there is none.
+        /// </summary>
+        private static string FindExistingConfigName(string patcherFolder, GameObject originalFbx)
+        {
+            Type configType = FindFTPatchConfigType();
+            if (configType == null || originalFbx == null || !AssetDatabase.IsValidFolder(patcherFolder)) return null;
+
+            foreach (string guid in AssetDatabase.FindAssets("t:ScriptableObject", new[] { patcherFolder }))
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                ScriptableObject config = AssetDatabase.LoadAssetAtPath<ScriptableObject>(path);
+                if (config != null && configType.IsInstanceOfType(config) && GetConfigOriginalFbx(config, configType) == originalFbx)
+                {
+                    return Path.GetFileNameWithoutExtension(path);
+                }
+            }
+
+            return null;
+        }
+
+        private static GameObject GetConfigOriginalFbx(ScriptableObject config, Type configType)
+        {
+            FieldInfo field = configType.GetField("originalModelPrefab", BindingFlags.Public | BindingFlags.Instance);
+            return field != null ? field.GetValue(config) as GameObject : null;
+        }
+
+        /// <summary>
+        /// Finds prefabs under <paramref name="avatarRootPath"/> (excluding its patcher folder)
+        /// that depend on the modified or the original FBX.
+        /// </summary>
+        private static List<GameObject> FindPatchedPrefabs(string avatarRootPath, GameObject originalFbx, GameObject modifiedFbx)
+        {
+            var fbxPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (GameObject fbx in new[] { modifiedFbx, originalFbx })
+            {
+                string fbxPath = fbx != null ? AssetDatabase.GetAssetPath(fbx) : null;
+                if (!string.IsNullOrEmpty(fbxPath)) fbxPaths.Add(fbxPath);
+            }
+
+            var prefabs = new List<GameObject>();
+            if (fbxPaths.Count == 0) return prefabs;
+
+            string patcherFolderPrefix = FTDiffGenerator.GetPatcherFolderAssetPath(avatarRootPath) + "/";
+
+            foreach (string guid in AssetDatabase.FindAssets("t:Prefab", new[] { avatarRootPath }))
+            {
+                string prefabPath = AssetDatabase.GUIDToAssetPath(guid);
+                if (prefabPath.StartsWith(patcherFolderPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!AssetDatabase.GetDependencies(prefabPath, true).Any(fbxPaths.Contains))
+                {
+                    continue;
+                }
+
+                GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+                if (prefab != null)
+                {
+                    prefabs.Add(prefab);
+                }
+            }
+
+            return prefabs;
+        }
+
         /// <summary>
         /// Creates or updates an FTPatchConfig asset with the provided context.
         /// If an asset already exists at the target path, only diff-related fields and hashes are updated
@@ -332,13 +540,13 @@ namespace Pawlygon.UnityTools.Editor
 
             if (!string.IsNullOrEmpty(context.AvatarDisplayName))
             {
-                return context.AvatarDisplayName + " FTPatchConfig";
+                return GetConfigAssetName(context.AvatarDisplayName);
             }
 
             if (context.OriginalFbx != null)
             {
                 string fbxName = Path.GetFileNameWithoutExtension(AssetDatabase.GetAssetPath(context.OriginalFbx));
-                return fbxName + " FTPatchConfig";
+                return GetConfigAssetName(fbxName);
             }
 
             return "FTPatchConfig";

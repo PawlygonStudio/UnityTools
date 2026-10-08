@@ -16,6 +16,8 @@ namespace Pawlygon.UnityTools.Editor
     public partial class FaceTrackingExtras : EditorWindow
     {
         private const string MenuPath = "!Pawlygon/Tools/Face Tracking Extras";
+        private const string WindowTitle = "Face Tracking Extras";
+        private const string LockedTabTooltip = "Create the profile in Setup first.";
         private const float SectionSpacing = 10f;
 
         private const string SlotEarLeft = "EarLeft";
@@ -32,7 +34,7 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>What the window is currently doing to the avatar's bones.</summary>
         private enum Mode { Idle, Editing, Showing, Previewing }
 
-        private enum Tab { Setup, EarsAndTail, Pupils, Generate }
+        private enum Tab { Setup, EarsAndTail, Pupils, Custom, Generate }
 
         // --- State ---
         [SerializeField] private Vector2 scrollPosition;
@@ -40,8 +42,7 @@ namespace Pawlygon.UnityTools.Editor
         private GameObject selectedAvatar;
         private FaceTrackingExtrasCore.RigAnalysis analysis;
         private readonly Dictionary<string, FaceTrackingExtrasCore.BoneChain> selectedChains = new Dictionary<string, FaceTrackingExtrasCore.BoneChain>();
-        private string statusMessage;
-        private MessageType statusMessageType;
+        private readonly PawlygonStatus status = new PawlygonStatus();
         private string lastExportPath;
 
         // --- Profile & posing ---
@@ -83,11 +84,11 @@ namespace Pawlygon.UnityTools.Editor
         // Window lifecycle
         // =====================================================================
 
-        [MenuItem(MenuPath)]
+        [MenuItem(MenuPath, priority = 41)] // Tools: Tune
         public static void ShowWindow()
         {
             FaceTrackingExtras window = GetWindow<FaceTrackingExtras>();
-            window.titleContent = new GUIContent("Face Tracking Extras");
+            window.titleContent = new GUIContent(WindowTitle);
             window.minSize = new Vector2(520f, 520f);
         }
 
@@ -109,6 +110,7 @@ namespace Pawlygon.UnityTools.Editor
             Undo.undoRedoPerformed -= OnUndoRedo;
             StopMode();
             StopPupilPreview();
+            StopCustomPreview();
         }
 
         /// <summary>
@@ -117,6 +119,7 @@ namespace Pawlygon.UnityTools.Editor
         /// </summary>
         private void OnHierarchyChange()
         {
+            FTExtrasParameterCatalog.Invalidate();
             if (selectedAvatar == null && (analysis != null || session != null || profile != null))
             {
                 selectedAvatar = EyeMuscleSettingsCore.FindFirstAvatarInScene();
@@ -169,6 +172,7 @@ namespace Pawlygon.UnityTools.Editor
         {
             UpdateBoneModes();
             UpdatePupilPreview();
+            UpdateCustomPreview();
         }
 
         private void UpdateBoneModes()
@@ -209,13 +213,15 @@ namespace Pawlygon.UnityTools.Editor
             EnsureStyles();
 
             PawlygonEditorUI.DrawHeader(
-                "Face Tracking Extras",
-                "Ear, tail and pupil animations driven by face tracking.");
+                WindowTitle,
+                "Ears, tail, pupils and your own animations, driven by face tracking.",
+                PawlygonEditorUI.DocumentationUrl);
 
             DrawAvatarBar();
             EditorGUILayout.Space(6f);
 
-            if (!IsTabAvailable(currentTab)) SwitchTab(Tab.Setup);
+            // The profile went away (another avatar, a missing bone): fall back to Setup, keeping the status that explains why.
+            if (!IsTabAvailable(currentTab)) SwitchTab(Tab.Setup, clearStatus: false);
             DrawTabBar();
             EditorGUILayout.Space(6f);
 
@@ -226,19 +232,32 @@ namespace Pawlygon.UnityTools.Editor
                 case Tab.Setup: DrawSetupTab(); break;
                 case Tab.EarsAndTail: DrawEarsAndTailTab(); break;
                 case Tab.Pupils: DrawPupilsTab(); break;
+                case Tab.Custom: DrawCustomTab(); break;
                 case Tab.Generate: DrawGenerateTab(); break;
-            }
-
-            if (!string.IsNullOrEmpty(statusMessage))
-            {
-                EditorGUILayout.Space();
-                EditorGUILayout.HelpBox(statusMessage, statusMessageType);
             }
 
             EditorGUILayout.EndScrollView();
 
-            EditorGUILayout.Space(8f);
+            PawlygonEditorUI.DrawStatusBar(status);
+            DrawActionBar();
             PawlygonEditorUI.DrawFooter();
+        }
+
+        /// <summary>
+        /// The current tab's main action, pinned above the footer: creating or updating the profile in Setup,
+        /// saving the pose being edited in Ears &amp; Tail, and generating in Generate.
+        /// </summary>
+        private void DrawActionBar()
+        {
+            if (selectedAvatar == null) return;
+
+            switch (currentTab)
+            {
+                case Tab.Setup: DrawSetupActions(); break;
+                case Tab.EarsAndTail: DrawPoseActions(); break;
+                case Tab.Custom: DrawCustomActions(); break;
+                case Tab.Generate: DrawGenerateActions(); break;
+            }
         }
 
         private void EnsureStyles()
@@ -265,48 +284,37 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawTabBar()
         {
+            PawlygonEditorUI.TabSpec Spec(Tab tab, string label, bool done)
+            {
+                bool available = IsTabAvailable(tab);
+                return new PawlygonEditorUI.TabSpec(label, done, !available, available ? null : LockedTabTooltip);
+            }
+
             var tabs = new[]
             {
-                (Tab.Setup, "Setup", IsSetupDone()),
-                (Tab.EarsAndTail, EarsAndTailTabLabel(), session != null && AreRequiredPosesSet()),
-                (Tab.Pupils, profile != null && !profile.generation.fakeDilation ? "Pupils (off)" : "Pupils", IsPupilsReady()),
-                (Tab.Generate, "Generate", IsGenerated()),
+                Spec(Tab.Setup, "Setup", IsSetupDone()),
+                Spec(Tab.EarsAndTail, EarsAndTailTabLabel(), session != null && AreRequiredPosesSet()),
+                Spec(Tab.Pupils, profile != null && !profile.generation.fakeDilation ? "Pupils (off)" : "Pupils", IsPupilsReady()),
+                Spec(Tab.Custom, CustomTabLabel(), AreCustomAnimationsValid()),
+                Spec(Tab.Generate, "Generate", IsGenerated()),
             };
 
-            using (new EditorGUILayout.HorizontalScope())
+            int clicked = PawlygonEditorUI.DrawTabBar(tabs, (int)currentTab);
+            if (clicked >= 0)
             {
-                for (int i = 0; i < tabs.Length; i++)
-                {
-                    var (tab, label, done) = tabs[i];
-                    string styleName = i == 0 ? "LargeButtonLeft" : i == tabs.Length - 1 ? "LargeButtonRight" : "LargeButtonMid";
-                    GUIStyle style = GUI.skin.FindStyle(styleName) ?? EditorStyles.miniButton;
-
-                    bool available = IsTabAvailable(tab);
-                    bool showTick = done && available;
-                    var content = new GUIContent(
-                        showTick ? $" {label}" : label,
-                        showTick ? EditorGUIUtility.IconContent("TestPassed").image : null,
-                        available ? null : "Save the bone chains in Setup first.");
-
-                    using (new EditorGUI.DisabledScope(!available))
-                    {
-                        bool selected = GUILayout.Toggle(currentTab == tab, content, style, GUILayout.Height(26f));
-                        if (selected && currentTab != tab)
-                        {
-                            SwitchTab(tab);
-                            GUIUtility.ExitGUI();
-                        }
-                    }
-                }
+                SwitchTab((Tab)clicked);
+                GUIUtility.ExitGUI();
             }
         }
 
-        private void SwitchTab(Tab tab)
+        private void SwitchTab(Tab tab, bool clearStatus = true)
         {
             StopMode();
             StopPupilPreview();
+            StopCustomPreview();
             currentTab = tab;
             scrollPosition = Vector2.zero;
+            if (clearStatus) status.Clear();
         }
 
         private bool IsSetupDone() => profile != null && session != null && ChainsMatchProfile();
@@ -349,8 +357,29 @@ namespace Pawlygon.UnityTools.Editor
 
         private bool IsGenerated()
         {
-            return selectedAvatar != null && session != null && IsPrefabOnAvatar();
+            return selectedAvatar != null && session != null && IsPrefabOnAvatar() && !IsGenerationStale();
         }
+
+        /// <summary>
+        /// Poses or settings changed since the last generation. Hashing the profile is cheap but not free, and
+        /// OnGUI runs several times per frame, so the result is reused for a short moment.
+        /// </summary>
+        private bool IsGenerationStale()
+        {
+            if (profile == null) return false;
+            double now = EditorApplication.timeSinceStartup;
+            if (now - staleCheckTime > 0.25 || staleCheckProfile != profile)
+            {
+                staleCheckTime = now;
+                staleCheckProfile = profile;
+                staleCache = profile.IsGenerationStale;
+            }
+            return staleCache;
+        }
+
+        private double staleCheckTime = -1;
+        private FTExtrasProfile staleCheckProfile;
+        private bool staleCache;
 
         private bool IsPrefabOnAvatar()
         {
@@ -359,10 +388,9 @@ namespace Pawlygon.UnityTools.Editor
             return prefabOnAvatarCache.Value;
         }
 
-        private void SetStatus(string message, MessageType type)
+        private void SetStatus(string message, MessageType type, string actionLabel = null, System.Action action = null)
         {
-            statusMessage = message;
-            statusMessageType = type;
+            status.Set(message, type, actionLabel, action);
         }
 
         // =====================================================================
@@ -371,38 +399,35 @@ namespace Pawlygon.UnityTools.Editor
 
         private void DrawAvatarBar()
         {
-            using (new EditorGUILayout.VerticalScope(PawlygonEditorUI.SectionStyle))
+            using (new EditorGUI.DisabledScope(mode != Mode.Idle))
             {
-                using (new EditorGUI.DisabledScope(mode != Mode.Idle))
+                if (PawlygonEditorUI.DrawAvatarBar(this, ref selectedAvatar, "Avatar"))
                 {
-                    EditorGUI.BeginChangeCheck();
-                    GameObject newAvatar = (GameObject)EditorGUILayout.ObjectField("Selected Avatar", selectedAvatar, typeof(GameObject), true);
-                    if (EditorGUI.EndChangeCheck())
-                    {
-                        selectedAvatar = newAvatar;
-                        LoadAvatar(newAvatar);
-                        GUIUtility.ExitGUI();
-                    }
-
-                    EditorGUI.BeginChangeCheck();
-                    FTExtrasProfile newProfile = (FTExtrasProfile)EditorGUILayout.ObjectField("Profile", profile, typeof(FTExtrasProfile), false);
-                    if (EditorGUI.EndChangeCheck())
-                    {
-                        StopPupilPreview();
-                        profile = newProfile;
-                        if (profile != null && analysis != null && analysis.Success) ApplyProfileChains();
-                        BindSession();
-                        GUIUtility.ExitGUI();
-                    }
+                    LoadAvatar(selectedAvatar);
+                    GUIUtility.ExitGUI();
                 }
 
-                if (profile == null)
+                EditorGUI.BeginChangeCheck();
+                FTExtrasProfile newProfile = (FTExtrasProfile)EditorGUILayout.ObjectField(
+                    new GUIContent("Profile", "Where this avatar's bone chains, poses and settings are saved."), profile, typeof(FTExtrasProfile), false);
+                if (EditorGUI.EndChangeCheck())
                 {
-                    EditorGUILayout.Space(2f);
-                    EditorGUILayout.LabelField(
-                        "Select an avatar from the scene with a Humanoid rig. Its profile is created when you save the bone chains in Setup.",
-                        PawlygonEditorUI.SubLabelStyle);
+                    StopPupilPreview();
+                    StopCustomPreview();
+                    selectedCustomIndex = -1;
+                    status.Clear();
+                    profile = newProfile;
+                    if (profile != null && analysis != null && analysis.Success) ApplyProfileChains();
+                    BindSession();
+                    GUIUtility.ExitGUI();
                 }
+            }
+
+            if (profile == null)
+            {
+                EditorGUILayout.LabelField(
+                    "Pick an avatar with a Humanoid rig. Its profile is created when you click Create Profile in Setup.",
+                    PawlygonEditorUI.SubLabelStyle);
             }
         }
 
@@ -410,13 +435,15 @@ namespace Pawlygon.UnityTools.Editor
         {
             StopMode();
             StopPupilPreview();
+            StopCustomPreview();
+            selectedCustomIndex = -1;
             pupilPreview = null;
             selectedAvatar = avatar;
             RefreshHierarchyCaches();
             analysis = null;
             selectedChains.Clear();
             lastExportPath = null;
-            statusMessage = null;
+            status.Clear();
             session = null;
             sessionError = null;
             profile = avatar != null ? FindProfile(avatar) : null;
@@ -428,6 +455,7 @@ namespace Pawlygon.UnityTools.Editor
             {
                 ApplyProfileChains();
                 BindSession();
+                AdoptLegacyProfile();
             }
         }
 
@@ -437,9 +465,12 @@ namespace Pawlygon.UnityTools.Editor
             selectedChains.Clear();
             lastExportPath = null;
 
-            SetStatus(analysis.StatusMessage, analysis.Success ? MessageType.Info : MessageType.Error);
-
-            if (!analysis.Success) return;
+            // A successful scan shows its result in the Setup tab; only a failure needs the status bar.
+            if (!analysis.Success)
+            {
+                SetStatus(analysis.StatusMessage, MessageType.Error);
+                return;
+            }
 
             selectedChains[SlotEarLeft] = PickBest(analysis.ChainsOfSide(FaceTrackingExtrasCore.ChainKind.Ear, FaceTrackingExtrasCore.ChainSide.Left));
             selectedChains[SlotEarRight] = PickBest(analysis.ChainsOfSide(FaceTrackingExtrasCore.ChainKind.Ear, FaceTrackingExtrasCore.ChainSide.Right));
@@ -463,15 +494,41 @@ namespace Pawlygon.UnityTools.Editor
         // Profile
         // =====================================================================
 
+        /// <summary>
+        /// The profile that belongs to <paramref name="avatar"/>. Profiles with an identity (prefab or scene
+        /// object) win over 1.6.0 profiles that only recorded the avatar's name.
+        /// </summary>
         private static FTExtrasProfile FindProfile(GameObject avatar)
         {
+            FTExtrasProfile nameOnlyMatch = null;
             foreach (string guid in AssetDatabase.FindAssets($"t:{nameof(FTExtrasProfile)}"))
             {
                 var candidate = AssetDatabase.LoadAssetAtPath<FTExtrasProfile>(AssetDatabase.GUIDToAssetPath(guid));
-                if (candidate != null && candidate.avatarName == avatar.name) return candidate;
+                if (candidate == null || !candidate.BelongsTo(avatar)) continue;
+
+                if (candidate.HasIdentity) return candidate;
+                if (nameOnlyMatch == null) nameOnlyMatch = candidate;
             }
-            return null;
+            return nameOnlyMatch;
         }
+
+        /// <summary>
+        /// A 1.6.0 profile matched by name adopts this avatar's identity once its bones resolve on it, so it
+        /// can no longer be picked up by a different avatar that happens to share the name.
+        /// </summary>
+        private void AdoptLegacyProfile()
+        {
+            if (profile == null || profile.HasIdentity || session == null || selectedAvatar == null) return;
+
+            profile.SetIdentity(selectedAvatar);
+            SaveProfile();
+        }
+
+        /// <summary>
+        /// The profile was matched (by name or picked by hand) but its bones are not on this avatar, so it
+        /// most likely belongs to a different avatar.
+        /// </summary>
+        private bool ProfileBelongsToAnotherAvatar => profile != null && session == null && sessionError != null;
 
         /// <summary>
         /// Creates the profile in the avatar's output folder (Prefabs/FaceTrackingExtras).
@@ -503,7 +560,8 @@ namespace Pawlygon.UnityTools.Editor
             var newRight = Capture(SlotEarRight);
             var newTail = Capture(SlotTail);
 
-            if (profile == null)
+            bool created = profile == null;
+            if (created)
             {
                 profile = CreateProfile();
             }
@@ -527,14 +585,15 @@ namespace Pawlygon.UnityTools.Editor
                 foreach (var pose in lost) profile.ClearStoredPose(pose.id);
             }
 
-            profile.avatarName = selectedAvatar.name;
+            profile.SetIdentity(selectedAvatar);
             profile.earLeft = newLeft;
             profile.earRight = newRight;
             profile.tail = newTail;
             SaveProfile();
 
+            string baselineNote = created ? ApplyBaselineToNewProfile() : null;
             BindSession();
-            SetStatus($"Saved bone chains to {AssetDatabase.GetAssetPath(profile)}", MessageType.Info);
+            SetStatus(baselineNote ?? $"Saved the bone chains to '{profile.name}'.", MessageType.Info, "Ping", PawlygonStatus.Ping(profile));
         }
 
         private void SaveProfile()
@@ -631,8 +690,6 @@ namespace Pawlygon.UnityTools.Editor
                 ? session.Tail.FirstOrDefault()
                 : session.EarLeft.FirstOrDefault() ?? session.EarRight.FirstOrDefault();
             if (first != null) SelectBone(first);
-
-            SetStatus($"Editing {definition.Label}. Rotate the bones, then click Save.", MessageType.Info);
         }
 
         private void SaveActivePose()
@@ -642,9 +699,8 @@ namespace Pawlygon.UnityTools.Editor
             profile.SetStoredPose(pose);
             SaveProfile();
 
-            string label = FTExtrasPoses.Get(activePose).Label;
+            // The pose row now shows it as set, so no status message is needed.
             StopMode();
-            SetStatus($"Saved {label}.", MessageType.Info);
         }
 
         private void ClearPose(FTExtrasPoses.PoseDefinition definition)

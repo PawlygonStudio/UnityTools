@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
 using UnityEditor;
 using UnityEngine;
@@ -36,6 +38,11 @@ namespace Pawlygon.UnityTools.Editor
         [ContextMenu("Generate Diff Files")]
         private void GenerateDiffFilesFromContextMenu()
         {
+            if (IsModifiedFbxIdenticalToOriginal() && !ConfirmGenerationForUnchangedModels(new[] { name }))
+            {
+                return;
+            }
+
             if (!GenerateDiffFiles(out string errorMessage))
             {
                 EditorUtility.DisplayDialog("Diff Generation Failed", errorMessage + "\n\nSee the Console for the full hdiffz output.", "OK");
@@ -82,6 +89,13 @@ namespace Pawlygon.UnityTools.Editor
                 }
             }
 
+            // Not an error (callers that act on a user's request confirm it first), but the
+            // resulting FBX patch is a no-op, which is almost always a forgotten FBX replacement.
+            if (AreFilesIdentical(originalFbxPath, modifiedFbxPath))
+            {
+                Debug.LogWarning($"{LogPrefix} The modified FBX '{modifiedFbxPath}' is identical to the original '{originalFbxPath}'. The generated FBX patch will not change the model.", this);
+            }
+
             string hdiffExecutablePath = GetHdiffzExecutablePath();
             if (string.IsNullOrEmpty(hdiffExecutablePath))
             {
@@ -102,7 +116,7 @@ namespace Pawlygon.UnityTools.Editor
 #endif
 
             string baseName = GetDiffBaseName(originalFbxPath);
-            string diffOutputPath = Path.Combine(Path.GetFullPath(outputFolderPath), "patcher", "data", "DiffFiles");
+            string diffOutputPath = Path.GetFullPath(GetDiffFilesFolderAssetPath(outputFolderPath));
             string fbxDiffOutputPath = Path.Combine(diffOutputPath, GetFbxDiffFileName(baseName));
             string metaDiffOutputPath = Path.Combine(diffOutputPath, GetMetaDiffFileName(baseName));
 
@@ -263,21 +277,18 @@ namespace Pawlygon.UnityTools.Editor
 
         /// <summary>
         /// Returns the absolute path of the bundled hdiffz binary for the current editor platform,
-        /// or null when the platform is not supported.
+        /// or null when the platform is not supported. The package root is resolved through the
+        /// Package Manager so git-URL and tarball installs (in <c>Library/PackageCache</c>) work too.
         /// </summary>
         private static string GetHdiffzExecutablePath()
         {
-            string basePackagePath = Path.Combine("Packages", "net.pawlygon.unitytools", "hdiff", "hdiffz");
-
-            string relativePath = Application.platform switch
+            return Application.platform switch
             {
-                RuntimePlatform.WindowsEditor => Path.Combine(basePackagePath, "Windows", "hdiffz.exe"),
-                RuntimePlatform.OSXEditor => Path.Combine(basePackagePath, "Mac", "hdiffz"),
-                RuntimePlatform.LinuxEditor => Path.Combine(basePackagePath, "Linux", "hdiffz"),
+                RuntimePlatform.WindowsEditor => PawlygonPackagePaths.GetFullPath("hdiff", "hdiffz", "Windows", "hdiffz.exe"),
+                RuntimePlatform.OSXEditor => PawlygonPackagePaths.GetFullPath("hdiff", "hdiffz", "Mac", "hdiffz"),
+                RuntimePlatform.LinuxEditor => PawlygonPackagePaths.GetFullPath("hdiff", "hdiffz", "Linux", "hdiffz"),
                 _ => null
             };
-
-            return relativePath != null ? Path.GetFullPath(relativePath) : null;
         }
 
         private string GetFBXPath(GameObject model)
@@ -300,6 +311,116 @@ namespace Pawlygon.UnityTools.Editor
             }
 
             return Path.GetFullPath(modelPath);
+        }
+
+        /// <summary>
+        /// Returns true when the original and modified FBX files have byte-identical contents (or
+        /// are the same file), so the FBX patch would not change anything. Returns false when
+        /// either reference does not resolve to an FBX file.
+        /// </summary>
+        public bool IsModifiedFbxIdenticalToOriginal()
+        {
+            string originalFbxPath = GetFBXPath(originalModelFbx);
+            string modifiedFbxPath = GetFBXPath(modifiedModelFbx);
+
+            return !string.IsNullOrEmpty(originalFbxPath) &&
+                   !string.IsNullOrEmpty(modifiedFbxPath) &&
+                   AreFilesIdentical(originalFbxPath, modifiedFbxPath);
+        }
+
+        /// <summary>
+        /// Shows a Continue/Cancel dialog explaining that the modified FBX of each listed item is
+        /// identical to its original, so its patch would not change the model. Returns true when
+        /// <paramref name="names"/> is empty or the user chose Continue.
+        /// </summary>
+        public static bool ConfirmGenerationForUnchangedModels(IEnumerable<string> names)
+        {
+            List<string> nameList = names?.Where(n => !string.IsNullOrEmpty(n)).ToList() ?? new List<string>();
+            if (nameList.Count == 0)
+            {
+                return true;
+            }
+
+            return EditorUtility.DisplayDialog(
+                "Modified FBX Is Unchanged",
+                "The modified FBX is identical to the original for:\n\n" +
+                string.Join("\n", nameList.Select(n => "• " + n)) +
+                "\n\nIts patch would not change the model. Replace the copied FBX with your edited version first, " +
+                "or continue to generate the patch anyway.",
+                "Continue",
+                "Cancel");
+        }
+
+        /// <summary>
+        /// Compares two files byte by byte. Returns true for the same path, false when either file
+        /// is missing or cannot be read.
+        /// </summary>
+        public static bool AreFilesIdentical(string firstPath, string secondPath)
+        {
+            const int BufferSize = 64 * 1024;
+
+            try
+            {
+                var first = new FileInfo(firstPath);
+                var second = new FileInfo(secondPath);
+                if (!first.Exists || !second.Exists || first.Length != second.Length)
+                {
+                    return false;
+                }
+
+                if (string.Equals(first.FullName, second.FullName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                using FileStream firstStream = first.OpenRead();
+                using FileStream secondStream = second.OpenRead();
+                var firstBuffer = new byte[BufferSize];
+                var secondBuffer = new byte[BufferSize];
+
+                while (true)
+                {
+                    int firstRead = ReadFully(firstStream, firstBuffer);
+                    int secondRead = ReadFully(secondStream, secondBuffer);
+                    if (firstRead != secondRead)
+                    {
+                        return false;
+                    }
+
+                    if (firstRead == 0)
+                    {
+                        return true;
+                    }
+
+                    if (!firstBuffer.AsSpan(0, firstRead).SequenceEqual(secondBuffer.AsSpan(0, secondRead)))
+                    {
+                        return false;
+                    }
+                }
+            }
+            catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException)
+            {
+                Debug.LogWarning($"{LogPrefix} Could not compare '{firstPath}' and '{secondPath}': {exception.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>Reads until the buffer is full or the stream ends; returns the bytes read.</summary>
+        private static int ReadFully(Stream stream, byte[] buffer)
+        {
+            int total = 0;
+            while (total < buffer.Length)
+            {
+                int read = stream.Read(buffer, total, buffer.Length - total);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                total += read;
+            }
+
+            return total;
         }
 
         /// <summary>
@@ -342,7 +463,31 @@ namespace Pawlygon.UnityTools.Editor
         public string GetPatcherFolderAssetPath()
         {
             if (outputDirectory == null) return null;
-            return AssetDatabase.GetAssetPath(outputDirectory) + "/patcher";
+            return GetPatcherFolderAssetPath(AssetDatabase.GetAssetPath(outputDirectory));
+        }
+
+        /// <summary>Asset path of the patcher folder inside an output (avatar root) folder.</summary>
+        public static string GetPatcherFolderAssetPath(string outputFolderAssetPath)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(outputFolderAssetPath, "patcher");
+        }
+
+        /// <summary>Asset path of the folder the .hdiff files are written to for an output folder.</summary>
+        public static string GetDiffFilesFolderAssetPath(string outputFolderAssetPath)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(GetPatcherFolderAssetPath(outputFolderAssetPath), "data", "DiffFiles");
+        }
+
+        /// <summary>Asset path of the FBX .hdiff for an output folder and diff base name.</summary>
+        public static string GetFbxDiffAssetPath(string outputFolderAssetPath, string baseName)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderAssetPath(outputFolderAssetPath), GetFbxDiffFileName(baseName));
+        }
+
+        /// <summary>Asset path of the .meta .hdiff for an output folder and diff base name.</summary>
+        public static string GetMetaDiffAssetPath(string outputFolderAssetPath, string baseName)
+        {
+            return PawlygonEditorUtils.CombineAssetPath(GetDiffFilesFolderAssetPath(outputFolderAssetPath), GetMetaDiffFileName(baseName));
         }
 
         private bool SetExecutablePermission(string path)

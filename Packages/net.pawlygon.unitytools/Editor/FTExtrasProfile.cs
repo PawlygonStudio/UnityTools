@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using UnityEditor;
 using UnityEngine;
 
 namespace Pawlygon.UnityTools.Editor
@@ -85,8 +87,13 @@ namespace Pawlygon.UnityTools.Editor
         [Header("Menu")]
         [Tooltip("Synced, saved toggle that lets the jaw swing the tail.")]
         public string tailFollowsJawParameter = "Pawlygon/TailFollowsJaw";
-        [Tooltip("Submenu the toggle is placed in.")]
-        public string menuName = "Face Tracking Extras";
+        [Tooltip("Submenu path the toggle is placed in. '/' creates nested submenus, e.g. VRCFT/Extra.")]
+        public string menuName = DefaultMenuName;
+
+        internal const string DefaultMenuName = "VRCFT/Extra";
+
+        /// <summary>Earlier defaults; profiles still using one are moved to <see cref="DefaultMenuName"/>.</summary>
+        internal static readonly string[] LegacyMenuNames = { "Face Tracking Extras", "Custom Face Tracking" };
 
         [Header("Fake Pupil Dilation")]
         [Tooltip("Animates EyeDilation/EyeConstrict while eye tracking is active and real pupil dilation is off.")]
@@ -113,6 +120,12 @@ namespace Pawlygon.UnityTools.Editor
     {
         public string avatarName;
 
+        [Tooltip("GUID of the avatar's prefab asset. Identifies the avatar for prefab instances.")]
+        public string avatarPrefabGuid;
+
+        [Tooltip("Scene object ID of the avatar. Identifies avatars that are not prefab instances.")]
+        public string avatarSceneId;
+
         public List<FTExtrasProfileBone> earLeft = new List<FTExtrasProfileBone>();
         public List<FTExtrasProfileBone> earRight = new List<FTExtrasProfileBone>();
         public List<FTExtrasProfileBone> tail = new List<FTExtrasProfileBone>();
@@ -132,6 +145,12 @@ namespace Pawlygon.UnityTools.Editor
         public float tailWagDelay = 0.1f;
 
         public FTExtrasGenerationSettings generation = new FTExtrasGenerationSettings();
+
+        [Tooltip("The user's own clips driven by face tracking parameters.")]
+        public List<FTExtrasCustomAnimation> customAnimations = new List<FTExtrasCustomAnimation>();
+
+        [Tooltip("Hash of the poses and settings at the last successful generation. Used to show when the output is out of date.")]
+        public string lastGeneratedHash;
 
         /// <summary>
         /// Returns the stored pose, or null if it is not set or no longer matches the chains.
@@ -158,6 +177,96 @@ namespace Pawlygon.UnityTools.Editor
         public void ClearStoredPose(FTExtrasPoseId id)
         {
             poses.RemoveAll(p => p.id == id);
+        }
+
+        // =====================================================================
+        // Generation state
+        // =====================================================================
+
+        [Serializable]
+        private class GenerationSnapshot
+        {
+            public List<FTExtrasProfileBone> earLeft;
+            public List<FTExtrasProfileBone> earRight;
+            public List<FTExtrasProfileBone> tail;
+            public List<FTExtrasPoseData> poses;
+            public float earFlickPeriod;
+            public float tailWagPeriod;
+            public float tailWagAmount;
+            public float tailWagDelay;
+            public FTExtrasGenerationSettings generation;
+            public List<FTExtrasCustomAnimation> customAnimations;
+            public List<string> customClipGuids;
+        }
+
+        /// <summary>
+        /// Hash of everything that affects the generated output: chains, rest pose, poses, loop and
+        /// generation settings.
+        /// </summary>
+        public string ComputeGenerationHash()
+        {
+            var snapshot = new GenerationSnapshot
+            {
+                earLeft = earLeft, earRight = earRight, tail = tail,
+                poses = poses.OrderBy(p => (int)p.id).ToList(),
+                earFlickPeriod = earFlickPeriod, tailWagPeriod = tailWagPeriod,
+                tailWagAmount = tailWagAmount, tailWagDelay = tailWagDelay,
+                generation = generation,
+                customAnimations = customAnimations,
+                // Clip references serialise as instance IDs; add the assets' GUIDs so swapping a clip counts.
+                customClipGuids = customAnimations
+                    .SelectMany(a => new[] { a.clip, a.negativeClip })
+                    .Select(c => c != null ? AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(c)) : string.Empty)
+                    .ToList(),
+            };
+            return Hash128.Compute(JsonUtility.ToJson(snapshot)).ToString();
+        }
+
+        /// <summary>True when poses or settings changed since the last successful generation.</summary>
+        public bool IsGenerationStale => !string.IsNullOrEmpty(lastGeneratedHash) && lastGeneratedHash != ComputeGenerationHash();
+
+        // =====================================================================
+        // Avatar identity
+        // =====================================================================
+
+        /// <summary>
+        /// True when the profile records which avatar it belongs to. Profiles from 1.6.0 only stored the
+        /// avatar's name; they are matched by name until they adopt an identity.
+        /// </summary>
+        public bool HasIdentity => !string.IsNullOrEmpty(avatarPrefabGuid) || !string.IsNullOrEmpty(avatarSceneId);
+
+        /// <summary>
+        /// Whether this profile belongs to <paramref name="avatar"/>: same prefab asset for prefab instances
+        /// (every instance of one prefab shares the profile), same scene object otherwise, or the same name
+        /// for profiles without an identity.
+        /// </summary>
+        public bool BelongsTo(GameObject avatar)
+        {
+            if (avatar == null) return false;
+            if (!string.IsNullOrEmpty(avatarPrefabGuid)) return avatarPrefabGuid == GetPrefabGuid(avatar);
+            if (!string.IsNullOrEmpty(avatarSceneId)) return avatarSceneId == GetSceneId(avatar);
+            return avatarName == avatar.name;
+        }
+
+        /// <summary>
+        /// Records <paramref name="avatar"/> as this profile's owner.
+        /// </summary>
+        public void SetIdentity(GameObject avatar)
+        {
+            avatarName = avatar.name;
+            avatarPrefabGuid = GetPrefabGuid(avatar) ?? string.Empty;
+            avatarSceneId = string.IsNullOrEmpty(avatarPrefabGuid) ? GetSceneId(avatar) : string.Empty;
+        }
+
+        internal static string GetPrefabGuid(GameObject avatar)
+        {
+            string path = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(avatar);
+            return string.IsNullOrEmpty(path) ? null : AssetDatabase.AssetPathToGUID(path);
+        }
+
+        internal static string GetSceneId(GameObject avatar)
+        {
+            return GlobalObjectId.GetGlobalObjectIdSlow(avatar).ToString();
         }
     }
 }

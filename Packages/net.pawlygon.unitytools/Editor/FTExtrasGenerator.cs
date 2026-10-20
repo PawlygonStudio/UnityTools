@@ -59,7 +59,7 @@ namespace Pawlygon.UnityTools.Editor
         private const int MaxMenuControls = 8;
 
         private const float SampleRate = 30f;
-        private const float StaticClipLength = 1f / 60f;
+        internal const float StaticClipLength = 1f / 60f;
         private const float MovedThresholdDegrees = 0.01f;
 
         internal class Result
@@ -390,7 +390,7 @@ namespace Pawlygon.UnityTools.Editor
         /// The sub-assets (state machines, states, transitions, blend trees, behaviours) are moved rather than
         /// copied, so every reference between them stays intact, and the target keeps its GUID.
         /// </summary>
-        private static void ReplaceControllerContent(AnimatorController source, AnimatorController target)
+        internal static void ReplaceControllerContent(AnimatorController source, AnimatorController target)
         {
             AnimatorControllerLayer[] layers = source.layers;
             AnimatorControllerParameter[] parameters = source.parameters;
@@ -1395,7 +1395,7 @@ namespace Pawlygon.UnityTools.Editor
             return transition;
         }
 
-        private static ChildMotion Direct(Motion motion, string weightParameter)
+        internal static ChildMotion Direct(Motion motion, string weightParameter)
         {
             return new ChildMotion { motion = motion, directBlendParameter = weightParameter, timeScale = 1f };
         }
@@ -1428,7 +1428,7 @@ namespace Pawlygon.UnityTools.Editor
             }
         }
 
-        private static MethodInfo RequireMethod(Type type, string name)
+        internal static MethodInfo RequireMethod(Type type, string name)
         {
             return type.GetMethod(name)
                 ?? throw new MissingMethodException($"VRCFury's API has no '{type.Name}.{name}' method in this version.");
@@ -1463,7 +1463,7 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Builds layers, states and blend trees inside a controller asset.
         /// </summary>
-        private class ControllerBuilder
+        internal class ControllerBuilder
         {
             public AnimatorController Controller { get; }
 
@@ -1534,7 +1534,7 @@ namespace Pawlygon.UnityTools.Editor
         /// <summary>
         /// Creates clips in the Animations folder, reusing existing clip assets so their GUIDs stay stable.
         /// </summary>
-        private class ClipStore
+        internal class ClipStore
         {
             private readonly string folder;
             private readonly HashSet<string> savedPaths = new HashSet<string>();

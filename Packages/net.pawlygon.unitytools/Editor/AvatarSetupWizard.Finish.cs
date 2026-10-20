@@ -17,6 +17,7 @@ namespace Pawlygon.UnityTools.Editor
             ("Getting Started", "Overview of every Pawlygon tool and when to use it.", GettingStarted.ShowWindow),
             ("Eye Muscle Settings", "Set how far the eyes can look in each direction, with a live preview.", EyeMuscleSettings.ShowWindow),
             ("Face Tracking Extras", "Ears, tail and pupils that react to your face.", FaceTrackingExtras.ShowWindow),
+            ("Blendshape Fixes", "Drive fix shapes like MouthSmileLeft-EyeClosedLeft from face tracking.", BlendshapeFixes.ShowWindow),
             ("Patch Config Package Rules", "Add the packages (and minimum versions) your customers need to the patch configs.", PatchConfigRulesEditor.ShowWindow),
         };
 

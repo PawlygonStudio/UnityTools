@@ -79,6 +79,12 @@ namespace Pawlygon.UnityTools.Editor
                     Open = FaceTrackingExtras.ShowWindow,
                     Status = w => w.extrasStatus,
                 },
+                new ToolEntry
+                {
+                    Name = "Blendshape Fixes",
+                    Description = "Drives fix shapes like MouthSmileLeft-EyeClosedLeft from face tracking, so combined expressions don't clip.",
+                    Open = BlendshapeFixes.ShowWindow,
+                },
             }),
             ("4. Publish", "Prepare the patch for your customers.", new[]
             {
